@@ -1,4 +1,37 @@
+# macOS System Files
 .DS_Store
-logs/
-DerivedData/
+.AppleDouble
+.LSOverride
+._*
+
+# Xcode Build & Derived Data
 build/
+DerivedData/
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.pbxuser
+*.mode2v3
+!default.pbxuser
+*.perspectivev3
+!default.pbxuser
+xcuserdata/
+*.xccheckout
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+*.xcarchive
+
+# Swift Package Manager & Dependency Managers
+.build/
+Packages/
+Pods/
+Carthage/Build/
+
+# VS Code & AI Agent Local State
+.vscode/
+
+# Other
+logs/
