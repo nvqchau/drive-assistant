@@ -18,6 +18,7 @@
 		000000000000000000000018 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000000F /* SettingsView.swift */; };
 		000000000000000000000026 /* DiagnosticsLogStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000025 /* DiagnosticsLogStore.swift */; };
 		000000000000000000000027 /* WeatherService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000028 /* WeatherService.swift */; };
+		00000000000000000000002A /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000029 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -34,6 +35,7 @@
 		00000000000000000000000F /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistant/Sources/SettingsView.swift; sourceTree = SOURCE_ROOT; };
 		000000000000000000000025 /* DiagnosticsLogStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistant/Sources/DiagnosticsLogStore.swift; sourceTree = SOURCE_ROOT; };
 		000000000000000000000028 /* WeatherService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistant/Sources/WeatherService.swift; sourceTree = SOURCE_ROOT; };
+		000000000000000000000029 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = DriveAssistant/Assets.xcassets; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -53,6 +55,7 @@
 				000000000000000000000005 /* Sources */,
 				000000000000000000000006 /* Resources */,
 				000000000000000000000007 /* Info.plist */,
+				000000000000000000000029 /* Assets.xcassets */,
 			);
 			path = DriveAssistant;
 			sourceTree = SOURCE_ROOT;
@@ -141,6 +144,7 @@
 			buildActionMask = 0;
 			files = (
 				000000000000000000000010 /* YOLOv3TinyInt8LUT.mlmodel in Resources */,
+				00000000000000000000002A /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -174,6 +178,7 @@
 				EXECUTABLE_NAME = "$(PRODUCT_NAME)";
 				INFOPLIST_FILE = DriveAssistant/Info.plist;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				PRODUCT_BUNDLE_IDENTIFIER = vn.ai.driveassistant;
 				PRODUCT_NAME = DriveAssistant;
@@ -190,6 +195,7 @@
 				EXECUTABLE_NAME = "$(PRODUCT_NAME)";
 				INFOPLIST_FILE = DriveAssistant/Info.plist;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				PRODUCT_BUNDLE_IDENTIFIER = vn.ai.driveassistant;
 				PRODUCT_NAME = DriveAssistant;

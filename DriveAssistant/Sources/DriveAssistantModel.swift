@@ -24,11 +24,15 @@ enum RoadCondition: String, CaseIterable {
 final class DriveAssistantModel: ObservableObject {
     @Published var distance: Double?
     @Published var speedKMPH: Double = 0
+    @Published private(set) var gpsAccuracy: CLLocationAccuracy = .infinity
     @Published var isDangerous = false
     @Published var alertState: ADASAlertState = .normal
     @Published private(set) var closingSpeedMPS: Double = 0
     @Published private(set) var timeToCollision: Double?
     @Published var isSettingsPresented = false
+    @Published var ecoBlackHUD: Bool {
+        didSet { UserDefaults.standard.set(ecoBlackHUD, forKey: "ecoBlackHUD") }
+    }
     @Published var voiceAlertsEnabled = true
     @Published var usesVietnamese = true
     @Published var distanceRuleMode: DistanceRuleMode {
@@ -80,11 +84,13 @@ final class DriveAssistantModel: ObservableObject {
 
     init() {
         let defaults = UserDefaults.standard
+        ecoBlackHUD = defaults.bool(forKey: "ecoBlackHUD")
         distanceRuleMode = DistanceRuleMode(rawValue: defaults.string(forKey: "distanceRuleMode") ?? "") ?? .vnLaw
         roadCondition = RoadCondition(rawValue: defaults.string(forKey: "roadCondition") ?? "") ?? .dry
         camera.attachDiagnostics(diagnostics)
         camera.setCalibrationFactor(calibrationFactor)
         location.$speedKMPH.assign(to: &$speedKMPH)
+        location.$horizontalAccuracy.assign(to: &$gpsAccuracy)
         location.$weatherRoadCondition
             .receive(on: DispatchQueue.main)
             .sink { [weak self] condition in
