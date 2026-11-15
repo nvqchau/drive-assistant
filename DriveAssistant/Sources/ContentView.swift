@@ -1,3 +1,4 @@
+import AVFoundation
 import CoreLocation
 import SwiftUI
 
@@ -37,6 +38,11 @@ struct ContentView: View {
         .statusBarHidden(true)
         .onAppear { model.start() }
         .onDisappear { model.stop() }
+        .overlay(alignment: .top) {
+            if model.camera.cameraAuthorizationStatus == .denied || model.camera.cameraAuthorizationStatus == .restricted {
+                CameraPermissionBanner()
+            }
+        }
     }
 
     private func screenRect(forVisionBox box: CGRect, in screenSize: CGSize) -> CGRect {
@@ -100,6 +106,24 @@ struct ContentView: View {
             }
         }
         .ignoresSafeArea(.all)
+    }
+}
+
+private struct CameraPermissionBanner: View {
+    var body: some View {
+        HStack {
+            Image(systemName: "camera.fill")
+                .font(.system(size: 16, weight: .semibold))
+            Text("Camera access denied. Enable in Settings to use DriveAssistant.")
+                .font(.system(size: 14, weight: .medium, design: .rounded))
+            Spacer()
+        }
+        .foregroundColor(.white)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .background(Color.red.opacity(0.9), in: RoundedRectangle(cornerRadius: 12))
+        .padding(.horizontal, 20)
+        .padding(.top, 12)
     }
 }
 
@@ -194,7 +218,7 @@ private struct DistanceCard: View {
             Text(statusText)
                 .font(.system(size: 13, weight: .bold, design: .rounded))
                 .foregroundColor(color)
-            SegmentedProgressBar(progress: progress, color: color)
+            SegmentedProgressBar(progress: progress, color: color, activeMinimumDistance: model.activeMinimumDistance)
         }
         .padding(18)
         .frame(width: 245, alignment: .leading)
@@ -205,7 +229,11 @@ private struct DistanceCard: View {
 private struct SegmentedProgressBar: View {
     let progress: Double
     let color: Color
-    private let threshold = 2.0 / 3.0
+    let activeMinimumDistance: Double
+
+    private var thresholdRatio: Double {
+        activeMinimumDistance / (activeMinimumDistance * 1.5)
+    }
 
     var body: some View {
         GeometryReader { proxy in
@@ -222,7 +250,7 @@ private struct SegmentedProgressBar: View {
                 Rectangle()
                     .fill(Color.white)
                     .frame(width: 2, height: 14)
-                    .offset(x: proxy.size.width * threshold - 1)
+                    .offset(x: proxy.size.width * thresholdRatio - 1)
             }
         }
         .frame(height: 14)

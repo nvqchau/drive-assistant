@@ -25,8 +25,8 @@ final class PreviewView: UIView {
         AVCaptureVideoPreviewLayer.self
     }
 
-    var previewLayer: AVCaptureVideoPreviewLayer {
-        layer as! AVCaptureVideoPreviewLayer
+    var previewLayer: AVCaptureVideoPreviewLayer? {
+        layer as? AVCaptureVideoPreviewLayer
     }
 
     init(camera: CameraManager) {
@@ -45,8 +45,10 @@ final class PreviewView: UIView {
         backgroundColor = .black
         isOpaque = true
         autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        previewLayer.session = camera.session
-        previewLayer.videoGravity = .resizeAspectFill
+        if let previewLayer = previewLayer {
+            previewLayer.session = camera.session
+            previewLayer.videoGravity = .resizeAspectFill
+        }
         logger.info("Preview created; bounds=\(self.bounds.debugDescription, privacy: .public)")
 
         UIDevice.current.beginGeneratingDeviceOrientationNotifications()
@@ -84,6 +86,7 @@ final class PreviewView: UIView {
     }
 
     func updatePreviewLayout() {
+        guard let previewLayer = previewLayer else { return }
         previewLayer.frame = bounds
         previewLayer.videoGravity = .resizeAspectFill
         camera.updateVideoOrientation()
