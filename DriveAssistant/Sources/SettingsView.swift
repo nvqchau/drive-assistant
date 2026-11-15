@@ -12,8 +12,8 @@ struct SettingsView: View {
             Form {
                 Section(model.usesVietnamese ? "Hiệu chỉnh" : "Calibration") {
                     Picker(model.usesVietnamese ? "Quy tắc khoảng cách" : "Distance rule", selection: $model.distanceRuleMode) {
-                        Text("VN Law (TT38)").tag(DistanceRuleMode.vnLaw)
-                        Text("Time Headway (Seconds)").tag(DistanceRuleMode.timeHeadway)
+                        Text(model.usesVietnamese ? "Luật VN (TT38)" : "VN Law (TT38)").tag(DistanceRuleMode.vnLaw)
+                        Text(model.usesVietnamese ? "Thời gian bám (giây)" : "Time Headway (Seconds)").tag(DistanceRuleMode.timeHeadway)
                     }
                     .pickerStyle(.segmented)
                     VStack(alignment: .leading) { Text(model.usesVietnamese ? "Hệ số khoảng cách" : "Distance calibration factor"); Slider(value: $model.calibrationFactor, in: 0.80...2.20, step: 0.05); Text(String(format: "%.2f", model.calibrationFactor)).font(.caption.monospacedDigit()).foregroundColor(.secondary) }
@@ -21,15 +21,18 @@ struct SettingsView: View {
                         VStack(alignment: .leading) { Text(model.usesVietnamese ? "Thời gian an toàn" : "Safe time headway"); Slider(value: $model.timeHeadway, in: 1.5...4.0, step: 0.1); Text(String(format: "%.1f s", model.timeHeadway)).font(.caption.monospacedDigit()).foregroundColor(.secondary) }
                     } else {
                         Picker(model.usesVietnamese ? "Điều kiện đường" : "Road condition", selection: $model.roadCondition) {
-                            Text("Auto (Weather)").tag(RoadCondition.auto)
-                            Text("Dry Road").tag(RoadCondition.dry)
-                            Text("Rain / Wet").tag(RoadCondition.wet)
+                            Text(model.usesVietnamese ? "Tự động (Thời tiết)" : "Auto (Weather)").tag(RoadCondition.auto)
+                            Text(model.usesVietnamese ? "Đường khô" : "Dry Road").tag(RoadCondition.dry)
+                            Text(model.usesVietnamese ? "Mưa / Ướt" : "Rain / Wet").tag(RoadCondition.wet)
                         }
                         .pickerStyle(.segmented)
                     }
                 }
                 Section(model.usesVietnamese ? "Cảnh báo" : "Alerts") { Toggle(model.usesVietnamese ? "Cảnh báo bằng giọng nói" : "Voice alerts", isOn: $model.voiceAlertsEnabled) }
-                Section(model.usesVietnamese ? "Giao diện" : "Interface") { Picker(model.usesVietnamese ? "Ngôn ngữ" : "Language", selection: $model.usesVietnamese) { Text("Tiếng Việt").tag(true); Text("English").tag(false) }.pickerStyle(.segmented) }
+                Section(model.usesVietnamese ? "Giao diện" : "Interface") {
+                    Picker(model.usesVietnamese ? "Ngôn ngữ" : "Language", selection: $model.usesVietnamese) { Text("Tiếng Việt").tag(true); Text("English").tag(false) }.pickerStyle(.segmented)
+                    Toggle(model.usesVietnamese ? "HUD đen tiết kiệm" : "Eco Black HUD", isOn: $model.ecoBlackHUD)
+                }
                 Section(model.usesVietnamese ? "Chẩn đoán" : "Diagnostics") {
                     Button {
                         exportURL = model.exportDiagnostics()
