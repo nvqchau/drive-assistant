@@ -5,6 +5,15 @@ final class WeatherService {
     private let queue = DispatchQueue(label: "drive-assistant.weather")
     private var lastRequestDate: Date?
     private var lastRequestLocation: CLLocation?
+    private let session: URLSession
+
+    init() {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 8
+        config.timeoutIntervalForResource = 10
+        config.waitsForConnectivity = false
+        self.session = URLSession(configuration: config)
+    }
 
     func update(for location: CLLocation, completion: @escaping (RoadCondition) -> Void) {
         queue.async {
@@ -31,7 +40,7 @@ final class WeatherService {
                 return
             }
 
-            URLSession.shared.dataTask(with: url) { data, response, _ in
+            self.session.dataTask(with: url) { data, response, _ in
                 guard let httpResponse = response as? HTTPURLResponse,
                       (200...299).contains(httpResponse.statusCode),
                       let data,

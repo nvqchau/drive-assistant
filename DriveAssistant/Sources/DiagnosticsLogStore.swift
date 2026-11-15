@@ -1,5 +1,6 @@
 import Foundation
 import UIKit
+import os
 
 struct DiagnosticEvent: Codable {
     let timestamp: Date
@@ -15,6 +16,8 @@ final class DiagnosticsLogStore {
     private var events: [DiagnosticEvent] = []
     private let lock = NSLock()
     private let encoder: JSONEncoder
+    private let maxEvents = 5000
+    private let logger = Logger(subsystem: "vn.ai.driveassistant", category: "Diagnostics")
 
     init() {
         encoder = JSONEncoder()
@@ -26,6 +29,9 @@ final class DiagnosticsLogStore {
         let event = DiagnosticEvent(timestamp: Date(), type: type, speedKMPH: speedKMPH, distanceMeters: distanceMeters, isDangerous: isDangerous, orientation: orientation, details: details)
         lock.lock()
         events.append(event)
+        if events.count > maxEvents {
+            events.removeFirst(events.count - maxEvents)
+        }
         lock.unlock()
     }
 
@@ -53,11 +59,17 @@ final class DiagnosticsLogStore {
         do {
             data = try encoder.encode(payload)
         } catch {
+            logger.error("Failed to encode diagnostics: \(error.localizedDescription, privacy: .public)")
             data = Data("{\"error\":\"Unable to encode diagnostics\"}".utf8)
         }
 
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("DriveAssistant-\(timestamp()).json")
-        try? data.write(to: url, options: .atomic)
+        let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
+        let url = documentsURL.appendingPathComponent("DriveAssistant-\(timestamp()).json")
+        do {
+            try data.write(to: url, options: .atomic)
+        } catch {
+            logger.error("Failed to write diagnostics export: \(error.localizedDescription, privacy: .public)")
+        }
         return url
     }
 

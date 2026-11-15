@@ -16,6 +16,8 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
     @Published private(set) var leadVehicleBox: CGRect?
     @Published private(set) var cameraFrameSize = CGSize(width: 1280, height: 720)
     @Published private(set) var thermalState: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState
+    @Published var cameraAuthorizationStatus: AVAuthorizationStatus = .notDetermined
+    @Published var isModelReady: Bool = false
 
     let session = AVCaptureSession()
     private let output = AVCaptureVideoDataOutput()
@@ -48,7 +50,6 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
     private var thermalObserver: NSObjectProtocol?
     private let thermalLock = NSLock()
     private var currentThermalState = ProcessInfo.processInfo.thermalState
-    // Landscape right interface orientation places the notch on the left.
     private var cachedVideoOrientation: AVCaptureVideoOrientation = .landscapeRight
     private var cachedVisionOrientation: CGImagePropertyOrientation = .up
     private let logger = Logger(subsystem: "vn.ai.driveassistant", category: "Camera")
@@ -82,12 +83,27 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
             self?.updateThermalState()
         }
         updateThermalState()
-        let modelConfiguration = MLModelConfiguration()
-        modelConfiguration.computeUnits = .cpuAndNeuralEngine
-        if let modelURL = Bundle.main.url(forResource: "YOLOv3TinyInt8LUT", withExtension: "mlmodelc"),
-           let model = try? MLModel(contentsOf: modelURL, configuration: modelConfiguration),
-           let visionModel = try? VNCoreMLModel(for: model) {
-            self.visionModel = visionModel
+        loadModelAsync()
+    }
+
+    private func loadModelAsync() {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let modelConfiguration = MLModelConfiguration()
+            modelConfiguration.computeUnits = .cpuAndNeuralEngine
+            if let modelURL = Bundle.main.url(forResource: "YOLOv3TinyInt8LUT", withExtension: "mlmodelc"),
+               let model = try? MLModel(contentsOf: modelURL, configuration: modelConfiguration),
+               let visionModel = try? VNCoreMLModel(for: model) {
+                DispatchQueue.main.async {
+                    self.visionModel = visionModel
+                    self.isModelReady = true
+                    self.logger.info("Vision model loaded and ready")
+                }
+            } else {
+                DispatchQueue.main.async {
+                    self.logger.error("Failed to load Vision model")
+                }
+            }
         }
     }
 
@@ -116,8 +132,16 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
 
     func start() {
         logger.info("Camera start requested")
+        guard isModelReady else {
+            logger.warning("Camera start deferred: model not ready")
+            return
+        }
         AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
             guard let self else { return }
+            let status = AVCaptureDevice.authorizationStatus(for: .video)
+            DispatchQueue.main.async {
+                self.cameraAuthorizationStatus = status
+            }
             self.logger.info("Camera permission result: \(granted ? "granted" : "denied", privacy: .public)")
             guard granted else { return }
             self.sessionQueue.async {
@@ -201,7 +225,7 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
                 self?.recordInferenceDuration(CACurrentMediaTime() - inferenceStart)
                 self?.handle(request: request, pixelBuffer: pixelBuffer)
             }
-            request.imageCropAndScaleOption = .scaleFill
+            request.imageCropAndScaleOption = .scaleFit
             let orientation = visionOrientation
             do {
                 try VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation).perform([request])
@@ -279,6 +303,7 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
     private func updateThermalState() {
         let state = ProcessInfo.processInfo.thermalState
         thermalLock.lock()
+        let wasCritical = currentThermalState == .critical
         let changed = currentThermalState != state
         currentThermalState = state
         thermalLock.unlock()
@@ -291,6 +316,10 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
                 self?.leadVehicleDistance = nil
                 self?.leadVehicleBox = nil
             }
+        } else if wasCritical {
+            trackedBox = nil
+            trackedBoxTimestamp = CACurrentMediaTime()
+            diagnostics?.record(type: "thermal_recovery_tracking_reset", details: "state=\(String(describing: state))")
         }
     }
 
@@ -312,7 +341,9 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
 
     private func updateCachedOrientation(for deviceOrientation: UIDeviceOrientation) {
         guard let videoOrientation = Self.videoOrientation(for: deviceOrientation),
-              let visionOrientation = Self.visionOrientation(for: deviceOrientation) else { return }
+              let visionOrientation = Self.visionOrientation(for: deviceOrientation) else {
+            return
+        }
         orientationLock.lock()
         let changed = cachedVideoOrientation != videoOrientation || cachedVisionOrientation != visionOrientation
         cachedVideoOrientation = videoOrientation
@@ -325,10 +356,12 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
 
     private static func videoOrientation(for deviceOrientation: UIDeviceOrientation) -> AVCaptureVideoOrientation? {
         switch deviceOrientation {
-        // AVCaptureVideoOrientation is opposite to UIDeviceOrientation.
         case .landscapeLeft: return .landscapeRight
         case .landscapeRight: return .landscapeLeft
-        default: return nil
+        case .faceUp, .faceDown, .unknown, .portrait, .portraitUpsideDown:
+            return nil
+        @unknown default:
+            return nil
         }
     }
 
@@ -336,7 +369,10 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
         switch deviceOrientation {
         case .landscapeLeft: return .up
         case .landscapeRight: return .down
-        default: return nil
+        case .faceUp, .faceDown, .unknown, .portrait, .portraitUpsideDown:
+            return nil
+        @unknown default:
+            return nil
         }
     }
 

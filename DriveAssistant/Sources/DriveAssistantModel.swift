@@ -52,9 +52,12 @@ final class DriveAssistantModel: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var smoothedDistance: Double?
     private let distanceEMAAlpha = 0.3
-    private var distanceHistory: [(timestamp: Date, distance: Double)] = []
+    private var distanceHistory: [(timestamp: TimeInterval, distance: Double)] = []
     private let closingSpeedWindow: TimeInterval = 0.5
     private var criticalFrameCount = 0
+    private var lastSpeedKMPH: Double = 0
+    private var lastSpeedUpdateTime: TimeInterval = 0
+    private let maxAccelerationMPS2: Double = 6.0
 
     var safeDistance: Double { max(5, speedKMPH / 3.6 * timeHeadway) }
 
@@ -89,7 +92,14 @@ final class DriveAssistantModel: ObservableObject {
         roadCondition = RoadCondition(rawValue: defaults.string(forKey: "roadCondition") ?? "") ?? .dry
         camera.attachDiagnostics(diagnostics)
         camera.setCalibrationFactor(calibrationFactor)
-        location.$speedKMPH.assign(to: &$speedKMPH)
+
+        location.$speedKMPH
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] newSpeed in
+                self?.applySpeedRateLimit(newSpeed)
+            }
+            .store(in: &cancellables)
+
         location.$horizontalAccuracy.assign(to: &$gpsAccuracy)
         location.$weatherRoadCondition
             .receive(on: DispatchQueue.main)
@@ -126,6 +136,27 @@ final class DriveAssistantModel: ObservableObject {
         $roadCondition.dropFirst().sink { [weak self] _ in self?.updateAlertState() }.store(in: &cancellables)
     }
 
+    private func applySpeedRateLimit(_ newSpeedKMPH: Double) {
+        let now = CACurrentMediaTime()
+        if lastSpeedUpdateTime > 0 {
+            let dt = now - lastSpeedUpdateTime
+            if dt > 0 {
+                let maxDeltaKMPH = maxAccelerationMPS2 * dt * 3.6
+                let delta = newSpeedKMPH - lastSpeedKMPH
+                if abs(delta) > maxDeltaKMPH {
+                    let clampedDelta = delta > 0 ? maxDeltaKMPH : -maxDeltaKMPH
+                    speedKMPH = lastSpeedKMPH + clampedDelta
+                    lastSpeedUpdateTime = now
+                    lastSpeedKMPH = speedKMPH
+                    return
+                }
+            }
+        }
+        speedKMPH = newSpeedKMPH
+        lastSpeedKMPH = newSpeedKMPH
+        lastSpeedUpdateTime = now
+    }
+
     func start() {
         diagnostics.record(type: "session_started", orientation: String(describing: UIDevice.current.orientation))
         camera.start()
@@ -157,18 +188,18 @@ final class DriveAssistantModel: ObservableObject {
     }
 
     private func updateDistanceHistory(distance: Double) {
-        let now = Date()
+        let now = CACurrentMediaTime()
         distanceHistory.append((now, distance))
-        let cutoff = now.addingTimeInterval(-closingSpeedWindow)
+        let cutoff = now - closingSpeedWindow
         distanceHistory.removeAll { $0.timestamp < cutoff }
 
         guard let oldest = distanceHistory.first,
-              now.timeIntervalSince(oldest.timestamp) > 0 else {
+              now - oldest.timestamp > 0 else {
             closingSpeedMPS = 0
             timeToCollision = nil
             return
         }
-        let elapsed = now.timeIntervalSince(oldest.timestamp)
+        let elapsed = now - oldest.timestamp
         let closingSpeed = max(0, (oldest.distance - distance) / elapsed)
         closingSpeedMPS = closingSpeed
         timeToCollision = closingSpeed > 0.5 ? distance / closingSpeed : nil
