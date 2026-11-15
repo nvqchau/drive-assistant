@@ -1,0 +1,244 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		000000000000000000000010 /* YOLOv3TinyInt8LUT.mlmodel in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000003 /* YOLOv3TinyInt8LUT.mlmodel */; };
+		000000000000000000000011 /* DriveAssistantApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000008 /* DriveAssistantApp.swift */; };
+		000000000000000000000012 /* DriveAssistantModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000009 /* DriveAssistantModel.swift */; };
+		000000000000000000000013 /* LocationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000000A /* LocationManager.swift */; };
+		000000000000000000000014 /* CameraManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000000B /* CameraManager.swift */; };
+		000000000000000000000015 /* AlertManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000000C /* AlertManager.swift */; };
+		000000000000000000000016 /* CameraPreview.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000000D /* CameraPreview.swift */; };
+		000000000000000000000017 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000000E /* ContentView.swift */; };
+		000000000000000000000018 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000000F /* SettingsView.swift */; };
+		000000000000000000000026 /* DiagnosticsLogStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000025 /* DiagnosticsLogStore.swift */; };
+		000000000000000000000027 /* WeatherService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000028 /* WeatherService.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		000000000000000000000001 /* DriveAssistant.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; path = DriveAssistant.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		000000000000000000000003 /* YOLOv3TinyInt8LUT.mlmodel */ = {isa = PBXFileReference; lastKnownFileType = file.mlmodel; path = YOLOv3TinyInt8LUT.mlmodel; sourceTree = SOURCE_ROOT; };
+		000000000000000000000007 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = DriveAssistant/Info.plist; sourceTree = SOURCE_ROOT; };
+		000000000000000000000008 /* DriveAssistantApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistant/Sources/DriveAssistantApp.swift; sourceTree = SOURCE_ROOT; };
+		000000000000000000000009 /* DriveAssistantModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistant/Sources/DriveAssistantModel.swift; sourceTree = SOURCE_ROOT; };
+		00000000000000000000000A /* LocationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistant/Sources/LocationManager.swift; sourceTree = SOURCE_ROOT; };
+		00000000000000000000000B /* CameraManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistant/Sources/CameraManager.swift; sourceTree = SOURCE_ROOT; };
+		00000000000000000000000C /* AlertManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistant/Sources/AlertManager.swift; sourceTree = SOURCE_ROOT; };
+		00000000000000000000000D /* CameraPreview.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistant/Sources/CameraPreview.swift; sourceTree = SOURCE_ROOT; };
+		00000000000000000000000E /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistant/Sources/ContentView.swift; sourceTree = SOURCE_ROOT; };
+		00000000000000000000000F /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistant/Sources/SettingsView.swift; sourceTree = SOURCE_ROOT; };
+		000000000000000000000025 /* DiagnosticsLogStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistant/Sources/DiagnosticsLogStore.swift; sourceTree = SOURCE_ROOT; };
+		000000000000000000000028 /* WeatherService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistant/Sources/WeatherService.swift; sourceTree = SOURCE_ROOT; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		000000000000000000000024 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 0;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		000000000000000000000004 /* DriveAssistant */ = {
+			isa = PBXGroup;
+			children = (
+				000000000000000000000005 /* Sources */,
+				000000000000000000000006 /* Resources */,
+				000000000000000000000007 /* Info.plist */,
+			);
+			path = DriveAssistant;
+			sourceTree = SOURCE_ROOT;
+		};
+		000000000000000000000005 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				000000000000000000000008 /* DriveAssistantApp.swift */,
+				000000000000000000000009 /* DriveAssistantModel.swift */,
+				00000000000000000000000A /* LocationManager.swift */,
+				00000000000000000000000B /* CameraManager.swift */,
+				00000000000000000000000C /* AlertManager.swift */,
+				00000000000000000000000D /* CameraPreview.swift */,
+				00000000000000000000000E /* ContentView.swift */,
+				00000000000000000000000F /* SettingsView.swift */,
+				000000000000000000000025 /* DiagnosticsLogStore.swift */,
+				000000000000000000000028 /* WeatherService.swift */,
+			);
+			path = Sources;
+			sourceTree = SOURCE_ROOT;
+		};
+		000000000000000000000006 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				000000000000000000000003 /* YOLOv3TinyInt8LUT.mlmodel */,
+			);
+			path = Resources;
+			sourceTree = SOURCE_ROOT;
+		};
+		000000000000000000000020 = {
+			isa = PBXGroup;
+			children = (
+				000000000000000000000004 /* DriveAssistant */,
+				000000000000000000000001 /* DriveAssistant.app */,
+			);
+			sourceTree = GROUP;
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		000000000000000000000021 /* DriveAssistant */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 000000000000000000000031 /* Build configuration list for PBXNativeTarget "DriveAssistant" */;
+			buildPhases = (
+				000000000000000000000022 /* Sources */,
+				000000000000000000000023 /* Resources */,
+				000000000000000000000024 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = DriveAssistant;
+			productName = DriveAssistant;
+			productReference = 000000000000000000000001 /* DriveAssistant.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		000000000000000000000030 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+			};
+			buildConfigurationList = 000000000000000000000032 /* Build configuration list for PBXProject "DriveAssistant" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 000000000000000000000020;
+			productRefGroup = 000000000000000000000020;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				000000000000000000000021 /* DriveAssistant */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		000000000000000000000023 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 0;
+			files = (
+				000000000000000000000010 /* YOLOv3TinyInt8LUT.mlmodel in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		000000000000000000000022 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 0;
+			files = (
+				000000000000000000000011 /* DriveAssistantApp.swift in Sources */,
+				000000000000000000000012 /* DriveAssistantModel.swift in Sources */,
+				000000000000000000000013 /* LocationManager.swift in Sources */,
+				000000000000000000000014 /* CameraManager.swift in Sources */,
+				000000000000000000000015 /* AlertManager.swift in Sources */,
+				000000000000000000000016 /* CameraPreview.swift in Sources */,
+				000000000000000000000017 /* ContentView.swift in Sources */,
+				000000000000000000000018 /* SettingsView.swift in Sources */,
+				000000000000000000000026 /* DiagnosticsLogStore.swift in Sources */,
+				000000000000000000000027 /* WeatherService.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		000000000000000000000033 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				DEVELOPMENT_TEAM = NQZUDVV3YM;
+				EXECUTABLE_NAME = "$(PRODUCT_NAME)";
+				INFOPLIST_FILE = DriveAssistant/Info.plist;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				PRODUCT_BUNDLE_IDENTIFIER = vn.ai.driveassistant;
+				PRODUCT_NAME = DriveAssistant;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		000000000000000000000034 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				DEVELOPMENT_TEAM = NQZUDVV3YM;
+				EXECUTABLE_NAME = "$(PRODUCT_NAME)";
+				INFOPLIST_FILE = DriveAssistant/Info.plist;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				PRODUCT_BUNDLE_IDENTIFIER = vn.ai.driveassistant;
+				PRODUCT_NAME = DriveAssistant;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		000000000000000000000035 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		000000000000000000000036 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		000000000000000000000031 /* Build configuration list for PBXNativeTarget "DriveAssistant" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				000000000000000000000033 /* Debug */,
+				000000000000000000000034 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		000000000000000000000032 /* Build configuration list for PBXProject "DriveAssistant" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				000000000000000000000035 /* Debug */,
+				000000000000000000000036 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 000000000000000000000030 /* Project object */;
+}
