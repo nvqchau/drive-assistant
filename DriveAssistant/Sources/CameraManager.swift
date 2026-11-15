@@ -14,6 +14,7 @@ struct VehicleObservation: Identifiable {
 final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     @Published private(set) var leadVehicleDistance: Double?
     @Published private(set) var leadVehicleBox: CGRect?
+    @Published private(set) var thermalState: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState
 
     let session = AVCaptureSession()
     private let output = AVCaptureVideoDataOutput()
@@ -22,7 +23,8 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
     private var visionModel: VNCoreMLModel?
     private var isConfigured = false
     private var lastInference = CACurrentMediaTime()
-    private let minimumInferenceInterval = 1.0 / 20.0
+    private let normalInferenceInterval = 1.0 / 10.0
+    private let seriousInferenceInterval = 1.0 / 5.0
     private let calibrationLock = NSLock()
     private var calibrationFactor: Double = 1.40
     private var orientationObserver: NSObjectProtocol?
@@ -30,6 +32,9 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
     private let orientationLock = NSLock()
     private var diagnostics: DiagnosticsLogStore?
     private var hasLoggedFrameFormat = false
+    private var thermalObserver: NSObjectProtocol?
+    private let thermalLock = NSLock()
+    private var currentThermalState = ProcessInfo.processInfo.thermalState
     // Landscape right interface orientation places the notch on the left.
     private var cachedVideoOrientation: AVCaptureVideoOrientation = .landscapeRight
     private var cachedVisionOrientation: CGImagePropertyOrientation = .up
@@ -56,6 +61,14 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
             let error = notification.userInfo?[AVCaptureSessionErrorKey] as? NSError
             self?.logger.error("Capture session runtime error: domain=\(error?.domain ?? "unknown", privacy: .public) code=\(error?.code ?? -1, privacy: .public)")
         }
+        thermalObserver = NotificationCenter.default.addObserver(
+            forName: ProcessInfo.thermalStateDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.updateThermalState()
+        }
+        updateThermalState()
         if let modelURL = Bundle.main.url(forResource: "YOLOv3TinyInt8LUT", withExtension: "mlmodelc"),
            let model = try? MLModel(contentsOf: modelURL),
            let visionModel = try? VNCoreMLModel(for: model) {
@@ -79,6 +92,9 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
         }
         if let runtimeErrorObserver {
             NotificationCenter.default.removeObserver(runtimeErrorObserver)
+        }
+        if let thermalObserver {
+            NotificationCenter.default.removeObserver(thermalObserver)
         }
         UIDevice.current.endGeneratingDeviceOrientationNotifications()
     }
@@ -123,6 +139,7 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
             return
         }
         session.addInput(input)
+        configureFrameRate(for: device)
         output.alwaysDiscardsLateVideoFrames = true
         output.setSampleBufferDelegate(self, queue: queue)
         guard session.canAddOutput(output) else {
@@ -135,8 +152,13 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         updateVideoOrientation(connection: connection)
+        let thermalState = thermalStateForInference()
+        if thermalState == .critical {
+            return
+        }
         let now = CACurrentMediaTime()
-        guard now - lastInference >= minimumInferenceInterval, let visionModel else { return }
+        let interval = thermalState == .serious ? seriousInferenceInterval : normalInferenceInterval
+        guard now - lastInference >= interval, let visionModel else { return }
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
             logger.error("Capture frame has no pixel buffer")
             return
@@ -162,6 +184,49 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
                 logger.error("Vision handler failed: \(error.localizedDescription, privacy: .public)")
             }
         }
+    }
+
+    private func configureFrameRate(for device: AVCaptureDevice) {
+        let targetFrameDuration = CMTime(value: 1, timescale: 15)
+        guard device.activeFormat.videoSupportedFrameRateRanges.contains(where: {
+            $0.minFrameRate <= 15 && $0.maxFrameRate >= 15
+        }) else {
+            logger.warning("15 FPS not supported by active camera format")
+            return
+        }
+        do {
+            try device.lockForConfiguration()
+            device.activeVideoMinFrameDuration = targetFrameDuration
+            device.activeVideoMaxFrameDuration = targetFrameDuration
+            device.unlockForConfiguration()
+            logger.info("Camera frame rate limited to 15 FPS")
+        } catch {
+            logger.error("Unable to configure camera frame rate: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func updateThermalState() {
+        let state = ProcessInfo.processInfo.thermalState
+        thermalLock.lock()
+        let changed = currentThermalState != state
+        currentThermalState = state
+        thermalLock.unlock()
+        thermalState = state
+        guard changed else { return }
+        diagnostics?.record(type: "thermal_state_changed", details: "state=\(String(describing: state))")
+        logger.warning("Thermal state changed: \(String(describing: state), privacy: .public)")
+        if state == .critical {
+            DispatchQueue.main.async { [weak self] in
+                self?.leadVehicleDistance = nil
+                self?.leadVehicleBox = nil
+            }
+        }
+    }
+
+    private func thermalStateForInference() -> ProcessInfo.ThermalState {
+        thermalLock.lock()
+        defer { thermalLock.unlock() }
+        return currentThermalState
     }
 
     func updateVideoOrientation() {

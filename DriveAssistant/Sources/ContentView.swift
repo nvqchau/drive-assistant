@@ -28,7 +28,10 @@ struct ContentView: View {
             ZStack {
                 VStack {
                     HStack(alignment: .top) {
-                        SpeedCard(speedKMPH: model.speedKMPH)
+                        VStack(alignment: .leading, spacing: 8) {
+                            SpeedCard(speedKMPH: model.speedKMPH)
+                            ThermalBadge(state: model.camera.thermalState)
+                        }
                         Spacer()
                         DistanceCard(model: model)
                     }
@@ -57,6 +60,21 @@ struct ContentView: View {
             }
         }
         .ignoresSafeArea(.all)
+    }
+}
+
+private struct ThermalBadge: View {
+    let state: ProcessInfo.ThermalState
+
+    var body: some View {
+        if state == .serious || state == .critical {
+            Label(state == .critical ? "AI paused" : "Phone warm", systemImage: "thermometer.high")
+                .font(.system(size: 12, weight: .bold, design: .rounded))
+                .foregroundColor(.orange)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.black.opacity(0.78), in: Capsule())
+        }
     }
 }
 
