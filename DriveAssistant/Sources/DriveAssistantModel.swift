@@ -88,6 +88,16 @@ final class DriveAssistantModel: ObservableObject {
         didSet { UserDefaults.standard.set(stopAndGoAlertEnabled, forKey: "stopAndGoAlertEnabled") }
     }
 
+    // Traffic Sign Recognition (TSR)
+    @Published var enableSpeedSignRecognition: Bool = true {
+        didSet { UserDefaults.standard.set(enableSpeedSignRecognition, forKey: "enableSpeedSignRecognition") }
+    }
+    @Published var overspeedToleranceKmh: Double = 3.0 {
+        didSet { UserDefaults.standard.set(overspeedToleranceKmh, forKey: "overspeedToleranceKmh") }
+    }
+    @Published private(set) var detectedSpeedLimit: Int?
+    @Published private(set) var isOverspeeding: Bool = false
+
     // Display Theme & Mirror Mode
     @Published var displayThemeMode: DisplayThemeMode = .auto {
         didSet { UserDefaults.standard.set(displayThemeMode.rawValue, forKey: "displayThemeMode") }
@@ -304,6 +314,24 @@ final class DriveAssistantModel: ObservableObject {
                 if active {
                     self?.alerts.playLaneDepartureAlert(speak: self?.voiceAlertsEnabled ?? false)
                 }
+            }
+            .store(in: &cancellables)
+
+        // Traffic Sign Recognition (TSR) - subscribe to camera's trafficSignDetector
+        camera.trafficSignDetector.$detectedSpeedLimit
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] limit in
+                self?.detectedSpeedLimit = limit
+                self?.updateOverspeedState()
+            }
+            .store(in: &cancellables)
+
+        // Overspeed alert state - update when speed or tolerance changes
+        $speedKMPH
+            .combineLatest($overspeedToleranceKmh)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _, _ in
+                self?.updateOverspeedState()
             }
             .store(in: &cancellables)
 
@@ -526,6 +554,25 @@ final class DriveAssistantModel: ObservableObject {
             }
         } else {
             departureDetectedStartTime = nil
+        }
+    }
+
+    /// Overspeed alert based on detected speed limit sign
+    private func updateOverspeedState() {
+        guard enableSpeedSignRecognition else {
+            isOverspeeding = false
+            return
+        }
+        guard let limit = detectedSpeedLimit else {
+            isOverspeeding = false
+            return
+        }
+        let newOverspeeding = speedKMPH > Double(limit) + overspeedToleranceKmh
+        if newOverspeeding != isOverspeeding {
+            isOverspeeding = newOverspeeding
+            if isOverspeeding {
+                alerts.playOverspeedAlert(limit: limit, speak: voiceAlertsEnabled)
+            }
         }
     }
 

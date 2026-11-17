@@ -22,7 +22,10 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
     @Published private(set) var leadVehicleConfidence: Float = 0
     @Published private(set) var outOfROIVehicles: [(CGRect, Float, String)] = []
     @Published private(set) var inROIVehicles: [(CGRect, Float, String)] = []
-    
+
+    // Traffic sign detector (TSR)
+    let trafficSignDetector = TrafficSignDetector()
+
     // Live camera ambient luminance
     @Published private(set) var isLowLightScene: Bool = false
     @Published private(set) var hasValidCameraBrightness: Bool = false
@@ -346,7 +349,11 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
         if inferenceCount % 2 == 0 && thermal != .serious && thermal != .critical {
             laneDetector?.processFrame(pixelBuffer: pixelBuffer, speedKMPH: currentSpeedKMPH)
         }
-        
+
+        // Feed frame to traffic sign detector (TSR) - lightweight 2 Hz OCR + red-ring verification
+        trafficSignDetector.setThermalState(thermal)
+        trafficSignDetector.processFrameIfNeeded(pixelBuffer)
+
         autoreleasepool {
             let inferenceStart = CACurrentMediaTime()
             let request = VNCoreMLRequest(model: visionModel) { [weak self] request, error in

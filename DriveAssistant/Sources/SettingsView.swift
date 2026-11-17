@@ -99,6 +99,18 @@ struct SettingsView: View {
                 Section(model.usesVietnamese ? "Cảnh báo" : "Alerts") {
                     Toggle(model.usesVietnamese ? "Cảnh báo bằng giọng nói" : "Voice alerts", isOn: $model.voiceAlertsEnabled)
                     Toggle(model.usesVietnamese ? "Nhắc xe trước di chuyển" : "Stop-and-Go Alert", isOn: $model.stopAndGoAlertEnabled)
+                    Toggle(model.usesVietnamese ? "Nhận diện biển báo tốc độ" : "Speed Sign Recognition", isOn: $model.enableSpeedSignRecognition)
+
+                    if model.enableSpeedSignRecognition {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(model.usesVietnamese ? "Dung sai vượt giới hạn: \(Int(model.overspeedToleranceKmh)) km/h" : "Overspeed tolerance: \(Int(model.overspeedToleranceKmh)) km/h")
+                                .font(.subheadline)
+                            Slider(value: $model.overspeedToleranceKmh, in: 0...10, step: 1)
+                            Text(model.usesVietnamese ? "Cảnh báo khi vượt quá tốc độ biển báo + dung sai" : "Alert when exceeding sign speed + tolerance")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
                 }
                 
                 Section(model.usesVietnamese ? "Phát hiện làn đường" : "Lane Detection") {
