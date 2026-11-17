@@ -87,10 +87,11 @@ final class TrafficSignDetector: ObservableObject {
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
         let extent = ciImage.extent
 
-        // Crop ROI (normalized coordinates → pixel coordinates)
+        // Crop ROI: roiRect uses top-left origin (0,0 = top-left), CIImage uses bottom-left origin
+        // Convert: CIImage y = (1 - topLeftY - height) * extent.height
         let cropRect = CGRect(
             x: roiRect.minX * extent.width,
-            y: roiRect.minY * extent.height,
+            y: (1.0 - roiRect.maxY) * extent.height,
             width: roiRect.width * extent.width,
             height: roiRect.height * extent.height
         )
@@ -236,9 +237,10 @@ final class TrafficSignDetector: ObservableObject {
     /// Returns ratio of border pixels where R > 145 && R > G*1.4 && R > B*1.4
     private func measureRedRingRatio(in image: CIImage, normalizedBox: CGRect, scale: CGFloat) -> Float {
         let extent = image.extent
+        // Vision boundingBox uses bottom-left origin, matching CIImage
         let pixelBox = CGRect(
             x: normalizedBox.minX * extent.width,
-            y: (1 - normalizedBox.maxY) * extent.height,
+            y: normalizedBox.minY * extent.height,
             width: normalizedBox.width * extent.width,
             height: normalizedBox.height * extent.height
         )
@@ -252,7 +254,9 @@ final class TrafficSignDetector: ObservableObject {
         let scaleFactor = min(32.0 / clampedBox.width, 32.0 / clampedBox.height, 1.0)
         let scaledImage = ringRegion.transformed(by: CGAffineTransform(scaleX: scaleFactor, y: scaleFactor))
 
-        guard let cgImage = ciContext.createCGImage(scaledImage, from: scaledImage.extent) else { return 0 }
+        // Render with explicit RGBA8 format to guarantee R=bytes[0], G=bytes[1], B=bytes[2]
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let cgImage = ciContext.createCGImage(scaledImage, from: scaledImage.extent, format: .RGBA8, colorSpace: colorSpace) else { return 0 }
         guard let data = cgImage.dataProvider?.data else { return 0 }
         let bytes = CFDataGetBytePtr(data)
         let width = cgImage.width
@@ -296,9 +300,10 @@ final class TrafficSignDetector: ObservableObject {
     /// Samples band where |(1 - u) - v| < 0.14 in normalized box coordinates.
     private func measureDarkDiagonalRatio(in image: CIImage, normalizedBox: CGRect, scale: CGFloat) -> Float {
         let extent = image.extent
+        // Vision boundingBox uses bottom-left origin, matching CIImage
         let pixelBox = CGRect(
             x: normalizedBox.minX * extent.width,
-            y: (1 - normalizedBox.maxY) * extent.height,
+            y: normalizedBox.minY * extent.height,
             width: normalizedBox.width * extent.width,
             height: normalizedBox.height * extent.height
         )
@@ -312,7 +317,9 @@ final class TrafficSignDetector: ObservableObject {
         let scaleFactor = min(48.0 / clampedBox.width, 48.0 / clampedBox.height, 1.0)
         let scaledImage = ringRegion.transformed(by: CGAffineTransform(scaleX: scaleFactor, y: scaleFactor))
 
-        guard let cgImage = ciContext.createCGImage(scaledImage, from: scaledImage.extent) else { return 0 }
+        // Render with explicit RGBA8 format to guarantee R=bytes[0], G=bytes[1], B=bytes[2]
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let cgImage = ciContext.createCGImage(scaledImage, from: scaledImage.extent, format: .RGBA8, colorSpace: colorSpace) else { return 0 }
         guard let data = cgImage.dataProvider?.data else { return 0 }
         let bytes = CFDataGetBytePtr(data)
         let width = cgImage.width
