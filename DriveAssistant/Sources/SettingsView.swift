@@ -96,7 +96,10 @@ struct SettingsView: View {
                     }
                 }
                 
-                Section(model.usesVietnamese ? "Cảnh báo" : "Alerts") { Toggle(model.usesVietnamese ? "Cảnh báo bằng giọng nói" : "Voice alerts", isOn: $model.voiceAlertsEnabled) }
+                Section(model.usesVietnamese ? "Cảnh báo" : "Alerts") {
+                    Toggle(model.usesVietnamese ? "Cảnh báo bằng giọng nói" : "Voice alerts", isOn: $model.voiceAlertsEnabled)
+                    Toggle(model.usesVietnamese ? "Nhắc xe trước di chuyển" : "Stop-and-Go Alert", isOn: $model.stopAndGoAlertEnabled)
+                }
                 
                 Section(model.usesVietnamese ? "Phát hiện làn đường" : "Lane Detection") {
                     Toggle(model.usesVietnamese ? "Bật LDWS" : "Enable LDWS", isOn: $model.enableLaneDetection)

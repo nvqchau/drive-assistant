@@ -137,10 +137,10 @@ extension AlertManager {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
             self.playLowChime()
         }
-        
+
         // Haptic feedback
         hapticGenerator.notificationOccurred(.warning)
-        
+
         if speak {
             let utterance = AVSpeechUtterance(string: "Cảnh báo lệch làn")
             utterance.voice = AVSpeechSynthesisVoice(language: "vi-VN")
@@ -150,5 +150,70 @@ extension AlertManager {
             } catch { }
             synthesizer.speak(utterance)
         }
+    }
+
+    // MARK: - Stop-and-Go Alert (Lead Vehicle Departure)
+    func playStopAndGoAlert(speak: Bool) {
+        // Ascending two-note chime: C5 (523.25 Hz) -> E5 (659.25 Hz), 0.15s apart
+        playAscendingChime(note1Freq: 523.25, note2Freq: 659.25, gap: 0.15)
+
+        // Gentle success haptic
+        hapticGenerator.notificationOccurred(.success)
+
+        if speak {
+            let utterance = AVSpeechUtterance(string: "Xe phía trước đã di chuyển")
+            utterance.voice = AVSpeechSynthesisVoice(language: "vi-VN")
+            utterance.rate = 0.48
+            do {
+                try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+            } catch { }
+            synthesizer.speak(utterance)
+        }
+    }
+
+    private func playAscendingChime(note1Freq: Double, note2Freq: Double, gap: Double) {
+        let sampleRate = audioEngine.mainMixerNode.outputFormat(forBus: 0).sampleRate
+        let noteDuration = 0.12
+        let frameCount = AVAudioFrameCount(sampleRate * noteDuration)
+
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1) else { return }
+
+        // Note 1
+        if let buffer1 = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) {
+            buffer1.frameLength = frameCount
+            let channelData = buffer1.floatChannelData?[0]
+            for frame in 0..<Int(frameCount) {
+                let t = Double(frame) / sampleRate
+                let envelope = exp(-t * 10.0)
+                let sample = sin(2.0 * .pi * note1Freq * t) * envelope * 0.25
+                channelData?[frame] = Float(sample)
+            }
+            playerNode.scheduleBuffer(buffer1, at: nil, options: .interrupts, completionHandler: nil)
+        }
+
+        // Note 2 (delayed)
+        DispatchQueue.main.asyncAfter(deadline: .now() + gap) { [weak self] in
+            guard let self,
+                  let buffer2 = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
+            buffer2.frameLength = frameCount
+            let channelData = buffer2.floatChannelData?[0]
+            for frame in 0..<Int(frameCount) {
+                let t = Double(frame) / sampleRate
+                let envelope = exp(-t * 10.0)
+                let sample = sin(2.0 * .pi * note2Freq * t) * envelope * 0.25
+                channelData?[frame] = Float(sample)
+            }
+            self.playerNode.scheduleBuffer(buffer2, at: nil, options: .interrupts, completionHandler: nil)
+            if !self.audioEngine.isRunning {
+                try? self.audioEngine.start()
+            }
+            self.playerNode.play()
+        }
+
+        // Play first note immediately
+        if !audioEngine.isRunning {
+            try? audioEngine.start()
+        }
+        playerNode.play()
     }
 }

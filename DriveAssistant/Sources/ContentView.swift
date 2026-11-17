@@ -368,6 +368,16 @@ private struct DistanceCard: View {
         return .cyan
     }
 
+    // Stop-and-Go alert status (emerald when active)
+    private var stopAndGoStatusText: String? {
+        guard model.isLeadVehicleMovingAlertActive else { return nil }
+        return model.usesVietnamese ? "Xe trước đã di chuyển" : "Lead vehicle moving"
+    }
+
+    private var stopAndGoStatusColor: Color {
+        Color(red: 0.0, green: 0.902, blue: 0.463)  // Emerald
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .lastTextBaseline, spacing: 7) {
@@ -391,11 +401,20 @@ private struct DistanceCard: View {
                     .foregroundColor(calibrationStatusColor)
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
+
+            // Stop-and-Go alert status
+            if let statusText = stopAndGoStatusText {
+                Text(statusText)
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundColor(stopAndGoStatusColor)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
         }
         .padding(18)
         .frame(width: 245, alignment: .leading)
         .glassCard(cornerRadius: 20, enabled: model.glassHUD, nightDim: nightDim)
         .animation(.easeInOut(duration: 0.3), value: calibrationStatusText)
+        .animation(.easeInOut(duration: 0.3), value: stopAndGoStatusText)
     }
 }
 
