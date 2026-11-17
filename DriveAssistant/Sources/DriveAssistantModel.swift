@@ -79,12 +79,15 @@ final class DriveAssistantModel: ObservableObject {
         didSet { UserDefaults.standard.set(enableLaneDetection, forKey: "enableLaneDetection") }
     }
     @Published var ldwsMinSpeedKmh: Double = 50.0 {
-        didSet { 
+        didSet {
             UserDefaults.standard.set(ldwsMinSpeedKmh, forKey: "ldwsMinSpeedKmh")
             laneDetector.setMinSpeedForDepartureAlert(ldwsMinSpeedKmh)
         }
     }
-    
+    @Published var stopAndGoAlertEnabled: Bool = true {
+        didSet { UserDefaults.standard.set(stopAndGoAlertEnabled, forKey: "stopAndGoAlertEnabled") }
+    }
+
     // Display Theme & Mirror Mode
     @Published var displayThemeMode: DisplayThemeMode = .auto {
         didSet { UserDefaults.standard.set(displayThemeMode.rawValue, forKey: "displayThemeMode") }
@@ -140,6 +143,16 @@ final class DriveAssistantModel: ObservableObject {
     private var lastTrackedConfidence: Float = 0
     private var horizonCalibrationFrames = 0
 
+    // Stop-and-Go (Lead Vehicle Departure) state machine
+    @Published var isLeadVehicleMovingAlertActive: Bool = false
+    private var stopAndGoArmed = false
+    private var stoppedLeadDistance: Double = 0
+    private var leadVehicleStableStartTime: TimeInterval?
+    private var leadVehicleGoneStartTime: TimeInterval?
+    private var departureDetectedStartTime: TimeInterval?
+    private var lastStopAndGoAlertTime: TimeInterval = 0
+    private let stopAndGoAlertCooldown: TimeInterval = 8.0  // prevent re-trigger within same stop
+
     var safeDistance: Double { max(5, speedKMPH / 3.6 * timeHeadway) }
 
     var baseSafeDistance: Double {
@@ -180,6 +193,7 @@ final class DriveAssistantModel: ObservableObject {
         showHorizonGuide = defaults.object(forKey: "showHorizonGuide") as? Bool ?? true
         enableLaneDetection = defaults.object(forKey: "enableLaneDetection") as? Bool ?? true
         ldwsMinSpeedKmh = defaults.object(forKey: "ldwsMinSpeedKmh") as? Double ?? 50.0
+        stopAndGoAlertEnabled = defaults.object(forKey: "stopAndGoAlertEnabled") as? Bool ?? true
         displayThemeMode = DisplayThemeMode(rawValue: defaults.string(forKey: "displayThemeMode") ?? "") ?? .auto
         hudMirrorMode = defaults.bool(forKey: "hudMirrorMode")
         if hudMirrorMode {
@@ -416,6 +430,9 @@ final class DriveAssistantModel: ObservableObject {
         } else {
             setAlertState(.normal)
         }
+
+        // Stop-and-Go alert logic
+        updateStopAndGoAlert(distance: distance)
     }
 
     private func setAlertState(_ state: ADASAlertState) {
@@ -427,7 +444,91 @@ final class DriveAssistantModel: ObservableObject {
         isDangerous = state == .critical
         diagnostics.record(type: "alert_state_changed", speedKMPH: speedKMPH, distanceMeters: distance, isDangerous: isDangerous, orientation: String(describing: UIDevice.current.orientation), details: "state=\(String(describing: state)), closingSpeedMPS=\(closingSpeedMPS), ttc=\(timeToCollision.map { String($0) } ?? "nil")")
     }
-    
+
+    /// Stop-and-Go (Lead Vehicle Departure) alert
+    private func updateStopAndGoAlert(distance: Double) {
+        let now = CACurrentMediaTime()
+
+        // Disarm if speed >= 5 km/h (moving)
+        if speedKMPH >= 5.0 {
+            if stopAndGoArmed {
+                stopAndGoArmed = false
+                stoppedLeadDistance = 0
+                leadVehicleStableStartTime = nil
+                departureDetectedStartTime = nil
+            }
+            leadVehicleGoneStartTime = nil
+            return
+        }
+
+        // Disarm if lead vehicle gone for > 1.5s (distance > 20m means no lead vehicle)
+        if distance > 20.0 {
+            if leadVehicleGoneStartTime == nil {
+                leadVehicleGoneStartTime = now
+            } else if now - leadVehicleGoneStartTime! >= 1.5 {
+                if stopAndGoArmed {
+                    stopAndGoArmed = false
+                    stoppedLeadDistance = 0
+                    leadVehicleStableStartTime = nil
+                    departureDetectedStartTime = nil
+                }
+                leadVehicleGoneStartTime = nil
+            }
+            return
+        } else {
+            leadVehicleGoneStartTime = nil
+        }
+
+        // Arm: stopped (speed < 3), lead vehicle at 1.5-9m for >= 2.5s
+        let hasLeadVehicleInRange = distance >= 1.5 && distance <= 9.0
+        if stopAndGoAlertEnabled && speedKMPH < 3.0 && hasLeadVehicleInRange {
+            if leadVehicleStableStartTime == nil {
+                leadVehicleStableStartTime = now
+            } else if now - leadVehicleStableStartTime! >= 2.5 && !stopAndGoArmed {
+                stopAndGoArmed = true
+                stoppedLeadDistance = distance  // minimum distance while stopped
+                departureDetectedStartTime = nil
+            }
+        } else {
+            leadVehicleStableStartTime = nil
+        }
+
+        // While armed and stopped, watch for distance increase >= 1.8m above stoppedLeadDistance
+        if stopAndGoArmed && speedKMPH < 3.0 && closingSpeedMPS == 0 {
+            let distanceIncrease = distance - stoppedLeadDistance
+            if distanceIncrease >= 1.8 {
+                if departureDetectedStartTime == nil {
+                    departureDetectedStartTime = now
+                } else if now - departureDetectedStartTime! >= 0.4 {
+                    // Trigger alert (respect cooldown)
+                    if now - lastStopAndGoAlertTime >= stopAndGoAlertCooldown {
+                        alerts.playStopAndGoAlert(speak: voiceAlertsEnabled)
+                        lastStopAndGoAlertTime = now
+                        isLeadVehicleMovingAlertActive = true
+
+                        // Auto-hide after 3s
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+                            self?.isLeadVehicleMovingAlertActive = false
+                        }
+                    }
+                    // Disarm after trigger (only once per stop)
+                    stopAndGoArmed = false
+                    stoppedLeadDistance = 0
+                    leadVehicleStableStartTime = nil
+                    departureDetectedStartTime = nil
+                }
+            } else {
+                departureDetectedStartTime = nil
+                // Update stoppedLeadDistance to track minimum distance while stopped
+                if distance < stoppedLeadDistance || stoppedLeadDistance == 0 {
+                    stoppedLeadDistance = distance
+                }
+            }
+        } else {
+            departureDetectedStartTime = nil
+        }
+    }
+
     /// Dynamic in-drive horizon auto-calibration with progress tracking
     private func attemptHorizonAutoCalibration(box: CGRect?, confidence: Float) {
         // Check for mount shift on every frame
