@@ -1,6 +1,6 @@
 # DriveAssistant
 
-**DriveAssistant** is an experimental native iOS ADAS prototype built with **Swift**, **SwiftUI**, **AVFoundation**, **Vision**, **CoreML**, **CoreImage**, and **CoreMotion**. It uses the rear camera and GPS speed to estimate the distance to the closest detected vehicle ahead, visualize a dynamic forward-lane carpet with lane-departure warnings, and warn when the gap falls below the configured threshold.
+**DriveAssistant** is an experimental native iOS ADAS prototype built with **Swift**, **SwiftUI**, **AVFoundation**, **Vision**, **CoreML**, **CoreImage**, and **CoreMotion**. It uses the rear camera and GPS speed to estimate the distance to the closest detected vehicle ahead, visualize a dynamic forward-lane carpet with lane-departure warnings, warn when the gap falls below the configured threshold, and now recognizes Vietnam speed limit signs (P.127 / DP.134 / DP.135) to alert on overspeed and auto-clear stale limits.
 
 > **Important:** This is not a certified or production-ready safety system. Monocular distance estimates can be wrong in low light, curves, hills, camera movement, occlusion, and when vehicle size changes. Use it only as a supplemental prototype while parked or during carefully supervised testing.
 
@@ -24,11 +24,20 @@
 - **HUD visualization:** Dynamic curved lane carpet fading toward horizon; color shifts cyan → orange → red on drift/alert with pulsing dashed red on departure.
 - **Out-of-ROI vehicles:** Subtle gray boxes for vehicles detected outside the lane polygon (no alerts).
 
+### Traffic Sign Recognition (TSR) — Vietnam P.127 / DP.134 / DP.135
+- **Lightweight OCR + pixel analysis** at 2 Hz on upper-right ROI (`x: 0.48–0.98`, `y: 0.05–0.55`), no second CoreML model.
+- **P.127 (Active Speed Limit):** Vision `VNRecognizeTextRequest` (`.fast`, minTextHeight `0.04`, `vi-VN`/`en-US`) with strict allowlist `[30, 40, 50, 60, 70, 80, 90, 100, 120]`. Candidate bbox verified near-square (aspect `0.65–1.45`). Red-ring check on 1.35× expanded bbox: `R > 145 && R > G×1.4 && R > B×1.4` ratio ≥ `0.30` → active limit confirmed.
+- **DP.134 (End of Speed Limit):** Same OCR digit detected but red-ring weak; dark diagonal slash (anti-diagonal band `|(1-u)-v| < 0.14`, luma < 90) ratio ≥ `0.35` on expanded bbox → auto-clears stale limit after 2 consecutive frames.
+- **DP.135 (End of All Restrictions):** No digits. `VNDetectContoursRequest` finds near-circular bright contour (aspect `0.75–1.30`, min `0.04` norm). Strong anti-diagonal dark stripe (ratio ≥ `0.40`) → auto-clears stale limit after 2 consecutive frames.
+- **Stability:** All classifications require 2 consecutive matches. `@Published detectedSpeedLimit: Int?` + `didClearSpeedLimitEvent: Date?` for HUD reaction.
+- **Manual clear:** Tap speed-limit badge on HUD to dismiss immediately.
+
 ### Camera & thermal policy
 - Captures `1280×720` at up to `15 FPS` on the rear wide-angle camera.
 - Uses late-frame dropping (`alwaysDiscardsLateVideoFrames = true`) and an autorelease pool to control backpressure and memory.
 - Runs inference at `10 FPS` after a fast five-frame warm-up, or `6 FPS` if warm-up is slower; thermal pressure reduces this to `6 FPS` (fair) or `3 FPS` (serious), and pauses inference in critical thermal state.
 - Lane detector runs on every 2nd inference frame (skipped at serious/critical thermal).
+- TSR runs at 2 Hz independent of inference cadence; paused at critical thermal.
 - Supports both landscape orientations and maps device/video/Vision orientations for display and inference.
 - **Live ambient luminance sampling:** Every ~1.5 s reads EXIF brightness or computes average luma from the pixel buffer for auto Day/Night theme switching with hysteresis (`< 1.2` night, `> 2.2` day).
 
@@ -40,20 +49,30 @@
 - **Dynamic effective horizon:** Gyro baseline + slow EMA (`α = 0.02`) toward vision-inferred horizon during straight driving, clamped to `±0.06` of gyro baseline.
 - **Horizon overlay:** Dashed line with center text showing `R/P` deltas or `MOUNT ALIGNED` / `0.0° LEVEL`.
 
-### In-drive auto-calibration (new)
+### In-drive auto-calibration
 - **Progress tracking:** While driving straight (`> 25 km/h`, `ΔRoll < 2°`) with a stable lead vehicle or confident lane lines, calibration progress increments `~2%` per valid frame (visible in HUD as `"Đang tự hiệu chỉnh X%"` / `"Auto-calibrating X%"` in cyan).
 - **Auto-persist:** On reaching `100%`, the current pose becomes the new calibrated reference (`calibratedPitch/Roll`, `hasSavedMountProfile = true`) and the learned horizon offset is saved to `UserDefaults`. Future drives start calibrated immediately without manual setup.
 - **Mount-shift detection:** If `ΔRoll > 3.5°` or `ΔPitch > 3.5°` persists for `≥ 2 s` at speed `> 10 km/h`, HUD shows `"⚠ Máy bị xê dịch"` / `"⚠ Mount shifted"` (amber). Calibration progress resets to `0` and auto-recalibrates once the mount settles back within `±1.5°`.
 - **Continuous adaptation:** During driving, the effective horizon slowly adapts via EMA toward vision-inferred horizon (lead vehicle box geometry or lane vanishing point), with the learned offset continuously persisted.
+
+### Stop-and-Go Alert (Lead Vehicle Departure)
+- **Trigger:** Vehicle ahead detected within `20 m` → arm; vehicle moves beyond `12 m` (or is lost) while speed ≤ `5 km/h` → fire.
+- **State machine:** `idle` → `armed` (distance ≤ 20 m & speed ≤ 5 km/h) → `triggered` (distance > 12 m or lost) → `cooldown` (8 s).
+- **Disarm:** Speed > 5 km/h for ≥ 1 s or distance > 25 m returns to `idle`.
+- **Alert:** Ascending two-note chime `C5 (523.25 Hz) → E5 (659.25 Hz)` with 0.15 s gap + success haptic + Vietnamese speech `"Xe phía trước đã di chuyển"`.
 
 ### Rules & alerts
 - **VN TT38-style mode** applies speed-tiered minimum gaps: `max(5, speed × 0.5)` below `58 km/h`, `35 m` around `58–60 km/h`, `55 m` from `60–80 km/h`, `70 m` from `80–100 km/h`, and `100 m` above `100 km/h`. It suppresses alerts below `10 km/h`.
 - **Time-headway mode** uses `max(5, speed × timeHeadway)` with a configurable `1.5–4.0 s` headway; its warning threshold also covers very short low-speed gaps (`< 4 m`).
 - Wet-road detection can increase VN-law minimums by `1.3×`. Open-Meteo is queried at most every `5 minutes` or after moving more than `5 km`; network failure falls back to dry.
 - Critical state requires three consecutive candidate frames. Warning chimes have a `5 s` cooldown; critical alerts have a `3 s` cooldown. Critical speech is Vietnamese (`vi-VN`) and can be disabled.
+- **Overspeed Alert (TSR):** When TSR active limit exists, `speed > limit + tolerance` triggers sharp A5 (880 Hz) chime + error haptic + Vietnamese `"Vượt quá tốc độ giới hạn X ki-lô-mét trên giờ"`. Cooldown `10 s`. Tolerance configurable `0–10 km/h` (default `3 km/h`).
+- **Speed Limit Cleared Alert (DP.134/DP.135):** Descending `E5 → C5` (0.12 s gap) + success haptic + `"Hết hạn chế tốc độ"`. Shows emerald micro-badge `"Hết hạn chế"` / `"Limit ended"` under badge for 2.5 s.
 
 ### HUD, settings & diagnostics
 - Landscape dark HUD shows GPS speed and accuracy, distance, safe-gap progress, thermal state, detected/target vehicle, and weather/road-condition pill.
+- **GPSSpeedPill:** Speed text turns red-orange (`1.0, 0.2, 0.0`) when overspeeding (pulsing glow + scale animation).
+- **SpeedLimitSignBadge:** 38 pt white circle with 4 pt red border, bold number (or dimmed `"--"`). Tap clears limit. Red glow pulse when overspeeding.
 - **Calibration status** (in Distance card): Shows `"Đang tự hiệu chỉnh X%"` (cyan) while auto-calibrating, `"⚠ Máy bị xê dịch"` (amber) on mount shift, hidden when calibrated.
 - **Display Theme:** Auto (3-tier: camera luminance → GPS astronomical sunrise/sunset → clock fallback), Day, Night.
 - **HUD Mirror Mode:** Vertically flips the view for windshield reflection; sets screen brightness to maximum, restores on exit.
@@ -61,6 +80,8 @@
 - **Glass effect:** Ultra-thin material cards/pills with night-dim variant.
 - **Screenshot capture:** Flash animation + composites live camera frame + HUD overlay into Photos library.
 - Settings expose: Distance rule, calibration factor, hood offset, lane center offset, time headway, road condition, language (VI/EN), voice alerts, LDWS enable + speed threshold, display theme, mirror mode, Eco HUD, glass effect, horizon guide, out-of-lane vehicles, mount calibration save/reset.
+- **TSR Settings:** "Nhận diện biển báo tốc độ" toggle (default on) + "Dung sai vượt giới hạn" slider `0–10 km/h`.
+- **Stop-and-Go Settings:** "Nhắc xe trước di chuyển" toggle (default on).
 - Diagnostics records session, alert, orientation, camera-performance, inference, thermal, target-switch, lane-detection, and anonymized detection-box events to an in-memory JSON export. The temporary export file is not persisted automatically and can be cleared from Settings.
 
 ---
@@ -76,20 +97,21 @@ DriveAssistant/
     ├── Info.plist                     # Camera/location usage, landscape support, launch screen
     └── Sources/
         ├── DriveAssistantApp.swift    # SwiftUI app lifecycle and idle-timer control
-        ├── DriveAssistantModel.swift  # Observable state, rule engine, EMA/TTC, alert decisions, theme
-        ├── CameraManager.swift        # Capture session, Vision inference, tracking, thermal guard, brightness
+        ├── DriveAssistantModel.swift  # Observable state, rule engine, EMA/TTC, alert decisions, theme, TSR/stop-and-go logic
+        ├── CameraManager.swift        # Capture session, Vision inference, tracking, thermal guard, brightness, TSR gate
         ├── CameraPreview.swift        # AVCaptureVideoPreviewLayer-backed SwiftUI view
         ├── ContentView.swift          # HUD, overlays, lane carpet, horizon, screenshot, progress, thermal badge, controls
         ├── SettingsView.swift         # Runtime settings, mount calibration, diagnostics export/clear
         ├── LocationManager.swift      # When-in-use GPS speed/accuracy, astronomical night, weather trigger
         ├── WeatherService.swift       # Rate-limited Open-Meteo dry/wet lookup
-        ├── AlertManager.swift         # Cooldowns, system sounds, Vietnamese speech
+        ├── AlertManager.swift         # Cooldowns, system sounds, Vietnamese speech, synthesized chimes (AVAudioEngine)
         ├── DiagnosticsLogStore.swift  # In-memory diagnostics and JSON export
         ├── LaneDetector.swift         # CoreImage/Vision contour lane detection, EMA, LDWS state machine
-        └── MotionManager.swift        # CMMotionManager gravity-vector attitude, mount profile, horizon calibration
+        ├── MotionManager.swift        # CMMotionManager gravity-vector attitude, mount profile, horizon calibration
+        └── TrafficSignDetector.swift  # Vision OCR + red-ring/diagonal pixel analysis for P.127/DP.134/DP.135 (2 Hz)
 ```
 
-The app intentionally avoids a separate distance manager: `CameraManager` owns Vision and tracking outputs, `LaneDetector` owns lane geometry, `MotionManager` owns horizon alignment, while `DriveAssistantModel` combines those outputs with GPS, road condition, settings, and alert state.
+The app intentionally avoids a separate distance manager: `CameraManager` owns Vision and tracking outputs, `LaneDetector` owns lane geometry, `MotionManager` owns horizon alignment, `TrafficSignDetector` owns TSR, while `DriveAssistantModel` combines those outputs with GPS, road condition, settings, and alert state.
 
 ---
 
@@ -153,6 +175,8 @@ The CoreML model (`yolov8n.mlpackage`) is included in the repository and configu
 - Distance is monocular and depends on bounding-box width; it is not radar/LiDAR-grade and can be biased by vehicle type, crop, scale, occlusion, and tracking error.
 - Lane detection uses contour heuristics on the lower ROI; it can fail in rain, glare, faded markings, or heavy shadows.
 - The dynamic ROI for vehicle filtering snaps to detected lanes but falls back to the fixed trapezoid when confidence is low.
+- TSR runs on upper-right ROI only; signs on left, center gantry, or partially occluded may be missed. Red-ring verification needs daylight-level illumination.
+- DP.134/DP.135 detection relies on clear diagonal slash contrast; faded or non-standard signs may not trigger.
 - There is no persistent log rotation. Diagnostics are cleared on app restart and held in memory until exported.
 - Weather-based wet mode depends on network availability and uses coarse Open-Meteo conditions rather than direct road-surface sensing.
 - Thermal throttling reduces inference FPS; prolonged use in direct sun may pause detection entirely.
