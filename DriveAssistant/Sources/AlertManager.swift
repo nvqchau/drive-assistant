@@ -268,3 +268,69 @@ extension AlertManager {
         playerNode.play()
     }
 }
+
+// MARK: - Speed Limit Cleared Alert (DP.134 / DP.135)
+extension AlertManager {
+    func playSpeedLimitClearedAlert(speak: Bool) {
+        // Subtle neutral chime: descending two-note (E5 -> C5) softer than overspeed
+        playClearedChime()
+
+        // Light success haptic
+        hapticGenerator.notificationOccurred(.success)
+
+        if speak {
+            let utterance = AVSpeechUtterance(string: "Hết hạn chế tốc độ")
+            utterance.voice = AVSpeechSynthesisVoice(language: "vi-VN")
+            utterance.rate = 0.48
+            do {
+                try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+            } catch { }
+            synthesizer.speak(utterance)
+        }
+    }
+
+    private func playClearedChime() {
+        let sampleRate = audioEngine.mainMixerNode.outputFormat(forBus: 0).sampleRate
+        let noteDuration = 0.10
+        let frameCount = AVAudioFrameCount(sampleRate * noteDuration)
+
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1) else { return }
+
+        // Note 1: E5 (659.25 Hz)
+        if let buffer1 = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) {
+            buffer1.frameLength = frameCount
+            let channelData = buffer1.floatChannelData?[0]
+            for frame in 0..<Int(frameCount) {
+                let t = Double(frame) / sampleRate
+                let envelope = exp(-t * 8.0)
+                let sample = sin(2.0 * .pi * 659.25 * t) * envelope * 0.2
+                channelData?[frame] = Float(sample)
+            }
+            playerNode.scheduleBuffer(buffer1, at: nil, options: .interrupts, completionHandler: nil)
+        }
+
+        // Note 2: C5 (523.25 Hz) - delayed 0.12s
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+            guard let self,
+                  let buffer2 = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
+            buffer2.frameLength = frameCount
+            let channelData = buffer2.floatChannelData?[0]
+            for frame in 0..<Int(frameCount) {
+                let t = Double(frame) / sampleRate
+                let envelope = exp(-t * 8.0)
+                let sample = sin(2.0 * .pi * 523.25 * t) * envelope * 0.2
+                channelData?[frame] = Float(sample)
+            }
+            self.playerNode.scheduleBuffer(buffer2, at: nil, options: .interrupts, completionHandler: nil)
+            if !self.audioEngine.isRunning {
+                try? self.audioEngine.start()
+            }
+            self.playerNode.play()
+        }
+
+        if !audioEngine.isRunning {
+            try? audioEngine.start()
+        }
+        playerNode.play()
+    }
+}

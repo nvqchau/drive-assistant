@@ -97,6 +97,7 @@ final class DriveAssistantModel: ObservableObject {
     }
     @Published private(set) var detectedSpeedLimit: Int?
     @Published private(set) var isOverspeeding: Bool = false
+    @Published private(set) var showSpeedLimitCleared: Bool = false
 
     // Display Theme & Mirror Mode
     @Published var displayThemeMode: DisplayThemeMode = .auto {
@@ -323,6 +324,23 @@ final class DriveAssistantModel: ObservableObject {
             .sink { [weak self] limit in
                 self?.detectedSpeedLimit = limit
                 self?.updateOverspeedState()
+            }
+            .store(in: &cancellables)
+
+        // Speed limit cleared event (DP.134 / DP.135)
+        camera.trafficSignDetector.$didClearSpeedLimitEvent
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] eventDate in
+                guard let self, eventDate != nil else { return }
+                self.detectedSpeedLimit = nil
+                self.isOverspeeding = false
+                self.showSpeedLimitCleared = true
+                self.alerts.playSpeedLimitClearedAlert(speak: self.voiceAlertsEnabled)
+
+                // Auto-hide micro-badge after 2.5s
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+                    self?.showSpeedLimitCleared = false
+                }
             }
             .store(in: &cancellables)
 
