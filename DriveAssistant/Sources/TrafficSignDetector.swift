@@ -24,11 +24,17 @@ final class TrafficSignDetector: ObservableObject {
 
     // DP.134 / DP.135 detection thresholds
     private let endSignRequiredConsecutive = 2
-    private let expandedBoxScale: CGFloat = 1.35
-    private let redRingStrongThreshold: Float = 0.30
+    private let expandedBoxScale: CGFloat = 1.6
+    private let redRingStrongThreshold: Float = 0.22
     private let darkDiagonalThreshold: Float = 0.35
     private let contourAspectRatioRange: ClosedRange<Double> = 0.75...1.30
     private let darkLumaThreshold: UInt8 = 90
+
+    // Circular annulus sampling for red ring (normalized radius from center)
+    private let redRingInnerRadius: Float = 0.34
+    private let redRingOuterRadius: Float = 0.48
+    private let redPixelThreshold: UInt8 = 130
+    private let redDominanceRatio: Float = 1.25
 
     // MARK: - State
     private var lastProcessTime: TimeInterval = 0
@@ -115,8 +121,11 @@ final class TrafficSignDetector: ObservableObject {
             guard let topCandidate = observation.topCandidates(1).first else { continue }
             let text = topCandidate.string.trimmingCharacters(in: .whitespacesAndNewlines)
 
-            // Must be purely numeric (speed limit)
-            guard let speedValue = Int(text), validSpeedLimits.contains(speedValue) else { continue }
+            // Extract numeric tokens from text (handles "P.127 60", "60 km/h", etc.)
+            let tokens = text.components(separatedBy: CharacterSet.decimalDigits.inverted)
+                .compactMap { Int($0) }
+                .filter { validSpeedLimits.contains($0) }
+            guard let speedValue = tokens.first else { continue }
 
             let boundingBox = observation.boundingBox  // normalized to cropped image (origin bottom-left)
 
@@ -233,8 +242,9 @@ final class TrafficSignDetector: ObservableObject {
         }
     }
 
-    /// Measure red ring strength on expanded bounding box.
-    /// Returns ratio of border pixels where R > 145 && R > G*1.4 && R > B*1.4
+    /// Measure red ring strength on expanded bounding box using circular annulus sampling.
+    /// Samples pixels where normalized radial distance r = hypot(u-0.5, v-0.5) is in [0.34, 0.48].
+    /// Returns ratio of annulus pixels where R >= 130 && R > G*1.25 && R > B*1.25
     private func measureRedRingRatio(in image: CIImage, normalizedBox: CGRect, scale: CGFloat) -> Float {
         let extent = image.extent
         // Vision boundingBox uses bottom-left origin, matching CIImage
@@ -251,7 +261,7 @@ final class TrafficSignDetector: ObservableObject {
         guard !clampedBox.isEmpty, clampedBox.width > 4, clampedBox.height > 4 else { return 0 }
 
         let ringRegion = image.cropped(to: clampedBox)
-        let scaleFactor = min(32.0 / clampedBox.width, 32.0 / clampedBox.height, 1.0)
+        let scaleFactor = min(48.0 / clampedBox.width, 48.0 / clampedBox.height, 1.0)
         let scaledImage = ringRegion.transformed(by: CGAffineTransform(scaleX: scaleFactor, y: scaleFactor))
 
         // Render with explicit RGBA8 format to guarantee R=bytes[0], G=bytes[1], B=bytes[2]
@@ -266,26 +276,23 @@ final class TrafficSignDetector: ObservableObject {
         var redStrongCount = 0
         var totalSampled = 0
 
-        // Sample border pixels only
+        // Sample pixels in circular annulus: center (0.5, 0.5), radius in [0.34, 0.48]
         for y in 0..<height {
-            for x in [0, width - 1] {
+            let v = Float(y) / Float(height)
+            let dy = v - 0.5
+            for x in 0..<width {
+                let u = Float(x) / Float(width)
+                let dx = u - 0.5
+                let r = hypotf(dx, dy)
+                guard r >= redRingInnerRadius, r <= redRingOuterRadius else { continue }
+
                 let offset = y * bytesPerRow + x * 4
-                let r = bytes?[offset] ?? 0
-                let g = bytes?[offset + 1] ?? 0
-                let b = bytes?[offset + 2] ?? 0
-                if r >= 145, Float(r) > Float(g) * 1.4, Float(r) > Float(b) * 1.4 {
-                    redStrongCount += 1
-                }
-                totalSampled += 1
-            }
-        }
-        for x in 0..<width {
-            for y in [0, height - 1] {
-                let offset = y * bytesPerRow + x * 4
-                let r = bytes?[offset] ?? 0
-                let g = bytes?[offset + 1] ?? 0
-                let b = bytes?[offset + 2] ?? 0
-                if r >= 145, Float(r) > Float(g) * 1.4, Float(r) > Float(b) * 1.4 {
+                let rVal = bytes?[offset] ?? 0
+                let gVal = bytes?[offset + 1] ?? 0
+                let bVal = bytes?[offset + 2] ?? 0
+                if rVal >= redPixelThreshold,
+                   Float(rVal) > Float(gVal) * redDominanceRatio,
+                   Float(rVal) > Float(bVal) * redDominanceRatio {
                     redStrongCount += 1
                 }
                 totalSampled += 1
