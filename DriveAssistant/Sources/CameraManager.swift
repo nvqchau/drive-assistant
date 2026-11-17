@@ -26,6 +26,9 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
     // Traffic sign detector (TSR)
     let trafficSignDetector = TrafficSignDetector()
 
+    // TSR enable toggle (set from DriveAssistantModel)
+    var enableSpeedSignRecognition: Bool = true
+
     // Live camera ambient luminance
     @Published private(set) var isLowLightScene: Bool = false
     @Published private(set) var hasValidCameraBrightness: Bool = false
@@ -352,7 +355,9 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
 
         // Feed frame to traffic sign detector (TSR) - lightweight 2 Hz OCR + red-ring verification
         trafficSignDetector.setThermalState(thermal)
-        trafficSignDetector.processFrameIfNeeded(pixelBuffer)
+        if enableSpeedSignRecognition {
+            trafficSignDetector.processFrameIfNeeded(pixelBuffer)
+        }
 
         autoreleasepool {
             let inferenceStart = CACurrentMediaTime()

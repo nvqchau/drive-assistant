@@ -90,7 +90,10 @@ final class DriveAssistantModel: ObservableObject {
 
     // Traffic Sign Recognition (TSR)
     @Published var enableSpeedSignRecognition: Bool = true {
-        didSet { UserDefaults.standard.set(enableSpeedSignRecognition, forKey: "enableSpeedSignRecognition") }
+        didSet {
+            UserDefaults.standard.set(enableSpeedSignRecognition, forKey: "enableSpeedSignRecognition")
+            camera.enableSpeedSignRecognition = enableSpeedSignRecognition
+        }
     }
     @Published var overspeedToleranceKmh: Double = 3.0 {
         didSet { UserDefaults.standard.set(overspeedToleranceKmh, forKey: "overspeedToleranceKmh") }
@@ -205,17 +208,21 @@ final class DriveAssistantModel: ObservableObject {
         enableLaneDetection = defaults.object(forKey: "enableLaneDetection") as? Bool ?? true
         ldwsMinSpeedKmh = defaults.object(forKey: "ldwsMinSpeedKmh") as? Double ?? 50.0
         stopAndGoAlertEnabled = defaults.object(forKey: "stopAndGoAlertEnabled") as? Bool ?? true
+        // Traffic Sign Recognition (TSR)
+        enableSpeedSignRecognition = defaults.object(forKey: "enableSpeedSignRecognition") as? Bool ?? true
+        overspeedToleranceKmh = defaults.object(forKey: "overspeedToleranceKmh") as? Double ?? 3.0
         displayThemeMode = DisplayThemeMode(rawValue: defaults.string(forKey: "displayThemeMode") ?? "") ?? .auto
         hudMirrorMode = defaults.bool(forKey: "hudMirrorMode")
         if hudMirrorMode {
             savedBrightness = UIScreen.main.brightness
             UIScreen.main.brightness = 1.0
         }
-        
+
         camera.attachDiagnostics(diagnostics)
         camera.setCalibrationFactor(calibrationFactor)
         camera.setLaneCenterOffsetX(laneCenterOffsetX)
         camera.laneDetector = laneDetector
+        camera.enableSpeedSignRecognition = enableSpeedSignRecognition
         laneDetector.setROIOffset(laneCenterOffsetX)
         laneDetector.setMinSpeedForDepartureAlert(ldwsMinSpeedKmh)
 
