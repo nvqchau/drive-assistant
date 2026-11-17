@@ -12,6 +12,8 @@
 <key>UILaunchScreen</key><dict/>
 <key>NSCameraUsageDescription</key><string>Drive Assistant uses the rear camera to estimate the distance to the vehicle ahead.</string>
 <key>NSLocationWhenInUseUsageDescription</key><string>Drive Assistant uses your location to calculate your current driving speed.</string>
+<key>NSPhotoLibraryAddUsageDescription</key><string>Drive Assistant saves screenshots to your photo library for later analysis of detection behavior.</string>
+<key>NSPhotoLibraryUsageDescription</key><string>Save HUD screenshots to photo library</string>
 <key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationLandscapeRight</string><string>UIInterfaceOrientationLandscapeLeft</string></array>
 <key>UIRequiresFullScreen</key><true/>
 </dict></plist>

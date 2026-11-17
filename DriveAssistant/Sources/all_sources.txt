@@ -1,0 +1,3622 @@
+import AVFoundation
+import AudioToolbox
+import Foundation
+import UIKit
+
+final class AlertManager {
+    private var lastWarningAlert = Date.distantPast
+    private var lastCriticalAlert = Date.distantPast
+    private var lastLaneDepartureAlert = Date.distantPast
+    private let synthesizer = AVSpeechSynthesizer()
+    private let audioSession = AVAudioSession.sharedInstance()
+    private var interruptionObserver: NSObjectProtocol?
+    private let hapticGenerator = UINotificationFeedbackGenerator()
+    
+    // AVAudioEngine for synthesized low-pitched chime (distinct from forward collision)
+    private lazy var audioEngine = AVAudioEngine()
+    private lazy var playerNode = AVAudioPlayerNode()
+    private let chimeFrequency: Double = 220.0  // A3 - low pitch (vs ~880Hz for collision)
+    private let chimeDuration: Double = 0.18
+
+    init() {
+        configureAudioSession()
+        observeInterruptions()
+        hapticGenerator.prepare()
+        setupChimeEngine()
+    }
+
+    deinit {
+        if let interruptionObserver {
+            NotificationCenter.default.removeObserver(interruptionObserver)
+        }
+        audioEngine.stop()
+    }
+
+    private func configureAudioSession() {
+        do {
+            try audioSession.setCategory(.playback, mode: .voicePrompt, options: [.duckOthers, .mixWithOthers])
+            try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+        } catch {
+            print("AlertManager: Failed to configure audio session: \(error)")
+        }
+    }
+
+    private func observeInterruptions() {
+        interruptionObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: audioSession,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self,
+                  let userInfo = notification.userInfo,
+                  let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
+
+            if type == .ended {
+                if let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt {
+                    let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
+                    if options.contains(.shouldResume) {
+                        self.reactivateAudioSession()
+                    }
+                }
+            }
+        }
+    }
+
+    private func reactivateAudioSession() {
+        do {
+            try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+        } catch {
+            print("AlertManager: Failed to reactivate audio session: \(error)")
+        }
+    }
+
+    // MARK: - Synthesized Chime Engine
+    private func setupChimeEngine() {
+        audioEngine.attach(playerNode)
+        audioEngine.connect(playerNode, to: audioEngine.mainMixerNode, format: nil)
+        do {
+            try audioEngine.start()
+        } catch {
+            print("AlertManager: Failed to start audio engine: \(error)")
+        }
+    }
+
+    private func playLowChime() {
+        let sampleRate = audioEngine.mainMixerNode.outputFormat(forBus: 0).sampleRate
+        let frameCount = AVAudioFrameCount(sampleRate * chimeDuration)
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
+        
+        buffer.frameLength = frameCount
+        let channelData = buffer.floatChannelData?[0]
+        
+        // Generate low-pitched sine wave with quick decay envelope
+        for frame in 0..<Int(frameCount) {
+            let t = Double(frame) / sampleRate
+            let envelope = exp(-t * 8.0)  // Fast decay
+            let sample = sin(2.0 * .pi * chimeFrequency * t) * envelope * 0.3
+            channelData?[frame] = Float(sample)
+        }
+        
+        playerNode.scheduleBuffer(buffer, at: nil, options: .interrupts, completionHandler: nil)
+        if !audioEngine.isRunning {
+            try? audioEngine.start()
+        }
+        playerNode.play()
+    }
+
+    func playWarningAlert() {
+        guard Date().timeIntervalSince(lastWarningAlert) >= 5 else { return }
+        lastWarningAlert = Date()
+        AudioServicesPlaySystemSound(1052)
+    }
+
+    func playCriticalAlert(speak: Bool, reduceSpeed: Bool) {
+        guard Date().timeIntervalSince(lastCriticalAlert) >= 3 else { return }
+        lastCriticalAlert = Date()
+        AudioServicesPlaySystemSound(1005)
+        hapticGenerator.notificationOccurred(.error)
+        guard speak else { return }
+        let utterance = AVSpeechUtterance(string: reduceSpeed ? "Giảm tốc độ" : "Giữ khoảng cách an toàn")
+        utterance.voice = AVSpeechSynthesisVoice(language: "vi-VN")
+        utterance.rate = 0.48
+        do {
+            try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+        } catch {
+            print("AlertManager: Failed to activate audio session for speech: \(error)")
+        }
+        synthesizer.speak(utterance)
+    }
+}
+
+extension AlertManager {
+    func playLaneDepartureAlert(speak: Bool) {
+        // Low-pitched double-pulse chime (220Hz A3) - clearly distinct from high-pitched collision beep (~880Hz)
+        playLowChime()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            self.playLowChime()
+        }
+        
+        // Haptic feedback
+        hapticGenerator.notificationOccurred(.warning)
+        
+        if speak {
+            let utterance = AVSpeechUtterance(string: "Cảnh báo lệch làn")
+            utterance.voice = AVSpeechSynthesisVoice(language: "vi-VN")
+            utterance.rate = 0.5
+            do {
+                try AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
+            } catch { }
+            synthesizer.speak(utterance)
+        }
+    }
+}
+import AVFoundation
+import SwiftUI
+import CoreML
+import ImageIO
+import os
+import Vision
+import UIKit
+
+struct VehicleObservation: Identifiable {
+    let id = UUID()
+    let boundingBox: CGRect
+    let distance: Double
+}
+
+final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputSampleBufferDelegate {
+    @Published private(set) var leadVehicleDistance: Double?
+    @Published private(set) var leadVehicleBox: CGRect?
+    @Published private(set) var cameraFrameSize = CGSize(width: 1280, height: 720)
+    @Published private(set) var thermalState: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState
+    @Published var cameraAuthorizationStatus: AVAuthorizationStatus = .notDetermined
+    @Published var isModelReady: Bool = false
+    @Published private(set) var leadVehicleConfidence: Float = 0
+    @Published private(set) var outOfROIVehicles: [(CGRect, Float, String)] = []
+    @Published private(set) var inROIVehicles: [(CGRect, Float, String)] = []
+    
+    // Live camera ambient luminance
+    @Published private(set) var isLowLightScene: Bool = false
+    @Published private(set) var hasValidCameraBrightness: Bool = false
+
+    let session = AVCaptureSession()
+    private let output = AVCaptureVideoDataOutput()
+    @Published var currentSpeedKMPH: Double = 0
+    var laneDetector: LaneDetector?
+    private let sessionQueue = DispatchQueue(label: "drive-assistant.session", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "drive-assistant.camera", qos: .userInitiated)
+    private var visionModel: VNCoreMLModel?
+    private var isConfigured = false
+    private var lastInference = CACurrentMediaTime()
+    private let fairInferenceInterval = 1.0 / 6.0
+    private let seriousInferenceInterval = 1.0 / 3.0
+    private var baselineInferenceFPS = 10.0
+    private var warmupFrameCount = 0
+    private var warmupTotalDuration: TimeInterval = 0
+    private var warmupComplete = false
+    private let calibrationLock = NSLock()
+    private var calibrationFactor: Double = 1.40
+    private let laneOffsetLock = NSLock()
+    private var laneCenterOffsetX: Double = -0.03
+    private let horizonLock = NSLock()
+    private var horizonFilterEnabled: Bool = true
+    private var horizonY: Double = 0.45
+    private var orientationObserver: NSObjectProtocol?
+    private var runtimeErrorObserver: NSObjectProtocol?
+    private let orientationLock = NSLock()
+    private var diagnostics: DiagnosticsLogStore?
+    private var hasLoggedFrameFormat = false
+    private var trackedBox: CGRect?
+    private var trackedBoxTimestamp = CACurrentMediaTime()
+    private var pendingBox: CGRect?
+    private var pendingBoxFrames = 0
+    private var lastDetectionLogTime = CACurrentMediaTime()
+    private var frameCount = 0
+    private var inferenceCount = 0
+    private var performanceWindowStart = CACurrentMediaTime()
+    private var thermalObserver: NSObjectProtocol?
+    private let thermalLock = NSLock()
+    private let frameLock = NSLock()
+    private var latestFramePixelBuffer: CVPixelBuffer?
+    private var currentThermalState = ProcessInfo.processInfo.thermalState
+    private var cachedVideoOrientation: AVCaptureVideoOrientation = .landscapeRight
+    private var cachedVisionOrientation: CGImagePropertyOrientation = .up
+    private let logger = Logger(subsystem: "vn.ai.driveassistant", category: "Camera")
+    
+    // Camera brightness sampling (every ~1.5s)
+    private var lastBrightnessSampleTime: TimeInterval = 0
+    private let brightnessSampleInterval: TimeInterval = 1.5
+    private let lowLightThreshold: Double = 1.2    // switch to night
+    private let daylightThreshold: Double = 2.2    // switch back to day (hysteresis)
+
+    override init() {
+        super.init()
+        updateCachedOrientation(for: UIDevice.current.orientation)
+        UIDevice.current.beginGeneratingDeviceOrientationNotifications()
+        orientationObserver = NotificationCenter.default.addObserver(
+            forName: UIDevice.orientationDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.updateVideoOrientation()
+            }
+        }
+        runtimeErrorObserver = NotificationCenter.default.addObserver(
+            forName: NSNotification.Name.AVCaptureSessionRuntimeError,
+            object: session,
+            queue: .main
+        ) { [weak self] notification in
+            let error = notification.userInfo?[AVCaptureSessionErrorKey] as? NSError
+            self?.logger.error("Capture session runtime error: domain=\(error?.domain ?? "unknown", privacy: .public) code=\(error?.code ?? -1, privacy: .public)")
+        }
+        thermalObserver = NotificationCenter.default.addObserver(
+            forName: ProcessInfo.thermalStateDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.updateThermalState()
+        }
+        updateThermalState()
+        loadModelAsync()
+        cameraAuthorizationStatus = AVCaptureDevice.authorizationStatus(for: .video)
+    }
+
+    func setLaneCenterOffsetX(_ offset: Double) {
+        laneOffsetLock.lock()
+        laneCenterOffsetX = offset
+        laneOffsetLock.unlock()
+    }
+
+    private var currentLaneCenterOffsetX: Double {
+        laneOffsetLock.lock()
+        defer { laneOffsetLock.unlock() }
+        return laneCenterOffsetX
+    }
+
+    func setHorizonFilterEnabled(_ enabled: Bool) {
+        horizonLock.lock()
+        horizonFilterEnabled = enabled
+        horizonLock.unlock()
+    }
+
+    func updateHorizonY(_ y: Double) {
+        horizonLock.lock()
+        horizonY = max(0.25, min(0.65, y))
+        horizonLock.unlock()
+    }
+
+    func setEffectiveHorizonY(_ y: Double) {
+        horizonLock.lock()
+        horizonY = max(0.25, min(0.65, y))
+        horizonLock.unlock()
+    }
+
+    private var currentHorizonY: Double {
+        horizonLock.lock()
+        defer { horizonLock.unlock() }
+        return horizonY
+    }
+
+    private var isHorizonFilterEnabled: Bool {
+        horizonLock.lock()
+        defer { horizonLock.unlock() }
+        return horizonFilterEnabled
+    }
+
+    private func loadModelAsync() {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let modelConfiguration = MLModelConfiguration()
+            modelConfiguration.computeUnits = .cpuAndNeuralEngine
+            let extensions = ["mlmodelc"]
+            var loaded = false
+            for ext in extensions {
+                if let modelURL = Bundle.main.url(forResource: "yolov8n", withExtension: ext),
+                   let model = try? MLModel(contentsOf: modelURL, configuration: modelConfiguration),
+                   let visionModel = try? VNCoreMLModel(for: model) {
+                    DispatchQueue.main.async {
+                        self.visionModel = visionModel
+                        self.isModelReady = true
+                        self.logger.info("Vision model loaded and ready from .\(ext)")
+                    }
+                    loaded = true
+                    break
+                }
+            }
+            if !loaded {
+                DispatchQueue.main.async {
+                    self.logger.error("Failed to load Vision model (tried .mlmodelc)")
+                }
+            }
+        }
+    }
+
+    func attachDiagnostics(_ diagnostics: DiagnosticsLogStore) {
+        self.diagnostics = diagnostics
+    }
+
+    func setCalibrationFactor(_ factor: Double) {
+        calibrationLock.lock()
+        calibrationFactor = factor
+        calibrationLock.unlock()
+    }
+
+    deinit {
+        if let orientationObserver {
+            NotificationCenter.default.removeObserver(orientationObserver)
+        }
+        if let runtimeErrorObserver {
+            NotificationCenter.default.removeObserver(runtimeErrorObserver)
+        }
+        if let thermalObserver {
+            NotificationCenter.default.removeObserver(thermalObserver)
+        }
+        UIDevice.current.endGeneratingDeviceOrientationNotifications()
+
+        // Clean up retained pixel buffer - no need to manually release in modern Swift
+        frameLock.lock()
+        latestFramePixelBuffer = nil
+        frameLock.unlock()
+    }
+
+    /// Thread-safe snapshot of the latest camera frame as UIImage
+    /// AVCaptureConnection.videoOrientation already rotates the CVPixelBuffer, so no extra orientation needed
+    func snapshotCameraImage() -> UIImage? {
+        frameLock.lock()
+        defer { frameLock.unlock() }
+        
+        guard let pixelBuffer = latestFramePixelBuffer else { return nil }
+        
+        let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+        let context = CIContext()
+        
+        guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else {
+            return nil
+        }
+        
+        return UIImage(cgImage: cgImage)
+    }
+
+    func start() {
+        logger.info("Camera start requested")
+        let currentStatus = AVCaptureDevice.authorizationStatus(for: .video)
+        DispatchQueue.main.async { self.cameraAuthorizationStatus = currentStatus }
+        
+        switch currentStatus {
+        case .authorized:
+            configureAndStartSession()
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+                guard let self else { return }
+                let status = AVCaptureDevice.authorizationStatus(for: .video)
+                DispatchQueue.main.async { self.cameraAuthorizationStatus = status }
+                self.logger.info("Camera permission result: \(granted ? "granted" : "denied", privacy: .public)")
+                if granted {
+                    self.configureAndStartSession()
+                }
+            }
+        case .denied, .restricted:
+            logger.warning("Camera access denied/restricted")
+        @unknown default:
+            logger.warning("Unknown camera authorization status")
+        }
+    }
+
+    private func configureAndStartSession() {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.logger.info("Configuring capture session")
+            self.configureIfNeeded()
+            self.logger.info("Starting capture session")
+            self.session.startRunning()
+            self.logger.info("Capture session running: \(self.session.isRunning, privacy: .public)")
+            DispatchQueue.main.async {
+                self.updateVideoOrientation()
+            }
+        }
+    }
+
+    func stop() {
+        logger.info("Camera stop requested")
+        sessionQueue.async { [weak self] in
+            guard let self, self.session.isRunning else { return }
+            self.session.stopRunning()
+            self.logger.info("Capture session stopped")
+        }
+        // Reset camera brightness state
+        DispatchQueue.main.async {
+            self.hasValidCameraBrightness = false
+            self.isLowLightScene = false
+        }
+    }
+
+    private func configureIfNeeded() {
+        guard !isConfigured else { return }
+        session.beginConfiguration()
+        session.sessionPreset = .hd1280x720
+        defer { session.commitConfiguration(); isConfigured = true }
+        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .back),
+              let input = try? AVCaptureDeviceInput(device: device),
+              session.canAddInput(input) else {
+            logger.error("Unable to create or add the rear wide-angle camera input")
+            return
+        }
+        session.addInput(input)
+        configureFrameRate(for: device)
+        output.alwaysDiscardsLateVideoFrames = true
+        output.setSampleBufferDelegate(self, queue: queue)
+        guard session.canAddOutput(output) else {
+            logger.error("Unable to add video data output")
+            return
+        }
+        session.addOutput(output)
+        updateVideoOrientation()
+    }
+
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        updateVideoOrientation(connection: connection)
+        frameCount += 1
+        recordPerformanceIfNeeded()
+        let thermalState = thermalStateForInference()
+        if thermalState == .critical {
+            return
+        }
+        let now = CACurrentMediaTime()
+        guard let interval = inferenceInterval(for: thermalState), now - lastInference >= interval, let visionModel else { return }
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
+            logger.error("Capture frame has no pixel buffer")
+            return
+        }
+        let frameSize = CGSize(width: CVPixelBufferGetWidth(pixelBuffer), height: CVPixelBufferGetHeight(pixelBuffer))
+        if cameraFrameSize != frameSize {
+            DispatchQueue.main.async { [weak self] in
+                self?.cameraFrameSize = frameSize
+            }
+        }
+        
+        // Store latest frame for snapshot (no manual retain needed - ARC handles it)
+        frameLock.lock()
+        latestFramePixelBuffer = pixelBuffer
+        frameLock.unlock()
+        
+        if !hasLoggedFrameFormat {
+            hasLoggedFrameFormat = true
+            diagnostics?.record(type: "camera_frame_format", details: "width=\(CVPixelBufferGetWidth(pixelBuffer)), height=\(CVPixelBufferGetHeight(pixelBuffer)), videoOrientation=\(videoOrientation)")
+        }
+        lastInference = now
+        inferenceCount += 1
+        
+        // Sample camera ambient brightness every ~1.5s
+        if now - lastBrightnessSampleTime >= brightnessSampleInterval {
+            lastBrightnessSampleTime = now
+            sampleCameraBrightness(sampleBuffer: sampleBuffer)
+        }
+        
+        // Feed frame to lane detector (runs on its own queue) - every 2nd frame, skip on serious/critical thermal
+        let thermal = thermalStateForInference()
+        if inferenceCount % 2 == 0 && thermal != .serious && thermal != .critical {
+            laneDetector?.processFrame(pixelBuffer: pixelBuffer, speedKMPH: currentSpeedKMPH)
+        }
+        
+        autoreleasepool {
+            let inferenceStart = CACurrentMediaTime()
+            let request = VNCoreMLRequest(model: visionModel) { [weak self] request, error in
+                if let error {
+                    self?.logger.error("Vision request failed: \(error.localizedDescription, privacy: .public)")
+                    return
+                }
+                self?.recordInferenceDuration(CACurrentMediaTime() - inferenceStart)
+                self?.handle(request: request, pixelBuffer: pixelBuffer)
+            }
+            request.imageCropAndScaleOption = .centerCrop
+            request.regionOfInterest = CGRect(x: 0, y: 0, width: 1, height: 1)
+            let orientation = visionOrientation
+            do {
+                try VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation).perform([request])
+            } catch {
+                logger.error("Vision handler failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+    
+    private func sampleCameraBrightness(sampleBuffer: CMSampleBuffer) {
+        // Try EXIF brightness value first
+        if let exifDict = CMGetAttachment(sampleBuffer, key: kCGImagePropertyExifDictionary, attachmentModeOut: nil) as? [String: Any],
+           let brightnessValue = exifDict[kCGImagePropertyExifBrightnessValue as String] as? Double {
+            updateBrightnessState(brightnessValue)
+            return
+        }
+        
+        // Fallback: compute average luma from pixel buffer
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        let brightness = computeAverageLuma(pixelBuffer: pixelBuffer)
+        updateBrightnessState(brightness)
+    }
+    
+    private func computeAverageLuma(pixelBuffer: CVPixelBuffer) -> Double {
+        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+        
+        guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else { return 1.0 }
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+        
+        // Sample every 8th pixel for performance
+        var totalLuma: Double = 0
+        var sampleCount = 0
+        let sampleStride = 8
+        
+        for y in stride(from: 0, to: height, by: sampleStride) {
+            let rowPtr = baseAddress.advanced(by: y * bytesPerRow).assumingMemoryBound(to: UInt8.self)
+            for x in stride(from: 0, to: width, by: sampleStride) {
+                let pixelOffset = x * 4 // Assuming BGRA/ARGB 32-bit
+                if pixelOffset + 2 < bytesPerRow {
+                    let b = Double(rowPtr[pixelOffset])
+                    let g = Double(rowPtr[pixelOffset + 1])
+                    let r = Double(rowPtr[pixelOffset + 2])
+                    // Standard luma coefficients (Rec. 709)
+                    let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+                    totalLuma += luma
+                    sampleCount += 1
+                }
+            }
+        }
+        
+        guard sampleCount > 0 else { return 1.0 }
+        let avgLuma = totalLuma / Double(sampleCount)
+        // Normalize to EV-like scale (0-255 -> roughly -3 to +3 EV)
+        return (avgLuma / 255.0) * 6.0 - 3.0
+    }
+    
+    private func updateBrightnessState(_ brightnessEV: Double) {
+        DispatchQueue.main.async {
+            self.hasValidCameraBrightness = true
+            if !self.isLowLightScene && brightnessEV < self.lowLightThreshold {
+                self.isLowLightScene = true
+                self.diagnostics?.record(type: "camera_brightness_night", details: "brightnessEV=\(brightnessEV)")
+            } else if self.isLowLightScene && brightnessEV > self.daylightThreshold {
+                self.isLowLightScene = false
+                self.diagnostics?.record(type: "camera_brightness_day", details: "brightnessEV=\(brightnessEV)")
+            }
+        }
+    }
+
+    private func recordInferenceDuration(_ duration: TimeInterval) {
+        recordWarmupDuration(duration)
+        guard duration >= 0.25 else { return }
+        logger.warning("Slow Vision inference: \(duration, privacy: .public)s")
+        diagnostics?.record(type: "slow_inference", details: "durationSeconds=\(duration), thermalState=\(String(describing: thermalStateForInference()))")
+    }
+
+    private func recordWarmupDuration(_ duration: TimeInterval) {
+        guard !warmupComplete else { return }
+        warmupFrameCount += 1
+        warmupTotalDuration += duration
+        guard warmupFrameCount >= 5 else { return }
+        let averageMilliseconds = warmupTotalDuration / Double(warmupFrameCount) * 1000
+        baselineInferenceFPS = averageMilliseconds < 40 ? 10 : 6
+        warmupComplete = true
+        diagnostics?.record(type: "vision_warmup_completed", details: "frames=5, averageLatencyMS=\(averageMilliseconds), baselineFPS=\(baselineInferenceFPS), computeUnits=cpuAndNeuralEngine")
+        logger.info("Vision warm-up complete: average latency \(averageMilliseconds, privacy: .public) ms, baseline \(self.baselineInferenceFPS, privacy: .public) FPS")
+    }
+
+    private func inferenceInterval(for state: ProcessInfo.ThermalState) -> TimeInterval? {
+        switch state {
+        case .critical:
+            return nil
+        case .serious:
+            return seriousInferenceInterval
+        case .fair:
+            return fairInferenceInterval
+        case .nominal:
+            return 1.0 / baselineInferenceFPS
+        @unknown default:
+            return 1.0 / baselineInferenceFPS
+        }
+    }
+
+    private func recordPerformanceIfNeeded() {
+        let now = CACurrentMediaTime()
+        let elapsed = now - performanceWindowStart
+        guard elapsed >= 5 else { return }
+        let captureFPS = Double(frameCount) / elapsed
+        let inferenceFPS = Double(inferenceCount) / elapsed
+        diagnostics?.record(type: "camera_performance", details: "captureFPS=\(captureFPS), inferenceFPS=\(inferenceFPS), thermalState=\(String(describing: thermalStateForInference()))")
+        frameCount = 0
+        inferenceCount = 0
+        performanceWindowStart = now
+    }
+
+    private func configureFrameRate(for device: AVCaptureDevice) {
+        let targetFrameDuration = CMTime(value: 1, timescale: 15)
+        guard device.activeFormat.videoSupportedFrameRateRanges.contains(where: {
+            $0.minFrameRate <= 15 && $0.maxFrameRate >= 15
+        }) else {
+            logger.warning("15 FPS not supported by active camera format")
+            return
+        }
+        do {
+            try device.lockForConfiguration()
+            device.activeVideoMinFrameDuration = targetFrameDuration
+            device.activeVideoMaxFrameDuration = targetFrameDuration
+            device.unlockForConfiguration()
+            logger.info("Camera frame rate limited to 15 FPS")
+        } catch {
+            logger.error("Unable to configure camera frame rate: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func updateThermalState() {
+        let state = ProcessInfo.processInfo.thermalState
+        thermalLock.lock()
+        let wasCritical = currentThermalState == .critical
+        let changed = currentThermalState != state
+        currentThermalState = state
+        thermalLock.unlock()
+        thermalState = state
+        guard changed else { return }
+        diagnostics?.record(type: "thermal_state_changed", details: "state=\(String(describing: state))")
+        logger.warning("Thermal state changed: \(String(describing: state), privacy: .public)")
+        if state == .critical {
+            DispatchQueue.main.async { [weak self] in
+                self?.leadVehicleDistance = nil
+                self?.leadVehicleBox = nil
+            }
+        } else if wasCritical {
+            trackedBox = nil
+            trackedBoxTimestamp = CACurrentMediaTime()
+            diagnostics?.record(type: "thermal_recovery_tracking_reset", details: "state=\(String(describing: state))")
+        }
+    }
+
+    private func thermalStateForInference() -> ProcessInfo.ThermalState {
+        thermalLock.lock()
+        defer { thermalLock.unlock() }
+        return currentThermalState
+    }
+
+    func updateVideoOrientation() {
+        updateCachedOrientation(for: UIDevice.current.orientation)
+        updateVideoOrientation(connection: output.connection(with: .video))
+    }
+
+    private func updateVideoOrientation(connection: AVCaptureConnection?) {
+        guard let connection, connection.isVideoOrientationSupported else { return }
+        connection.videoOrientation = videoOrientation
+    }
+
+    private func updateCachedOrientation(for deviceOrientation: UIDeviceOrientation) {
+        guard let videoOrientation = Self.videoOrientation(for: deviceOrientation),
+              let visionOrientation = Self.visionOrientation(for: deviceOrientation) else {
+            return
+        }
+        orientationLock.lock()
+        let changed = cachedVideoOrientation != videoOrientation || cachedVisionOrientation != visionOrientation
+        cachedVideoOrientation = videoOrientation
+        cachedVisionOrientation = visionOrientation
+        orientationLock.unlock()
+        if changed {
+            diagnostics?.record(type: "camera_orientation_changed", orientation: String(describing: deviceOrientation), details: "video=\(videoOrientation), vision=\(visionOrientation)")
+        }
+    }
+
+    private static func videoOrientation(for deviceOrientation: UIDeviceOrientation) -> AVCaptureVideoOrientation? {
+        switch deviceOrientation {
+        case .landscapeLeft: return .landscapeRight
+        case .landscapeRight: return .landscapeLeft
+        case .faceUp, .faceDown, .unknown, .portrait, .portraitUpsideDown:
+            return nil
+        @unknown default:
+            return nil
+        }
+    }
+
+    private static func visionOrientation(for deviceOrientation: UIDeviceOrientation) -> CGImagePropertyOrientation? {
+        switch deviceOrientation {
+        case .landscapeLeft: return .up
+        case .landscapeRight: return .down
+        case .faceUp, .faceDown, .unknown, .portrait, .portraitUpsideDown:
+            return nil
+        @unknown default:
+            return nil
+        }
+    }
+
+    var videoOrientation: AVCaptureVideoOrientation {
+        orientationLock.lock()
+        defer { orientationLock.unlock() }
+        return cachedVideoOrientation
+    }
+
+    private var visionOrientation: CGImagePropertyOrientation {
+        orientationLock.lock()
+        defer { orientationLock.unlock() }
+        return cachedVisionOrientation
+    }
+
+    private func handle(request: VNRequest, pixelBuffer: CVPixelBuffer) {
+        let now = CACurrentMediaTime()
+        let candidates = (request.results as? [VNRecognizedObjectObservation] ?? []).compactMap { observation -> (CGRect, Float, String)? in
+            guard let label = observation.labels.first,
+                  ["car", "truck", "bus", "motorcycle", "motorbike"].contains(label.identifier) else { return nil }
+            guard label.confidence >= 0.42 else { return nil }
+            let box = observation.boundingBox
+            guard box.width >= 0.032, box.height >= 0.032 else { return nil }
+            return (box, label.confidence, label.identifier)
+        }
+        
+        let hasLockedTarget = trackedBox != nil
+        let laneOffset = currentLaneCenterOffsetX
+        let horizonEnabled = isHorizonFilterEnabled
+        let horizonY = currentHorizonY
+        
+        let effectiveHorizonForFilter = horizonEnabled ? max(horizonY, 0.48) : horizonY
+        let ceilingY = min(effectiveHorizonForFilter, 0.45) - 0.03
+        
+        let horizonFiltered = mergeOverlappingDetections(candidates).filter { observation in
+            let box = observation.0
+            
+            if horizonEnabled {
+                let boxBottomYFromTop = 1.0 - box.minY
+                if boxBottomYFromTop < ceilingY {
+                    return false
+                }
+            }
+            return true
+        }
+        
+        var inROI: [(CGRect, Float, String)] = []
+        var outOfROI: [(CGRect, Float, String)] = []
+        
+        // Ego-vehicle hood exclusion: discard wide detections touching bottom of frame
+        let hoodFiltered = horizonFiltered.filter { observation in
+            let box = observation.0
+            let boxBottomYFromTop = 1.0 - box.minY
+            return !(boxBottomYFromTop >= 0.88 && box.width > 0.55)
+        }
+        
+        // Get dynamic lane edges from LaneDetector (normalized 0...1, top-left origin)
+        // Note: laneDetector processes frames at a lower rate, so check if it has recent data
+        let dynamicLaneEdgesAvailable = laneDetector?.leftLaneConfidence ?? 0 > 0.5 && laneDetector?.rightLaneConfidence ?? 0 > 0.5
+        
+        for observation in hoodFiltered {
+            let box = observation.0
+            
+            let bottomYFromTop = 1.0 - box.minY
+            var isInLane = false
+            
+            if dynamicLaneEdgesAvailable,
+               let laneEdges = laneDetector?.getLaneEdgesAtY(bottomYFromTop, imageSize: cameraFrameSize) {
+                // Dynamic lane edges from detected road markings
+                let leftEdge = laneEdges.left
+                let rightEdge = laneEdges.right
+                
+                // Check if box center is within lane edges OR 40% bottom edge overlap
+                let centerInside = box.midX >= leftEdge && box.midX <= rightEdge
+                let boxLeft = box.minX
+                let boxRight = box.maxX
+                let boxWidth = boxRight - boxLeft
+                if boxWidth > 0 {
+                    let overlapLeft = max(boxLeft, leftEdge)
+                    let overlapRight = min(boxRight, rightEdge)
+                    let overlapWidth = max(0, overlapRight - overlapLeft)
+                    let edgeOverlap = overlapWidth / boxWidth >= 0.40
+                    isInLane = centerInside || edgeOverlap
+                }
+            } else {
+                // Fallback to static trapezoid ROI
+                let bottomCenterInside = Self.isInsideForwardLaneROI(x: box.midX, yFromTop: bottomYFromTop,
+                                                                      laneCenterOffsetX: laneOffset,
+                                                                      truncateTopY: nil)
+                let bottomEdgeOverlap = Self.hasSufficientBottomEdgeOverlap(box: box, laneCenterOffsetX: laneOffset, bottomYFromTop: bottomYFromTop)
+                isInLane = bottomCenterInside || bottomEdgeOverlap
+            }
+            
+            if isInLane {
+                inROI.append(observation)
+            } else {
+                outOfROI.append(observation)
+            }
+        }
+        
+        DispatchQueue.main.async {
+            self.inROIVehicles = inROI
+            self.outOfROIVehicles = outOfROI
+        }
+        
+        let selected = selectLeadVehicle(from: inROI)
+        logDetectionFrame(inROI, selected: selected)
+        guard let selected else {
+            if trackedBox != nil && now - trackedBoxTimestamp < 0.20 {
+                return
+            }
+            self.trackedBox = nil
+            DispatchQueue.main.async {
+                self.leadVehicleDistance = nil
+                self.leadVehicleBox = nil
+                self.leadVehicleConfidence = 0
+            }
+            return
+        }
+        let smoothedBox = smoothTrackedBox(selected.0)
+        let realWidth: Double
+        switch selected.2 {
+        case "car": realWidth = 1.8
+        case "truck", "bus": realWidth = 2.5
+        case "motorcycle", "motorbike": realWidth = 0.75
+        default: realWidth = 1.8
+        }
+        calibrationLock.lock()
+        let factor = calibrationFactor
+        calibrationLock.unlock()
+        let normalizedBoxWidth = Double(smoothedBox.width)
+        guard normalizedBoxWidth > 0 else { return }
+        let distance = (realWidth * factor) / normalizedBoxWidth
+        let selectedConfidence = selected.1
+        DispatchQueue.main.async {
+            self.leadVehicleDistance = distance
+            self.leadVehicleBox = smoothedBox
+            self.leadVehicleConfidence = selectedConfidence
+        }
+    }
+    private func selectLeadVehicle(from observations: [(CGRect, Float, String)]) -> (CGRect, Float, String)? {
+        guard !observations.isEmpty else {
+            pendingBox = nil
+            pendingBoxFrames = 0
+            return nil
+        }
+        if let trackedBox {
+            let matching = observations.filter { isPlausibleContinuation(from: trackedBox, to: $0.0) }
+            if let closestMatch = closestVehicle(in: matching) {
+                pendingBox = nil
+                pendingBoxFrames = 0
+                return closestMatch
+            }
+
+            guard let candidate = closestVehicle(in: observations) else { return nil }
+            if let pendingBox, isPlausiblePendingMatch(from: pendingBox, to: candidate.0) {
+                self.pendingBox = candidate.0
+                pendingBoxFrames += 1
+            } else {
+                pendingBox = candidate.0
+                pendingBoxFrames = 1
+            }
+            guard pendingBoxFrames >= 3 else { return nil }
+            self.trackedBox = nil
+            pendingBox = nil
+            pendingBoxFrames = 0
+            diagnostics?.record(type: "target_switched", details: "newBox=\(candidate.0.debugDescription), confidence=\(candidate.1), label=\(candidate.2)")
+            return candidate
+        }
+        pendingBox = nil
+        pendingBoxFrames = 0
+        return closestVehicle(in: observations)
+    }
+
+    private func isPlausibleContinuation(from previous: CGRect, to candidate: CGRect) -> Bool {
+        if intersectionOverUnion(previous, candidate) >= 0.10 {
+            return true
+        }
+        let widthRatio = candidate.width / max(previous.width, 0.001)
+        let heightRatio = candidate.height / max(previous.height, 0.001)
+        return centerDistance(previous, candidate) <= 0.10 &&
+            abs(previous.midY - candidate.midY) <= 0.14 &&
+            (0.55...1.80).contains(widthRatio) &&
+            (0.55...1.80).contains(heightRatio)
+    }
+
+    private func isPlausiblePendingMatch(from previous: CGRect, to candidate: CGRect) -> Bool {
+        intersectionOverUnion(previous, candidate) >= 0.05 || centerDistance(previous, candidate) <= 0.14
+    }
+
+    private func logDetectionFrame(_ observations: [(CGRect, Float, String)], selected: (CGRect, Float, String)?) {
+        let now = CACurrentMediaTime()
+        guard now - lastDetectionLogTime >= 1 else { return }
+        lastDetectionLogTime = now
+        let candidates = observations.map {
+            String(format: "%@ conf=%.2f box=(%.3f,%.3f,%.3f,%.3f)", $0.2, $0.1, $0.0.minX, $0.0.minY, $0.0.width, $0.0.height)
+        }.joined(separator: ";")
+        let selectedDetails = selected.map {
+            String(format: "%@ conf=%.2f box=(%.3f,%.3f,%.3f,%.3f)", $0.2, $0.1, $0.0.minX, $0.0.minY, $0.0.width, $0.0.height)
+        } ?? "none"
+        diagnostics?.record(type: "detection_frame", details: "candidateCount=\(observations.count), candidates=[\(candidates)], selected=\(selectedDetails), tracked=\(trackedBox?.debugDescription ?? "none"), pendingFrames=\(pendingBoxFrames)")
+    }
+
+    private func closestVehicle(in observations: [(CGRect, Float, String)]) -> (CGRect, Float, String)? {
+        observations.max { lhs, rhs in
+            let lhsBottom = 1 - lhs.0.minY
+            let rhsBottom = 1 - rhs.0.minY
+            if abs(lhsBottom - rhsBottom) < 0.01 {
+                return lhs.0.width < rhs.0.width
+            }
+            return lhsBottom < rhsBottom
+        }
+    }
+
+    private func mergeOverlappingDetections(_ observations: [(CGRect, Float, String)]) -> [(CGRect, Float, String)] {
+        var merged: [(CGRect, Float, String)] = []
+        for observation in observations {
+            guard let index = merged.firstIndex(where: { intersectionOverUnion($0.0, observation.0) > 0.30 }) else {
+                merged.append(observation)
+                continue
+            }
+            let existing = merged[index]
+            let label = existing.1 >= observation.1 ? existing.2 : observation.2
+            merged[index] = (existing.0.union(observation.0), max(existing.1, observation.1), label)
+        }
+        return merged
+    }
+
+    private func smoothTrackedBox(_ box: CGRect) -> CGRect {
+        let alpha: CGFloat = 0.35
+        let smoothed: CGRect
+        if let trackedBox {
+            smoothed = CGRect(
+                x: trackedBox.minX + (box.minX - trackedBox.minX) * alpha,
+                y: trackedBox.minY + (box.minY - trackedBox.minY) * alpha,
+                width: trackedBox.width + (box.width - trackedBox.width) * alpha,
+                height: trackedBox.height + (box.height - trackedBox.height) * alpha
+            )
+        } else {
+            smoothed = box
+        }
+        trackedBox = smoothed
+        trackedBoxTimestamp = CACurrentMediaTime()
+        return smoothed
+    }
+
+    private func intersectionOverUnion(_ lhs: CGRect, _ rhs: CGRect) -> CGFloat {
+        let intersection = lhs.intersection(rhs)
+        guard !intersection.isNull, intersection.width > 0, intersection.height > 0 else { return 0 }
+        let union = lhs.area + rhs.area - intersection.area
+        return union > 0 ? intersection.area / union : 0
+    }
+
+    private func centerDistance(_ lhs: CGRect, _ rhs: CGRect) -> CGFloat {
+        hypot(lhs.midX - rhs.midX, lhs.midY - rhs.midY)
+    }
+
+    // MARK: - Forward Lane ROI
+    
+    private static func isInsideForwardLaneROI(x: CGFloat, yFromTop: CGFloat,
+                                                laneCenterOffsetX: Double,
+                                                truncateTopY: CGFloat? = nil) -> Bool {
+        let topY: CGFloat = 0.38
+        let bottomY: CGFloat = 0.95
+        let topWidth: CGFloat = 0.22
+        let bottomWidth: CGFloat = 0.48
+        
+        guard yFromTop >= topY && yFromTop <= bottomY else { return false }
+        
+        let progress = (yFromTop - topY) / (bottomY - topY)
+        let centerX = 0.5 + laneCenterOffsetX
+        let halfTopWidth = topWidth / 2
+        let halfBottomWidth = bottomWidth / 2
+        
+        let left = centerX - (halfTopWidth + (halfBottomWidth - halfTopWidth) * progress)
+        let right = centerX + (halfTopWidth + (halfBottomWidth - halfTopWidth) * progress)
+        
+        if let truncateY = truncateTopY, yFromTop < truncateY {
+            return false
+        }
+        
+        return x >= left && x <= right
+    }
+    
+    private static func hasSufficientBottomEdgeOverlap(box: CGRect, laneCenterOffsetX: Double, bottomYFromTop: CGFloat) -> Bool {
+        let topY: CGFloat = 0.38
+        let bottomY: CGFloat = 0.95
+        let topWidth: CGFloat = 0.22
+        let bottomWidth: CGFloat = 0.48
+        
+        let boxBottomY = box.minY
+        let yFromTop = bottomYFromTop
+        guard yFromTop >= topY && yFromTop <= bottomY else { return false }
+        
+        let progress = (yFromTop - topY) / (bottomY - topY)
+        let centerX = 0.5 + laneCenterOffsetX
+        let halfTopWidth = topWidth / 2
+        let halfBottomWidth = bottomWidth / 2
+        
+        let trapLeft = centerX - (halfTopWidth + (halfBottomWidth - halfTopWidth) * progress)
+        let trapRight = centerX + (halfTopWidth + (halfBottomWidth - halfTopWidth) * progress)
+        
+        let boxLeft = box.minX
+        let boxRight = box.maxX
+        let boxWidth = boxRight - boxLeft
+        guard boxWidth > 0 else { return false }
+        
+        let overlapLeft = max(boxLeft, trapLeft)
+        let overlapRight = min(boxRight, trapRight)
+        let overlapWidth = max(0, overlapRight - overlapLeft)
+        
+        return overlapWidth / boxWidth >= 0.40
+    }
+}
+
+private extension CGRect {
+    var area: CGFloat { width * height }
+}
+import AVFoundation
+import SwiftUI
+import UIKit
+import os
+
+struct CameraPreview: UIViewRepresentable {
+    let camera: CameraManager
+
+    func makeUIView(context: Context) -> PreviewView {
+        PreviewView(camera: camera)
+    }
+
+    func updateUIView(_ view: PreviewView, context: Context) {
+        view.updatePreviewLayout()
+    }
+}
+
+final class PreviewView: UIView {
+    private let camera: CameraManager
+    private var orientationObserver: NSObjectProtocol?
+    private var sessionObserver: NSObjectProtocol?
+    private let logger = Logger(subsystem: "vn.ai.driveassistant", category: "Preview")
+
+    override class var layerClass: AnyClass {
+        AVCaptureVideoPreviewLayer.self
+    }
+
+    var previewLayer: AVCaptureVideoPreviewLayer? {
+        layer as? AVCaptureVideoPreviewLayer
+    }
+
+    init(camera: CameraManager) {
+        self.camera = camera
+        super.init(frame: .zero)
+        configurePreview()
+    }
+
+    required init?(coder: NSCoder) {
+        self.camera = CameraManager()
+        super.init(coder: coder)
+        configurePreview()
+    }
+
+    private func configurePreview() {
+        backgroundColor = .black
+        isOpaque = true
+        autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        if let previewLayer = previewLayer {
+            previewLayer.session = camera.session
+            previewLayer.videoGravity = .resizeAspectFill
+        }
+        logger.info("Preview created; bounds=\(self.bounds.debugDescription, privacy: .public)")
+
+        UIDevice.current.beginGeneratingDeviceOrientationNotifications()
+        orientationObserver = NotificationCenter.default.addObserver(
+            forName: UIDevice.orientationDidChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.updatePreviewLayout()
+            }
+        }
+        sessionObserver = NotificationCenter.default.addObserver(
+            forName: NSNotification.Name.AVCaptureSessionDidStartRunning,
+            object: camera.session,
+            queue: .main
+        ) { [weak self] _ in
+            self?.updatePreviewLayout()
+        }
+    }
+
+    deinit {
+        if let orientationObserver {
+            NotificationCenter.default.removeObserver(orientationObserver)
+        }
+        if let sessionObserver {
+            NotificationCenter.default.removeObserver(sessionObserver)
+        }
+        UIDevice.current.endGeneratingDeviceOrientationNotifications()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        updatePreviewLayout()
+    }
+
+    func updatePreviewLayout() {
+        guard let previewLayer = previewLayer else { return }
+        previewLayer.frame = bounds
+        previewLayer.videoGravity = .resizeAspectFill
+        camera.updateVideoOrientation()
+        logger.debug("Preview layout; bounds=\(self.bounds.debugDescription, privacy: .public) orientation=\(String(describing: self.camera.videoOrientation), privacy: .public)")
+        guard let connection = previewLayer.connection else { return }
+        if connection.isVideoOrientationSupported {
+            connection.videoOrientation = camera.videoOrientation
+        }
+    }
+}
+import AVFoundation
+import CoreLocation
+import CoreMotion
+import Photos
+import SwiftUI
+import UIKit
+
+struct ContentView: View {
+    @ObservedObject var model: DriveAssistantModel
+    @State private var screenshotFlash = false
+    @State private var screenshotSaved = false
+    @State private var isCapturingScreenshot = false
+
+    private var activeStateColor: Color {
+        switch model.alertState {
+        case .normal: return Color(red: 0.0, green: 0.902, blue: 0.463)
+        case .warning: return Color(red: 1.0, green: 0.769, blue: 0.0)
+        case .critical: return Color(red: 1.0, green: 0.09, blue: 0.267)
+        }
+    }
+
+    private func takeScreenshot() {
+        isCapturingScreenshot = true
+
+        // Flash screen
+        withAnimation(.easeInOut(duration: 0.08)) { screenshotFlash = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            withAnimation(.easeInOut(duration: 0.15)) { screenshotFlash = false }
+        }
+
+        // Allow SwiftUI to render CameraPreview hidden before capturing
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) {
+            // Capture the full screen (HUD overlay)
+            guard let window = UIApplication.shared.connectedScenes
+                .compactMap({ ($0 as? UIWindowScene)?.keyWindow }).first else {
+                isCapturingScreenshot = false
+                return
+            }
+
+            let bounds = window.bounds
+            let renderer = UIGraphicsImageRenderer(bounds: bounds)
+
+            // First get the camera frame
+            let cameraImage = model.camera.snapshotCameraImage()
+
+            let composited = renderer.image { ctx in
+                // 1. Draw camera image (aspectFill to match CameraPreview)
+                if let camImg = cameraImage {
+                    let videoSize = model.camera.cameraFrameSize
+                    let scale = max(bounds.width / videoSize.width, bounds.height / videoSize.height)
+                    let scaledVideoSize = CGSize(width: videoSize.width * scale, height: videoSize.height * scale)
+                    let xOffset = (bounds.width - scaledVideoSize.width) / 2
+                    let yOffset = (bounds.height - scaledVideoSize.height) / 2
+                    camImg.draw(in: CGRect(x: xOffset, y: yOffset, width: scaledVideoSize.width, height: scaledVideoSize.height))
+                }
+
+                // 2. Draw the HUD overlay (window hierarchy) - skip CameraPreview black background
+                window.drawHierarchy(in: bounds, afterScreenUpdates: true)
+            }
+
+            isCapturingScreenshot = false
+
+            // Save to photo library
+            PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
+                guard status == .authorized else { return }
+                PHPhotoLibrary.shared().performChanges({
+                    PHAssetChangeRequest.creationRequestForAsset(from: composited)
+                }) { success, _ in
+                    if success {
+                        DispatchQueue.main.async { screenshotSaved = true }
+                    }
+                }
+            }
+        }
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            let screenBox = model.camera.leadVehicleBox.map { screenRect(forVisionBox: $0, in: proxy.size) }
+            ZStack {
+                if model.ecoBlackHUD || model.hudMirrorMode {
+                    Color.black
+                } else if isCapturingScreenshot {
+                    Color.clear
+                } else {
+                    CameraPreview(camera: model.camera)
+                }
+
+                if model.showHorizonGuide && model.motion.isActive {
+                    HorizonOverlay(motion: model.motion)
+                }
+
+                LaneCarpet(cameraFrameSize: model.camera.cameraFrameSize, laneDetector: model.laneDetector, vehicleRect: screenBox, horizonY: model.motion.effectiveHorizonY, isLDWSEnabled: model.enableLaneDetection)
+
+                if let screenBox {
+                    VehicleTargetOverlay(screenRect: screenBox, distance: model.distance, color: activeStateColor)
+                }
+
+                // Out-of-ROI vehicles: subtle gray boxes (no alerts)
+                if model.showOutOfROIVehicles {
+                    ForEach(Array(model.camera.outOfROIVehicles.enumerated()), id: \.offset) { _, item in
+                        let (box, conf, label) = item
+                        let screenRect = screenRect(forVisionBox: box, in: proxy.size)
+                        Rectangle()
+                            .stroke(Color.gray.opacity(0.35), lineWidth: 1)
+                            .frame(width: screenRect.width, height: screenRect.height)
+                            .position(x: screenRect.midX, y: screenRect.midY)
+                            .allowsHitTesting(false)
+                    }
+                }
+
+                hud
+            }
+        }
+        .background(Color.black)
+        .ignoresSafeArea(.all)
+        .scaleEffect(x: 1, y: model.hudMirrorMode ? -1 : 1)
+        .sheet(isPresented: $model.isSettingsPresented) { SettingsView(model: model) }
+        .statusBarHidden(true)
+        .onAppear { model.start() }
+        .onDisappear { model.stop() }
+        .overlay(alignment: .top) {
+            if model.camera.cameraAuthorizationStatus == .denied || model.camera.cameraAuthorizationStatus == .restricted {
+                CameraPermissionBanner()
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            if screenshotFlash {
+                Color.white.opacity(0.3)
+                    .ignoresSafeArea()
+                    .transition(.opacity)
+            }
+        }
+        .alert("Screenshot saved", isPresented: $screenshotSaved) {
+            Button("OK", role: .cancel) {}
+        }
+    }
+
+    private func screenRect(forVisionBox box: CGRect, in screenSize: CGSize) -> CGRect {
+        let videoSize = model.camera.cameraFrameSize
+        let scale = max(screenSize.width / videoSize.width, screenSize.height / videoSize.height)
+        let scaledVideoSize = CGSize(width: videoSize.width * scale, height: videoSize.height * scale)
+        let xOffset = (screenSize.width - scaledVideoSize.width) / 2
+        let yOffset = (screenSize.height - scaledVideoSize.height) / 2
+        let rawRect = CGRect(
+            x: box.minX * videoSize.width,
+            y: (1 - box.maxY) * videoSize.height,
+            width: box.width * videoSize.width,
+            height: box.height * videoSize.height
+        )
+        return CGRect(
+            x: rawRect.minX * scale + xOffset,
+            y: rawRect.minY * scale + yOffset,
+            width: rawRect.width * scale,
+            height: rawRect.height * scale
+        )
+    }
+
+    private var hud: some View {
+        GeometryReader { _ in
+            VStack {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        GPSSpeedPill(speed: model.speedKMPH, accuracy: model.gpsAccuracy, glassEnabled: model.glassHUD, nightDim: model.isNightThemeActive && !model.hudMirrorMode)
+                        ThermalBadge(state: model.camera.thermalState)
+                    }
+                    Spacer()
+                    RuleWeatherPill(model: model, nightDim: model.isNightThemeActive && !model.hudMirrorMode)
+                }
+                .padding(.horizontal, 28)
+                .padding(.top, 22)
+
+                Spacer()
+
+                HStack(alignment: .bottom) {
+                    DistanceCard(model: model, color: activeStateColor, nightDim: model.isNightThemeActive && !model.hudMirrorMode)
+                    Spacer()
+                    HStack(spacing: 10) {
+                        Button { takeScreenshot() } label: {
+                            Image(systemName: "camera.fill")
+                                .foregroundColor(.white)
+                                .font(.system(size: 20, weight: .semibold))
+                                .frame(width: 50, height: 50)
+                                .glassCircle(enabled: model.glassHUD)
+                        }
+                        Button { model.ecoBlackHUD.toggle() } label: {
+                            Image(systemName: model.ecoBlackHUD ? "leaf.fill" : "flame.fill")
+                                .foregroundColor(model.ecoBlackHUD ? .green : .white)
+                                .font(.system(size: 20, weight: .semibold))
+                                .frame(width: 50, height: 50)
+                                .glassCircle(enabled: model.glassHUD)
+                        }
+                        Button { model.isSettingsPresented = true } label: {
+                            Image(systemName: "gearshape.fill")
+                                .foregroundColor(.white)
+                                .font(.system(size: 20, weight: .semibold))
+                                .frame(width: 50, height: 50)
+                                .glassCircle(enabled: model.glassHUD)
+                        }
+                    }
+                }
+                .padding(.horizontal, 28)
+                .padding(.bottom, 24)
+            }
+        }
+        .ignoresSafeArea(.all)
+    }
+
+}
+
+private struct CameraPermissionBanner: View {
+    var body: some View {
+        HStack {
+            Image(systemName: "camera.fill")
+                .font(.system(size: 16, weight: .semibold))
+            Text("Camera access denied. Enable in Settings to use DriveAssistant.")
+                .font(.system(size: 14, weight: .medium, design: .rounded))
+            Spacer()
+        }
+        .foregroundColor(.white)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 12)
+        .background(Color.red.opacity(0.9), in: RoundedRectangle(cornerRadius: 12))
+        .padding(.horizontal, 20)
+        .padding(.top, 12)
+    }
+}
+
+private struct GPSSpeedPill: View {
+    let speed: Double
+    let accuracy: CLLocationAccuracy
+    let glassEnabled: Bool
+    let nightDim: Bool
+
+    private var signalColor: Color { accuracy >= 0 && accuracy < 20 ? .cyan : .gray }
+
+    var body: some View {
+        HStack(spacing: 10) {
+
+            Image(systemName: "antenna.radiowaves.left.and.right")
+                .font(.system(size: 21, weight: .bold))
+                .foregroundColor(signalColor)
+            Text(String(format: "%.0f", speed))
+                .font(.system(size: 28, weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .foregroundColor(.white)
+            Text("km/h")
+                .font(.system(size: 16, weight: .semibold, design: .rounded))
+                .foregroundColor(.white.opacity(nightDim ? 0.78 : 0.82))
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .glassCapsule(enabled: glassEnabled, nightDim: nightDim)
+    }
+}
+
+
+private struct RuleWeatherPill: View {
+    @ObservedObject var model: DriveAssistantModel
+    let nightDim: Bool
+
+    var body: some View {
+        Button(action: model.cycleRoadCondition) {
+            HStack(spacing: 10) {
+                Text(model.distanceRuleMode == .vnLaw ? "TT38 • MIN \(String(format: "%.0f", model.activeMinimumDistance))m" : "MIN \(String(format: "%.0f", model.activeMinimumDistance))m")
+                    .font(.system(size: 16, weight: .bold, design: .rounded))
+                Divider().frame(height: 20).overlay(Color.white.opacity(nightDim ? 0.27 : 0.35))
+                
+                // LDWS status indicator (compact)
+                if model.enableLaneDetection && (model.laneDetector.isLaneDetectionActive || model.laneDetector.isSpeedGated) {
+                    VStack(spacing: 1) {
+                        Image(systemName: "road.lanes")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(ldwsStatusColor)
+                        Text("LDWS")
+                            .font(.system(size: 9, weight: .medium, design: .rounded))
+                            .foregroundColor(ldwsStatusColor)
+                    }
+                    Divider().frame(height: 20).overlay(Color.white.opacity(nightDim ? 0.27 : 0.35))
+                }
+                
+                VStack(spacing: 1) {
+                    Image(systemName: weatherIcon)
+                        .font(.system(size: 13, weight: .semibold))
+                    Text(weatherText)
+                        .font(.system(size: 9, weight: .medium, design: .rounded))
+                }
+            }
+            .foregroundColor(.white.opacity(nightDim ? 0.78 : 1.0))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 11)
+            .glassCapsule(enabled: model.glassHUD, nightDim: nightDim)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var ldwsStatusColor: Color {
+        if model.laneDetector.isSpeedGated {
+            return .gray
+        }
+        switch model.laneDetector.departureState {
+        case .driftingLeft, .driftingRight:
+            return model.laneDetector.departureAlertActive ? .red : .orange
+        case .none:
+            return .cyan
+        }
+    }
+
+    private var weatherText: String {
+        if model.usesVietnamese {
+            switch model.roadCondition {
+            case .auto: return "Tự động"
+            case .dry: return "Nắng"
+            case .wet: return "Mưa"
+            }
+        } else {
+            switch model.roadCondition {
+            case .auto: return "Auto"
+            case .dry: return "Dry"
+            case .wet: return "Wet"
+            }
+        }
+    }
+
+    private var weatherIcon: String { model.effectiveRoadCondition == .wet ? "cloud.rain.fill" : "sun.max.fill" }
+}
+private struct DistanceCard: View {
+    @ObservedObject var model: DriveAssistantModel
+    let color: Color
+    let nightDim: Bool
+
+    private var progress: Double {
+        guard let distance = model.distance else { return 0 }
+        return min(max(distance / max(model.activeMinimumDistance * 1.5, 1), 0), 1)
+    }
+
+    private var statusText: String {
+        if model.usesVietnamese {
+            switch model.alertState {
+            case .normal: return "Đủ khoảng cách"
+            case .warning: return "Thiếu khoảng cách"
+            case .critical: return "Quá gần"
+            }
+        } else {
+            switch model.alertState {
+            case .normal: return "Safe gap"
+            case .warning: return "Gap closing"
+            case .critical: return "Too close"
+            }
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .lastTextBaseline, spacing: 7) {
+                Text(model.distance.map { String(format: "%.0f", $0) } ?? "--")
+                    .font(.system(size: 54, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundColor(.white)
+                Text("m")
+                    .font(.system(size: 22, weight: .bold, design: .rounded))
+                    .foregroundColor(.white.opacity(0.9))
+            }
+            Text(statusText)
+                .font(.system(size: 13, weight: .bold, design: .rounded))
+                .foregroundColor(color)
+            SegmentedProgressBar(progress: progress, color: color, activeMinimumDistance: model.activeMinimumDistance)
+        }
+        .padding(18)
+        .frame(width: 245, alignment: .leading)
+        .glassCard(cornerRadius: 20, enabled: model.glassHUD, nightDim: nightDim)
+    }
+}
+
+private struct SegmentedProgressBar: View {
+    let progress: Double
+    let color: Color
+    let activeMinimumDistance: Double
+
+    private var thresholdRatio: Double {
+        activeMinimumDistance / (activeMinimumDistance * 1.5)
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            let spacing: CGFloat = 4
+            let segmentWidth = (proxy.size.width - spacing * 9) / 10
+            ZStack(alignment: .leading) {
+                HStack(spacing: spacing) {
+                    ForEach(0..<10, id: \.self) { index in
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(Double(index) / 10 < progress ? color : Color.white.opacity(0.20))
+                            .frame(width: segmentWidth, height: 6)
+                    }
+                }
+                Rectangle()
+                    .fill(Color.white)
+                    .frame(width: 2, height: 14)
+                    .offset(x: proxy.size.width * thresholdRatio - 1)
+            }
+        }
+        .frame(height: 14)
+    }
+}
+
+private struct LaneCarpet: View {
+    let cameraFrameSize: CGSize
+    @ObservedObject var laneDetector: LaneDetector
+    let vehicleRect: CGRect?
+    let horizonY: Double
+    let isLDWSEnabled: Bool
+
+    var body: some View {
+        GeometryReader { proxy in
+            let canvasSize = proxy.size
+            
+            // Use dynamic lanes if detected with good confidence, else static fallback
+            let (leftPath, rightPath, fillPath, leftColor, rightColor, showLeftAlert, showRightAlert) = buildLanePaths(canvasSize: canvasSize, cameraFrameSize: cameraFrameSize)
+            
+            ZStack {
+                // Interior fill
+                fillPath
+                    .fill(
+                        LinearGradient(
+                            colors: [.cyan.opacity(0.08), .cyan.opacity(0.0)],
+                            startPoint: .bottom,
+                            endPoint: .top
+                        )
+                    )
+                
+                // Left lane line - color based on state: cyan (normal) -> amber (drifting) -> red (alert)
+                leftPath
+                    .stroke(
+                        LinearGradient(
+                            colors: [leftColor.opacity(0.55), leftColor.opacity(0.0)],
+                            startPoint: .bottom,
+                            endPoint: .top
+                        ),
+                        style: StrokeStyle(lineWidth: 2.5, lineCap: .round)
+                    )
+                
+                // Right lane line
+                rightPath
+                    .stroke(
+                        LinearGradient(
+                            colors: [rightColor.opacity(0.55), rightColor.opacity(0.0)],
+                            startPoint: .bottom,
+                            endPoint: .top
+                        ),
+                        style: StrokeStyle(lineWidth: 2.5, lineCap: .round)
+                    )
+                
+                // Departure pulsing alert on crossed rail
+                if showLeftAlert {
+                    leftPath
+                        .stroke(Color.red.opacity(0.9), style: StrokeStyle(lineWidth: 5, lineCap: .round, dash: [6, 3]))
+                        .animation(.easeInOut(duration: 0.4).repeatForever(autoreverses: true), value: laneDetector.departureAlertActive)
+                }
+                if showRightAlert {
+                    rightPath
+                        .stroke(Color.red.opacity(0.9), style: StrokeStyle(lineWidth: 5, lineCap: .round, dash: [6, 3]))
+                        .animation(.easeInOut(duration: 0.4).repeatForever(autoreverses: true), value: laneDetector.departureAlertActive)
+                }
+            }
+        }
+        .ignoresSafeArea(.all)
+        .allowsHitTesting(false)
+    }
+    
+    private func buildLanePaths(canvasSize: CGSize, cameraFrameSize: CGSize) -> (left: Path, right: Path, fill: Path, leftColor: Color, rightColor: Color, showLeftAlert: Bool, showRightAlert: Bool) {
+        var leftPath = Path()
+        var rightPath = Path()
+        var fillPath = Path()
+        
+        let hasDynamicLanes = laneDetector.isLaneDetectionActive &&
+                              laneDetector.leftLaneConfidence > 0.5 &&
+                              laneDetector.rightLaneConfidence > 0.5 &&
+                              !laneDetector.leftLanePoints.isEmpty &&
+                              !laneDetector.rightLanePoints.isEmpty
+        
+        // Determine colors based on departure state
+        let leftColor: Color
+        let rightColor: Color
+        let showLeftAlert: Bool
+        let showRightAlert: Bool
+        
+        switch laneDetector.departureState {
+        case .driftingLeft:
+            leftColor = .orange
+            rightColor = .cyan
+            showLeftAlert = laneDetector.departureAlertActive
+            showRightAlert = false
+        case .driftingRight:
+            leftColor = .cyan
+            rightColor = .orange
+            showLeftAlert = false
+            showRightAlert = laneDetector.departureAlertActive
+        case .none:
+            leftColor = .cyan
+            rightColor = .cyan
+            showLeftAlert = false
+            showRightAlert = false
+        }
+        
+
+        if hasDynamicLanes {
+            // Aspect-fill transform matching screenRect(forVisionBox:in:)
+            let videoSize = cameraFrameSize
+            let scale = max(canvasSize.width / videoSize.width, canvasSize.height / videoSize.height)
+            let scaledVideoSize = CGSize(width: videoSize.width * scale, height: videoSize.height * scale)
+            let xOffset = (canvasSize.width - scaledVideoSize.width) / 2
+            let yOffset = (canvasSize.height - scaledVideoSize.height) / 2
+            func transformPoint(_ pt: CGPoint) -> CGPoint {
+                // pt is normalized (0..1) top-left origin from LaneDetector
+                // Convert directly to raw video pixel coordinates (no Y-flip needed)
+                let rawX = pt.x * videoSize.width
+                let rawY = pt.y * videoSize.height
+                // Apply aspect-fill scale and offset
+                return CGPoint(x: rawX * scale + xOffset, y: rawY * scale + yOffset)
+            }
+
+            let leftPoints = laneDetector.leftLanePoints.map(transformPoint)
+            let rightPoints = laneDetector.rightLanePoints.map(transformPoint)
+
+            leftPath.move(to: leftPoints[0])
+            for i in 1..<leftPoints.count {
+                leftPath.addLine(to: leftPoints[i])
+            }
+
+            rightPath.move(to: rightPoints[0])
+            for i in 1..<rightPoints.count {
+                rightPath.addLine(to: rightPoints[i])
+            }
+
+            fillPath.move(to: leftPoints[0])
+            for point in leftPoints { fillPath.addLine(to: point) }
+            for point in rightPoints.reversed() { fillPath.addLine(to: point) }
+            fillPath.closeSubpath()
+
+        } else {
+
+            // Static fallback trapezoid
+            let topY = vehicleRect?.maxY ?? canvasSize.height * horizonY
+            let topWidth = vehicleRect?.width ?? canvasSize.width * 0.12
+            let topCenter = vehicleRect?.midX ?? canvasSize.width / 2
+            let bottomY = canvasSize.height
+            let bottomWidth = canvasSize.width * 0.36
+            let leftTop = CGPoint(x: topCenter - topWidth / 2, y: topY)
+            let rightTop = CGPoint(x: topCenter + topWidth / 2, y: topY)
+            let leftBottom = CGPoint(x: canvasSize.width / 2 - bottomWidth / 2, y: bottomY)
+            let rightBottom = CGPoint(x: canvasSize.width / 2 + bottomWidth / 2, y: bottomY)
+            
+            leftPath.move(to: leftBottom)
+            leftPath.addLine(to: leftTop)
+            
+            rightPath.move(to: rightTop)
+            rightPath.addLine(to: rightBottom)
+            
+            fillPath.move(to: leftTop)
+            fillPath.addLine(to: rightTop)
+            fillPath.addLine(to: rightBottom)
+            fillPath.addLine(to: leftBottom)
+            fillPath.closeSubpath()
+        }
+        
+        return (leftPath, rightPath, fillPath, leftColor, rightColor, showLeftAlert, showRightAlert)
+    }
+}
+
+private struct LaneCarpetShape: Shape {
+    let vehicleRect: CGRect?
+    let canvasSize: CGSize
+    let horizonY: Double
+
+    func path(in rect: CGRect) -> Path {
+        let topY = vehicleRect?.maxY ?? canvasSize.height * horizonY
+        let topWidth = vehicleRect?.width ?? canvasSize.width * 0.12
+        let topCenter = vehicleRect?.midX ?? canvasSize.width / 2
+        let bottomY = canvasSize.height
+        let bottomWidth = canvasSize.width * 0.36
+        return Path { path in
+            path.move(to: CGPoint(x: topCenter - topWidth / 2, y: topY))
+            path.addLine(to: CGPoint(x: topCenter + topWidth / 2, y: topY))
+            path.addLine(to: CGPoint(x: canvasSize.width / 2 + bottomWidth / 2, y: bottomY))
+            path.addLine(to: CGPoint(x: canvasSize.width / 2 - bottomWidth / 2, y: bottomY))
+            path.closeSubpath()
+        }
+    }
+}
+
+private struct VehicleTargetOverlay: View {
+    let screenRect: CGRect
+    let distance: Double?
+    let color: Color
+    @State private var pulse = false
+
+    var body: some View {
+        GeometryReader { proxy in
+            let tagX = min(max(screenRect.maxX + 6 + 24, 24), proxy.size.width - 24)
+            let tagY = min(max(screenRect.minY - 12, 14), proxy.size.height - 14)
+            BracketShape(screenRect: screenRect)
+                .stroke(color, style: StrokeStyle(lineWidth: 3, lineCap: .square, lineJoin: .round))
+                .shadow(color: color.opacity(0.8), radius: 5)
+                .overlay(alignment: .topLeading) {
+                    if let distance {
+                        Text(String(format: "%.0fm", distance))
+                            .font(.system(size: 13, weight: .bold, design: .rounded))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 5)
+                            .background(Color.black.opacity(0.62), in: Capsule())
+                            .position(x: tagX, y: tagY)
+                    }
+                }
+                .opacity(pulse ? 0.45 : 1)
+                .animation(.easeInOut(duration: 0.55).repeatForever(autoreverses: true), value: pulse)
+        }
+        .onAppear {
+            withAnimation(.easeInOut(duration: 0.55).repeatForever(autoreverses: true)) { pulse = true }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+private struct ThermalBadge: View {
+    let state: ProcessInfo.ThermalState
+
+    var body: some View {
+        if state == .serious || state == .critical {
+            Label(state == .critical ? "AI PAUSED (COOLING)" : "Phone warm · AI 3 FPS", systemImage: "thermometer.high")
+                .font(.system(size: 12, weight: .bold, design: .rounded))
+                .foregroundColor(.orange)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Color.black.opacity(0.55), in: Capsule())
+        }
+    }
+}
+
+private struct BracketShape: Shape {
+    let screenRect: CGRect
+
+    func path(in rect: CGRect) -> Path {
+        let left = screenRect.minX
+        let right = screenRect.maxX
+        let top = screenRect.minY
+        let bottom = screenRect.maxY
+        let length = min(22, min(right - left, bottom - top) * 0.3)
+        return Path { path in
+            path.move(to: CGPoint(x: left, y: top + length)); path.addLine(to: CGPoint(x: left, y: top)); path.addLine(to: CGPoint(x: left + length, y: top))
+            path.move(to: CGPoint(x: right - length, y: top)); path.addLine(to: CGPoint(x: right, y: top)); path.addLine(to: CGPoint(x: right, y: top + length))
+            path.move(to: CGPoint(x: left, y: bottom - length)); path.addLine(to: CGPoint(x: left, y: bottom)); path.addLine(to: CGPoint(x: left + length, y: bottom))
+            path.move(to: CGPoint(x: right - length, y: bottom)); path.addLine(to: CGPoint(x: right, y: bottom)); path.addLine(to: CGPoint(x: right, y: bottom - length))
+        }
+    }
+}
+
+private struct HorizonOverlay: View {
+    @ObservedObject var motion: MotionManager
+    
+    private var levelColor: Color {
+        (motion.isLevel || motion.isMountAligned) ? Color(red: 0.0, green: 0.902, blue: 0.463) : Color(red: 1.0, green: 0.769, blue: 0.0)
+    }
+    
+    private var levelText: String {
+        if motion.isMountAligned {
+            return "MOUNT ALIGNED"
+        } else if motion.isLevel {
+            return "0.0° LEVEL"
+        } else {
+            return String(format: "R: %.1f° P: %.1f°", motion.deltaRoll, motion.deltaPitch)
+        }
+    }
+    
+    private var rollRadians: Double { motion.rollDegrees * .pi / 180 }
+    
+    private func makeLinePath(in size: CGSize) -> Path {
+        let center = CGPoint(x: size.width / 2, y: size.height / 2)
+        let horizonY = size.height * motion.effectiveHorizonY
+        let lineLen = size.width * 1.2
+        let halfLen = lineLen / 2
+        let rollRad = rollRadians
+        let dy = horizonY - center.y
+        
+        let rotCenterX = center.x - dy * sin(rollRad)
+        let rotCenterY = center.y + dy * cos(rollRad)
+        let dirX = cos(rollRad)
+        let dirY = sin(rollRad)
+        
+        let startX = rotCenterX - dirX * halfLen
+        let startY = rotCenterY - dirY * halfLen
+        let endX = rotCenterX + dirX * halfLen
+        let endY = rotCenterY + dirY * halfLen
+        
+        return Path { path in
+            path.move(to: CGPoint(x: startX, y: startY))
+            path.addLine(to: CGPoint(x: endX, y: endY))
+        }
+    }
+    
+    var body: some View {
+        GeometryReader { proxy in
+            let linePath = makeLinePath(in: proxy.size)
+            let center = CGPoint(x: proxy.size.width / 2, y: proxy.size.height / 2)
+            
+            let horizonLine = linePath
+                .stroke(style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: [12, 8], dashPhase: 0))
+                .foregroundColor(levelColor)
+                .shadow(color: levelColor.opacity(0.6), radius: 3)
+            
+            let centerText = Text(levelText)
+                .font(.system(size: 14, weight: .bold, design: .rounded))
+                .foregroundColor(levelColor)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Color.black.opacity(0.65), in: Capsule())
+                .position(center)
+            
+            ZStack {
+                horizonLine
+                centerText
+            }
+        }
+        .allowsHitTesting(false)
+        .ignoresSafeArea(.all)
+    }
+}
+
+extension View {
+    func glassCapsule(enabled: Bool, nightDim: Bool = false) -> some View {
+        modifier(GlassBackgroundModifier(shape: Capsule(), isEnabled: enabled, nightDim: nightDim))
+    }
+
+    func glassCard(cornerRadius: CGFloat, enabled: Bool, nightDim: Bool = false) -> some View {
+        modifier(GlassBackgroundModifier(shape: RoundedRectangle(cornerRadius: cornerRadius), isEnabled: enabled, nightDim: nightDim))
+    }
+
+    func glassCircle(enabled: Bool, nightDim: Bool = false) -> some View {
+        modifier(GlassBackgroundModifier(shape: Circle(), isEnabled: enabled, nightDim: nightDim))
+    }
+}
+
+private struct GlassBackgroundModifier<ShapeType: Shape>: ViewModifier {
+    let shape: ShapeType
+    let isEnabled: Bool
+    let nightDim: Bool
+
+    func body(content: Content) -> some View {
+        content.background {
+            if isEnabled {
+                GlassSurface(shape: shape, nightDim: nightDim)
+            } else {
+                SolidSurface(shape: shape, nightDim: nightDim)
+            }
+        }
+    }
+}
+
+private struct GlassSurface<ShapeType: Shape>: View {
+    let shape: ShapeType
+    let nightDim: Bool
+
+    var body: some View {
+        shape
+            .fill(.ultraThinMaterial)
+            .overlay(
+                LinearGradient(
+                    colors: [
+                        Color.white.opacity(nightDim ? 0.15 : 0.22),
+                        Color.white.opacity(nightDim ? 0.03 : 0.05),
+                        Color.black.opacity(nightDim ? 0.10 : 0.07)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                .clipShape(shape)
+            )
+            .overlay(
+                shape
+                    .stroke(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(nightDim ? 0.30 : 0.45),
+                                Color.white.opacity(nightDim ? 0.05 : 0.08),
+                                Color.white.opacity(nightDim ? 0.15 : 0.22)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 1
+                    )
+            )
+            .shadow(color: Color.black.opacity(nightDim ? 0.20 : 0.16), radius: 10, x: 0, y: 5)
+    }
+}
+
+private struct SolidSurface<ShapeType: Shape>: View {
+    let shape: ShapeType
+    let nightDim: Bool
+
+    var body: some View {
+        shape
+            .fill(Color.black.opacity(nightDim ? 0.75 : 0.58))
+            .overlay(shape.stroke(Color.white.opacity(nightDim ? 0.08 : 0.12), lineWidth: 1))
+    }
+}
+import Foundation
+import UIKit
+import os
+
+struct DiagnosticEvent: Codable {
+    let timestamp: Date
+    let type: String
+    let speedKMPH: Double?
+    let distanceMeters: Double?
+    let isDangerous: Bool?
+    let orientation: String?
+    let details: String?
+}
+
+final class DiagnosticsLogStore {
+    private var events: [DiagnosticEvent] = []
+    private let lock = NSLock()
+    private let encoder: JSONEncoder
+    private let maxEvents = 5000
+    private let logger = Logger(subsystem: "vn.ai.driveassistant", category: "Diagnostics")
+
+    init() {
+        encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    }
+
+    func record(type: String, speedKMPH: Double? = nil, distanceMeters: Double? = nil, isDangerous: Bool? = nil, orientation: String? = nil, details: String? = nil) {
+        let event = DiagnosticEvent(timestamp: Date(), type: type, speedKMPH: speedKMPH, distanceMeters: distanceMeters, isDangerous: isDangerous, orientation: orientation, details: details)
+        lock.lock()
+        events.append(event)
+        if events.count > maxEvents {
+            events.removeFirst(events.count - maxEvents)
+        }
+        lock.unlock()
+    }
+
+    func clear() {
+        lock.lock()
+        events.removeAll()
+        lock.unlock()
+    }
+
+    func exportURL() -> URL {
+        let exportedEvents: [DiagnosticEvent]
+        lock.lock()
+        exportedEvents = events
+        lock.unlock()
+
+        let payload: [String: AnyEncodable] = [
+            "app": AnyEncodable("DriveAssistant"),
+            "bundleID": AnyEncodable(Bundle.main.bundleIdentifier ?? "unknown"),
+            "systemVersion": AnyEncodable(UIDevice.current.systemVersion),
+            "deviceModel": AnyEncodable(UIDevice.current.model),
+            "events": AnyEncodable(exportedEvents)
+        ]
+
+        let data: Data
+        do {
+            data = try encoder.encode(payload)
+        } catch {
+            logger.error("Failed to encode diagnostics: \(error.localizedDescription, privacy: .public)")
+            data = Data("{\"error\":\"Unable to encode diagnostics\"}".utf8)
+        }
+
+        let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first ?? FileManager.default.temporaryDirectory
+        let url = documentsURL.appendingPathComponent("DriveAssistant-\(timestamp()).json")
+        do {
+            try data.write(to: url, options: .atomic)
+        } catch {
+            logger.error("Failed to write diagnostics export: \(error.localizedDescription, privacy: .public)")
+        }
+        return url
+    }
+
+    private func timestamp() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return formatter.string(from: Date())
+    }
+}
+
+private struct AnyEncodable: Encodable {
+    private let encodeValue: (Encoder) throws -> Void
+
+    init<T: Encodable>(_ value: T) {
+        encodeValue = value.encode
+    }
+
+    func encode(to encoder: Encoder) throws {
+        try encodeValue(encoder)
+    }
+}
+import SwiftUI
+import UIKit
+
+@main
+struct DriveAssistantApp: App {
+    @StateObject private var model = DriveAssistantModel()
+    @Environment(\.scenePhase) private var scenePhase
+
+    init() {
+        UIApplication.shared.isIdleTimerDisabled = true
+    }
+
+    var body: some Scene {
+        WindowGroup { ContentView(model: model) }
+            .onChange(of: scenePhase) { _ in
+                UIApplication.shared.isIdleTimerDisabled = true
+            }
+    }
+}
+import AVFoundation
+import SwiftUI
+import Combine
+import CoreLocation
+import CoreMotion
+import Foundation
+import UIKit
+
+enum ADASAlertState: Equatable {
+    case normal
+    case warning
+    case critical
+}
+
+enum DistanceRuleMode: String, CaseIterable {
+    case vnLaw = "vnLaw"
+    case timeHeadway = "timeHeadway"
+}
+
+enum RoadCondition: String, CaseIterable {
+    case auto = "auto"
+    case dry = "dry"
+    case wet = "wet"
+}
+
+enum DisplayThemeMode: String, CaseIterable {
+    case auto = "auto"
+    case day = "day"
+    case night = "night"
+}
+
+final class DriveAssistantModel: ObservableObject {
+    @Published var distance: Double?
+    @Published var speedKMPH: Double = 0
+    @Published private(set) var gpsAccuracy: CLLocationAccuracy = .infinity
+    @Published var isDangerous = false
+    @Published var alertState: ADASAlertState = .normal
+    @Published private(set) var closingSpeedMPS: Double = 0
+    @Published private(set) var timeToCollision: Double?
+    @Published var isSettingsPresented = false
+    @Published var ecoBlackHUD: Bool {
+        didSet { UserDefaults.standard.set(ecoBlackHUD, forKey: "ecoBlackHUD") }
+    }
+    @Published var glassHUD: Bool {
+        didSet { UserDefaults.standard.set(glassHUD, forKey: "glassHUD") }
+    }
+    @Published var voiceAlertsEnabled: Bool {
+        didSet { UserDefaults.standard.set(voiceAlertsEnabled, forKey: "voiceAlertsEnabled") }
+    }
+    @Published var usesVietnamese = true
+    @Published var distanceRuleMode: DistanceRuleMode {
+        didSet { UserDefaults.standard.set(distanceRuleMode.rawValue, forKey: "distanceRuleMode") }
+    }
+    @Published var roadCondition: RoadCondition {
+        didSet { UserDefaults.standard.set(roadCondition.rawValue, forKey: "roadCondition") }
+    }
+    @Published private(set) var detectedRoadCondition: RoadCondition = .dry
+    @Published var timeHeadway: Double = 2.5
+    @Published var calibrationFactor: Double = 1.15 {
+        didSet { UserDefaults.standard.set(calibrationFactor, forKey: "calibrationFactor") }
+    }
+    @Published var showOutOfROIVehicles: Bool = true {
+        didSet { UserDefaults.standard.set(showOutOfROIVehicles, forKey: "showOutOfROIVehicles") }
+    }
+    @Published var hoodOffsetMeters: Double = 1.8 {
+        didSet { UserDefaults.standard.set(hoodOffsetMeters, forKey: "hoodOffsetMeters") }
+    }
+    @Published var laneCenterOffsetX: Double = -0.03 {
+        didSet { 
+            UserDefaults.standard.set(laneCenterOffsetX, forKey: "laneCenterOffsetX")
+            camera.setLaneCenterOffsetX(laneCenterOffsetX)
+            laneDetector.setROIOffset(laneCenterOffsetX)
+        }
+    }
+    @Published var showHorizonGuide: Bool = true {
+        didSet { UserDefaults.standard.set(showHorizonGuide, forKey: "showHorizonGuide") }
+    }
+    @Published var enableLaneDetection: Bool = true {
+        didSet { UserDefaults.standard.set(enableLaneDetection, forKey: "enableLaneDetection") }
+    }
+    @Published var ldwsMinSpeedKmh: Double = 50.0 {
+        didSet { 
+            UserDefaults.standard.set(ldwsMinSpeedKmh, forKey: "ldwsMinSpeedKmh")
+            laneDetector.setMinSpeedForDepartureAlert(ldwsMinSpeedKmh)
+        }
+    }
+    
+    // Display Theme & Mirror Mode
+    @Published var displayThemeMode: DisplayThemeMode = .auto {
+        didSet { UserDefaults.standard.set(displayThemeMode.rawValue, forKey: "displayThemeMode") }
+    }
+    var isNightThemeActive: Bool {
+        if displayThemeMode == .night { return true }
+        if displayThemeMode == .day { return false }
+        // auto: 3-tier fallback
+        // 1) Camera luminance (handles tunnels, heavy rain, real twilight)
+        if !ecoBlackHUD && !hudMirrorMode && camera.hasValidCameraBrightness {
+            return camera.isLowLightScene
+        }
+        // 2) GPS astronomical sunrise/sunset
+        if let astroNight = location.isAstronomicalNight {
+            return astroNight
+        }
+        // 3) Clock fallback
+        let hour = Calendar.current.component(.hour, from: Date())
+        return hour < 6 || hour >= 18
+    }
+    @Published var hudMirrorMode: Bool = false {
+        didSet {
+            UserDefaults.standard.set(hudMirrorMode, forKey: "hudMirrorMode")
+            if hudMirrorMode {
+                savedBrightness = UIScreen.main.brightness
+                UIScreen.main.brightness = 1.0
+            } else {
+                UIScreen.main.brightness = savedBrightness
+            }
+        }
+    }
+    private var savedBrightness: CGFloat = 1.0
+
+    let camera = CameraManager()
+    let motion = MotionManager()
+    let laneDetector = LaneDetector()
+    let diagnostics = DiagnosticsLogStore()
+    private let location = LocationManager()
+    private let alerts = AlertManager()
+    private var cancellables = Set<AnyCancellable>()
+    private var smoothedDistance: Double?
+    private let distanceEMAAlpha = 0.3
+    private var distanceHistory: [(timestamp: TimeInterval, distance: Double)] = []
+    private let closingSpeedWindow: TimeInterval = 0.5
+    private var criticalFrameCount = 0
+    private var lastSpeedKMPH: Double = 0
+    private var lastSpeedUpdateTime: TimeInterval = 0
+    private let maxAccelerationMPS2: Double = 6.0
+    private let maxClosingSpeedMPS: Double = 25.0
+    
+    // For dynamic horizon calibration
+    private var lastTrackedBox: CGRect?
+    private var lastTrackedConfidence: Float = 0
+    private var horizonCalibrationFrames = 0
+
+    var safeDistance: Double { max(5, speedKMPH / 3.6 * timeHeadway) }
+
+    var baseSafeDistance: Double {
+        switch distanceRuleMode {
+        case .timeHeadway:
+            return max(5, speedKMPH / 3.6 * timeHeadway)
+        case .vnLaw:
+            switch speedKMPH {
+            case ..<10: return 0
+            case 10..<58: return max(5, speedKMPH * 0.5)
+            case 58...60: return 35
+            case 60..<80: return 55
+            case 80...100: return 70
+            default: return 100
+            }
+        }
+    }
+
+    var activeMinimumDistance: Double {
+        baseSafeDistance * (distanceRuleMode == .vnLaw && effectiveRoadCondition == .wet ? 1.3 : 1.0)
+    }
+
+    var effectiveRoadCondition: RoadCondition {
+        roadCondition == .auto ? detectedRoadCondition : roadCondition
+    }
+
+    init() {
+        let defaults = UserDefaults.standard
+        ecoBlackHUD = defaults.bool(forKey: "ecoBlackHUD")
+        glassHUD = defaults.object(forKey: "glassHUD") as? Bool ?? true
+        voiceAlertsEnabled = defaults.object(forKey: "voiceAlertsEnabled") as? Bool ?? false
+        distanceRuleMode = DistanceRuleMode(rawValue: defaults.string(forKey: "distanceRuleMode") ?? "") ?? .vnLaw
+        roadCondition = RoadCondition(rawValue: defaults.string(forKey: "roadCondition") ?? "") ?? .dry
+        calibrationFactor = defaults.object(forKey: "calibrationFactor") as? Double ?? 1.15
+        showOutOfROIVehicles = defaults.object(forKey: "showOutOfROIVehicles") as? Bool ?? true
+        hoodOffsetMeters = defaults.object(forKey: "hoodOffsetMeters") as? Double ?? 1.8
+        laneCenterOffsetX = defaults.object(forKey: "laneCenterOffsetX") as? Double ?? -0.03
+        showHorizonGuide = defaults.object(forKey: "showHorizonGuide") as? Bool ?? true
+        enableLaneDetection = defaults.object(forKey: "enableLaneDetection") as? Bool ?? true
+        ldwsMinSpeedKmh = defaults.object(forKey: "ldwsMinSpeedKmh") as? Double ?? 50.0
+        displayThemeMode = DisplayThemeMode(rawValue: defaults.string(forKey: "displayThemeMode") ?? "") ?? .auto
+        hudMirrorMode = defaults.bool(forKey: "hudMirrorMode")
+        if hudMirrorMode {
+            savedBrightness = UIScreen.main.brightness
+            UIScreen.main.brightness = 1.0
+        }
+        
+        camera.attachDiagnostics(diagnostics)
+        camera.setCalibrationFactor(calibrationFactor)
+        camera.setLaneCenterOffsetX(laneCenterOffsetX)
+        camera.laneDetector = laneDetector
+        laneDetector.setROIOffset(laneCenterOffsetX)
+        laneDetector.setMinSpeedForDepartureAlert(ldwsMinSpeedKmh)
+
+        // Forward camera & location changes to trigger reactive theme updates
+        camera.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+        location.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+
+        location.$speedKMPH
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] newSpeed in
+                self?.applySpeedRateLimit(newSpeed)
+                self?.camera.currentSpeedKMPH = newSpeed
+            }
+            .store(in: &cancellables)
+
+        location.$horizontalAccuracy.assign(to: &$gpsAccuracy)
+        location.$weatherRoadCondition
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] condition in
+                self?.detectedRoadCondition = condition
+                self?.updateAlertState()
+            }
+            .store(in: &cancellables)
+        camera.$leadVehicleDistance
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] rawDistance in
+                guard let self else { return }
+                if let rawDistance {
+                    let bumperDistance = max(0.5, rawDistance - self.hoodOffsetMeters)
+                    self.smoothedDistance = self.smoothedDistance.map {
+                        self.distanceEMAAlpha * bumperDistance + (1 - self.distanceEMAAlpha) * $0
+                    } ?? bumperDistance
+                    self.distance = self.smoothedDistance
+                    self.updateDistanceHistory(distance: self.smoothedDistance ?? bumperDistance)
+                } else {
+                    self.smoothedDistance = nil
+                    self.distance = nil
+                    self.distanceHistory.removeAll(keepingCapacity: true)
+                    self.closingSpeedMPS = 0
+                    self.timeToCollision = nil
+                }
+                self.updateAlertState()
+            }.store(in: &cancellables)
+        $calibrationFactor.dropFirst().sink { [weak self] factor in
+            self?.camera.setCalibrationFactor(factor)
+            self?.updateAlertState()
+        }.store(in: &cancellables)
+        $hoodOffsetMeters.dropFirst().sink { [weak self] _ in
+            self?.updateAlertState()
+        }.store(in: &cancellables)
+        $laneCenterOffsetX.dropFirst().sink { [weak self] offset in
+            self?.camera.setLaneCenterOffsetX(offset)
+            self?.laneDetector.setROIOffset(offset)
+            self?.updateAlertState()
+        }.store(in: &cancellables)
+        $showHorizonGuide.dropFirst().sink { [weak self] enabled in
+            self?.camera.setHorizonFilterEnabled(enabled)
+            if enabled {
+                self?.motion.start()
+            } else {
+                self?.motion.stop()
+            }
+        }.store(in: &cancellables)
+        $timeHeadway.dropFirst().sink { [weak self] _ in self?.updateAlertState() }.store(in: &cancellables)
+        $distanceRuleMode.dropFirst().sink { [weak self] _ in self?.updateAlertState() }.store(in: &cancellables)
+        $roadCondition.dropFirst().sink { [weak self] _ in self?.updateAlertState() }.store(in: &cancellables)
+        $enableLaneDetection.dropFirst().sink { [weak self] enabled in
+            self?.laneDetector.setLDWSEnabled(enabled)
+            if !enabled {
+                self?.laneDetector.stop()
+            }
+        }.store(in: &cancellables)
+        $ldwsMinSpeedKmh.dropFirst().sink { [weak self] speed in
+            self?.laneDetector.setMinSpeedForDepartureAlert(speed)
+        }.store(in: &cancellables)
+        // Sync effectiveHorizonY to CameraManager and trigger auto-calibration
+        camera.$leadVehicleBox
+            .combineLatest(camera.$leadVehicleConfidence, motion.$effectiveHorizonY)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] box, confidence, effectiveHorizonY in
+                self?.camera.setEffectiveHorizonY(effectiveHorizonY)
+                self?.attemptHorizonAutoCalibration(box: box, confidence: confidence)
+            }
+            .store(in: &cancellables)
+
+        // Lane departure alerts
+        laneDetector.$departureAlertActive
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] active in
+                if active {
+                    self?.alerts.playLaneDepartureAlert(speak: self?.voiceAlertsEnabled ?? false)
+                }
+            }
+            .store(in: &cancellables)
+
+        // Start motion manager if enabled
+        if showHorizonGuide {
+            motion.start()
+        }
+    }
+
+    private func applySpeedRateLimit(_ newSpeedKMPH: Double) {
+        let now = CACurrentMediaTime()
+        if lastSpeedUpdateTime > 0 {
+            let dt = now - lastSpeedUpdateTime
+            if dt > 0 {
+                let maxDeltaKMPH = maxAccelerationMPS2 * dt * 3.6
+                let delta = newSpeedKMPH - lastSpeedKMPH
+                if abs(delta) > maxDeltaKMPH {
+                    let clampedDelta = delta > 0 ? maxDeltaKMPH : -maxDeltaKMPH
+                    speedKMPH = lastSpeedKMPH + clampedDelta
+                    lastSpeedUpdateTime = now
+                    lastSpeedKMPH = speedKMPH
+                    return
+                }
+            }
+        }
+        speedKMPH = newSpeedKMPH
+        lastSpeedKMPH = newSpeedKMPH
+        lastSpeedUpdateTime = now
+    }
+
+    func start() {
+        diagnostics.record(type: "session_started", orientation: String(describing: UIDevice.current.orientation))
+        camera.start()
+        location.start()
+        if showHorizonGuide {
+            motion.start()
+        }
+        if enableLaneDetection {
+            laneDetector.start()
+        }
+    }
+
+    func stop() {
+        diagnostics.record(type: "session_stopped", speedKMPH: speedKMPH, distanceMeters: distance, isDangerous: isDangerous, orientation: String(describing: UIDevice.current.orientation))
+        camera.stop()
+        location.stop()
+        motion.stop()
+        laneDetector.stop()
+        // Restore brightness on app stop if mirror mode was on
+        if hudMirrorMode {
+            UIScreen.main.brightness = savedBrightness
+        }
+    }
+
+    func exportDiagnostics() -> URL {
+        diagnostics.record(type: "manual_export", speedKMPH: speedKMPH, distanceMeters: distance, isDangerous: isDangerous, orientation: String(describing: UIDevice.current.orientation))
+        return diagnostics.exportURL()
+    }
+
+    func clearDiagnostics() {
+        diagnostics.clear()
+        diagnostics.record(type: "logs_cleared", orientation: String(describing: UIDevice.current.orientation))
+    }
+
+    func cycleRoadCondition() {
+        switch roadCondition {
+        case .auto: roadCondition = .dry
+        case .dry: roadCondition = .wet
+        case .wet: roadCondition = .auto
+        }
+    }
+
+    private func updateDistanceHistory(distance: Double) {
+        let now = CACurrentMediaTime()
+        distanceHistory.append((now, distance))
+        let cutoff = now - closingSpeedWindow
+        distanceHistory.removeAll { $0.timestamp < cutoff }
+
+        guard let oldest = distanceHistory.first,
+              now - oldest.timestamp > 0 else {
+            closingSpeedMPS = 0
+            timeToCollision = nil
+            return
+        }
+        let elapsed = now - oldest.timestamp
+        let closingSpeed = max(0, (oldest.distance - distance) / elapsed)
+        closingSpeedMPS = min(closingSpeed, maxClosingSpeedMPS)
+        timeToCollision = closingSpeedMPS > 0.5 ? distance / closingSpeedMPS : nil
+    }
+
+    private func updateAlertState() {
+        guard let distance else {
+            criticalFrameCount = 0
+            setAlertState(.normal)
+            return
+        }
+
+        let speedMPS = speedKMPH / 3.6
+        let alertsSuppressed = distanceRuleMode == .vnLaw && speedKMPH < 10
+        let isLowSpeedWarning = distanceRuleMode == .timeHeadway && speedKMPH < 10 && distance < 4
+        let isWarning = !alertsSuppressed && speedKMPH >= 10 && distance < activeMinimumDistance
+        let isCriticalCandidate = speedKMPH >= 10 && (
+            (timeToCollision.map { $0 < 1.8 } ?? false) ||
+            distance < max(activeMinimumDistance, max(5.0, speedMPS * 1.0))
+        )
+
+        if isCriticalCandidate {
+            criticalFrameCount += 1
+        } else {
+            criticalFrameCount = 0
+        }
+
+        if alertsSuppressed {
+            criticalFrameCount = 0
+            setAlertState(.normal)
+        } else if criticalFrameCount >= 3 {
+            setAlertState(.critical)
+            alerts.playCriticalAlert(speak: voiceAlertsEnabled, reduceSpeed: timeToCollision.map { $0 < 1.8 } ?? false)
+        } else if isLowSpeedWarning || isWarning {
+            setAlertState(.warning)
+            if speedKMPH >= 10 {
+                alerts.playWarningAlert()
+            }
+        } else {
+            setAlertState(.normal)
+        }
+    }
+
+    private func setAlertState(_ state: ADASAlertState) {
+        guard alertState != state else {
+            isDangerous = state == .critical
+            return
+        }
+        alertState = state
+        isDangerous = state == .critical
+        diagnostics.record(type: "alert_state_changed", speedKMPH: speedKMPH, distanceMeters: distance, isDangerous: isDangerous, orientation: String(describing: UIDevice.current.orientation), details: "state=\(String(describing: state)), closingSpeedMPS=\(closingSpeedMPS), ttc=\(timeToCollision.map { String($0) } ?? "nil")")
+    }
+    
+    /// Dynamic in-drive horizon auto-calibration
+    private func attemptHorizonAutoCalibration(box: CGRect?, confidence: Float) {
+        guard showHorizonGuide,
+              motion.isActive,
+              speedKMPH > 30.0,
+              abs(motion.deltaRoll) < 2.0,
+              let box = box,
+              confidence >= 0.70,
+              box.width >= 0.05 && box.width <= 0.25 else {
+            horizonCalibrationFrames = 0
+            lastTrackedBox = nil
+            return
+        }
+        
+        if let lastBox = lastTrackedBox {
+            let iou = intersectionOverUnion(lastBox, box)
+            if iou < 0.5 {
+                horizonCalibrationFrames = 0
+                lastTrackedBox = box
+                return
+            }
+        }
+        
+        lastTrackedBox = box
+        horizonCalibrationFrames += 1
+        
+        guard horizonCalibrationFrames >= 5 else { return }
+        
+        let inferredHorizonY = (1.0 - box.minY) - (box.height * 0.15)
+        let clampedInferred = max(0.25, min(0.65, inferredHorizonY))
+        
+        motion.updateEffectiveHorizonFromVision(inferredHorizonY: clampedInferred)
+    }
+    
+    private func intersectionOverUnion(_ lhs: CGRect, _ rhs: CGRect) -> CGFloat {
+        let intersection = lhs.intersection(rhs)
+        guard !intersection.isNull, intersection.width > 0, intersection.height > 0 else { return 0 }
+        let union = lhs.width * lhs.height + rhs.width * rhs.height - intersection.width * intersection.height
+        return union > 0 ? intersection.width * intersection.height / union : 0
+    }
+}
+
+private extension CGRect {
+    var area: CGFloat { width * height }
+}
+import CoreImage
+import SwiftUI
+import CoreML
+import Foundation
+import os
+import Vision
+import UIKit
+
+/// Lightweight lane detection using CoreImage + Vision contours (no second CoreML model)
+/// Detects white/yellow lane markings in the lower road ROI, fits left/right boundaries with EMA
+final class LaneDetector: ObservableObject {
+    // MARK: - Published State
+    @Published private(set) var leftLanePoints: [CGPoint] = []
+    @Published private(set) var rightLanePoints: [CGPoint] = []
+    @Published private(set) var isLaneDetectionActive = false
+    @Published private(set) var leftLaneConfidence: Float = 0
+    @Published private(set) var rightLaneConfidence: Float = 0
+    @Published private(set) var departureState: DepartureState = .none
+    @Published private(set) var departureAlertActive = false
+    @Published private(set) var isSpeedGated = false  // true when GPS speed < ldwsMinSpeedKmh
+    
+    // MARK: - Departure State Machine
+    enum DepartureState: Equatable {
+        case none
+        case driftingLeft
+        case driftingRight
+        
+        var color: Color {
+            switch self {
+            case .none: return .cyan
+            case .driftingLeft, .driftingRight: return .orange
+            }
+        }
+    }
+    
+    // MARK: - Private Properties
+    private let queue = DispatchQueue(label: "drive-assistant.lane-detector", qos: .userInitiated)
+    private let logger = Logger(subsystem: "vn.ai.driveassistant", category: "LaneDetector")
+    private let ciContext = CIContext()
+    
+    // EMA smoothing for lane boundaries (α = 0.25 for steady rails over dashed lines)
+    private var emaLeftLane: [CGPoint]?
+    private var emaRightLane: [CGPoint]?
+    private let emaAlpha: CGFloat = 0.25
+    
+    // Grace window: hold last confident fit for 0.5s (~15 frames at 30fps) before fading
+    private var framesSinceConfidentLeft = 0
+    private var framesSinceConfidentRight = 0
+    private let graceFrames = 15
+    
+    // Lane departure state machine
+    private var leftDepartureStartTime: TimeInterval?
+    private var rightDepartureStartTime: TimeInterval?
+    private var lastDepartureAlertTime: TimeInterval = 0
+    private let departurePersistenceThreshold: TimeInterval = 0.4  // 0.4s debounce
+    private let departureCooldown: TimeInterval = 3.0               // 3s cooldown
+    private var minSpeedForDepartureAlert: Double = 50.0            // km/h (configurable, default 50)
+    private let departureThresholdRatio: CGFloat = 0.08             // 8% of lane width
+    
+    // ROI trapezoid params (matching CameraManager)
+    private let roiTopY: CGFloat = 0.38
+    private let roiBottomY: CGFloat = 0.95
+    private let roiTopWidth: CGFloat = 0.22
+    private let roiBottomWidth: CGFloat = 0.48
+    private var roiCenterOffsetX: CGFloat = -0.03
+    
+    // LDWS enabled flag
+    private var isLDWSEnabled = true
+    
+    func setROIOffset(_ offset: Double) {
+        roiCenterOffsetX = CGFloat(offset)
+    }
+    
+    func setLDWSEnabled(_ enabled: Bool) {
+        isLDWSEnabled = enabled
+    }
+    
+    func setMinSpeedForDepartureAlert(_ speedKmh: Double) {
+        minSpeedForDepartureAlert = speedKmh
+    }
+    
+    func processFrame(pixelBuffer: CVPixelBuffer, speedKMPH: Double) {
+        queue.async { [weak self] in
+            self?.detectLanes(pixelBuffer: pixelBuffer, speedKMPH: speedKMPH)
+        }
+    }
+    
+    private func detectLanes(pixelBuffer: CVPixelBuffer, speedKMPH: Double) {
+        let image = CIImage(cvPixelBuffer: pixelBuffer)
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        
+        // Crop to lower road region (ROI trapezoid area)
+        let cropRect = calculateROICropRect(imageExtent: image.extent)
+        let croppedImage = image.cropped(to: cropRect)
+        
+        // Enhance lane markings: white + yellow color filter
+        let enhancedImage = enhanceLaneMarkings(croppedImage)
+        
+        // Detect contours on enhanced image
+        let contours = detectContours(enhancedImage, extent: cropRect)
+        
+        // Filter for lane-like line segments (pass cropRect for coordinate mapping)
+        let (leftLines, rightLines) = classifyLaneLines(contours, cropRect: cropRect, imageSize: CGSize(width: width, height: height))
+        
+        // Fit polynomial curves to lane lines
+        let (leftFit, rightFit) = fitLaneCurves(leftLines: leftLines, rightLines: rightLines, imageSize: CGSize(width: width, height: height))
+        
+        // Apply EMA smoothing with grace window
+        let (smoothedLeft, smoothedRight, leftConf, rightConf) = applyEMAWithGrace(leftFit: leftFit, rightFit: rightFit)
+        
+        // Update published properties on main thread
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.leftLanePoints = smoothedLeft
+            self.rightLanePoints = smoothedRight
+            self.leftLaneConfidence = leftConf
+            self.rightLaneConfidence = rightConf
+            self.isLaneDetectionActive = leftConf > 0.5 || rightConf > 0.5
+            
+            // Update speed gating status for HUD
+            self.isSpeedGated = speedKMPH < self.minSpeedForDepartureAlert
+            
+            // Check lane departure with anti-false-positive logic
+            self.checkLaneDeparture(speedKMPH: speedKMPH, vehicleCenterX: 0.5 + Double(self.roiCenterOffsetX))
+        }
+    }
+    
+    private func calculateROICropRect(imageExtent: CGRect) -> CGRect {
+        let topY = imageExtent.height * roiTopY
+        let bottomY = imageExtent.height * roiBottomY
+        return CGRect(x: 0, y: topY, width: imageExtent.width, height: bottomY - topY)
+    }
+    
+    private func enhanceLaneMarkings(_ image: CIImage) -> CIImage {
+        let gray = image.applyingFilter("CIColorControls", parameters: [
+            kCIInputSaturationKey: 0,
+            kCIInputContrastKey: 1.5,
+            kCIInputBrightnessKey: 0.1
+        ])
+        
+        let whiteMask = gray.applyingFilter("CIColorThreshold", parameters: [
+            "inputThreshold": 0.7
+        ])
+        
+        let yellowMask = image.applyingFilter("CIColorControls", parameters: [
+            kCIInputSaturationKey: 2.0,
+            kCIInputContrastKey: 1.2
+        ]).applyingFilter("CIColorThreshold", parameters: [
+            "inputThreshold": 0.5
+        ])
+        
+        let combined = whiteMask.applyingFilter("CISourceOverCompositing", parameters: [
+            kCIInputBackgroundImageKey: yellowMask
+        ])
+        
+        let cleaned = combined
+            .applyingFilter("CIMorphologyMinimum", parameters: [kCIInputRadiusKey: 1])
+            .applyingFilter("CIMorphologyMaximum", parameters: [kCIInputRadiusKey: 2])
+        
+        return cleaned
+    }
+    
+    private func detectContours(_ image: CIImage, extent: CGRect) -> [VNContour] {
+        var contours: [VNContour] = []
+        
+        let request = VNDetectContoursRequest { request, error in
+            if let error = error {
+                self.logger.error("Contour detection failed: \(error.localizedDescription, privacy: .public)")
+                return
+            }
+            contours = request.results as? [VNContour] ?? []
+        }
+        
+        request.contrastAdjustment = 1.0
+        request.detectDarkOnLight = false
+        
+        let handler = VNImageRequestHandler(ciImage: image, orientation: .up, options: [:])
+        do {
+            try handler.perform([request])
+        } catch {
+            logger.error("VN handler failed: \(error.localizedDescription, privacy: .public)")
+        }
+        
+        return contours
+    }
+    
+    private func classifyLaneLines(_ contours: [VNContour], cropRect: CGRect, imageSize: CGSize) -> (left: [VNContour], right: [VNContour]) {
+        var leftLines: [VNContour] = []
+        var rightLines: [VNContour] = []
+        
+        let normalizedRoiCenterX = 0.5 + roiCenterOffsetX
+        
+        for contour in contours {
+            let points = contour.normalizedPoints
+            guard points.count >= 4 else { continue }
+            
+            // Map contour points from cropped image back to full normalized screen coordinates
+            // VNContour.normalizedPoints are in 0...1 relative to cropRect
+            // Convert to full image normalized coordinates (top-left origin, 0...1)
+            let xs = points.map { 
+                (cropRect.minX + CGFloat($0.x) * cropRect.width) / CGFloat(imageSize.width)
+            }
+            let ys = points.map { 
+                1.0 - ((cropRect.minY + CGFloat($0.y) * cropRect.height) / CGFloat(imageSize.height))
+            }
+            
+            let minX = xs.min() ?? 0
+            let maxX = xs.max() ?? 1
+            let minY = ys.min() ?? 0
+            let maxY = ys.max() ?? 1
+            let width = maxX - minX
+            let height = maxY - minY
+            let aspectRatio = width / max(height, 1)
+            
+            guard aspectRatio > 3.0 || (1/aspectRatio) > 3.0 else { continue }
+            
+            let area = width * height
+            guard area > 0.0001 && area < 0.15 else { continue }
+            
+            let contourCenterX = (minX + maxX) / 2
+            if contourCenterX < normalizedRoiCenterX {
+                leftLines.append(contour)
+            } else {
+                rightLines.append(contour)
+            }
+        }
+        
+        return (leftLines, rightLines)
+    }
+    
+    private func fitLaneCurves(leftLines: [VNContour], rightLines: [VNContour], imageSize: CGSize) -> (left: [CGPoint]?, right: [CGPoint]?) {
+        let leftPoints = sampleContourPoints(leftLines, cropRect: calculateROICropRect(imageExtent: CGRect(origin: .zero, size: imageSize)), imageSize: imageSize, isLeft: true)
+        let rightPoints = sampleContourPoints(rightLines, cropRect: calculateROICropRect(imageExtent: CGRect(origin: .zero, size: imageSize)), imageSize: imageSize, isLeft: false)
+        
+        let leftFit = fitQuadratic(points: leftPoints, imageSize: imageSize, isLeft: true)
+        let rightFit = fitQuadratic(points: rightPoints, imageSize: imageSize, isLeft: false)
+        
+        return (leftFit, rightFit)
+    }
+    
+    private func sampleContourPoints(_ contours: [VNContour], cropRect: CGRect, imageSize: CGSize, isLeft: Bool) -> [CGPoint] {
+        var points: [CGPoint] = []
+        
+        for contour in contours {
+            let normalizedPoints = contour.normalizedPoints
+            for normalizedPoint in normalizedPoints {
+                // Map from cropRect normalized to full screen normalized (top-left origin)
+                let normX = (cropRect.minX + CGFloat(normalizedPoint.x) * cropRect.width) / CGFloat(imageSize.width)
+                let normYFromTop = 1.0 - ((cropRect.minY + CGFloat(normalizedPoint.y) * cropRect.height) / CGFloat(imageSize.height))
+                points.append(CGPoint(x: normX, y: normYFromTop))
+            }
+        }
+        
+        return points
+    }
+    
+    private func fitQuadratic(points: [CGPoint], imageSize: CGSize, isLeft: Bool) -> [CGPoint]? {
+        guard points.count >= 10 else { return nil }
+        
+        var sumY = 0.0, sumY2 = 0.0, sumY3 = 0.0, sumY4 = 0.0
+        var sumX = 0.0, sumXY = 0.0, sumXY2 = 0.0
+        
+        for point in points {
+            let y = point.y
+            let x = point.x
+            sumY += y
+            sumY2 += y * y
+            sumY3 += y * y * y
+            sumY4 += y * y * y * y
+            sumX += x
+            sumXY += x * y
+            sumXY2 += x * y * y
+        }
+        
+        let n = Double(points.count)
+        
+        let A = [
+            [sumY4, sumY3, sumY2],
+            [sumY3, sumY2, sumY],
+            [sumY2, sumY, n]
+        ]
+        let B = [sumXY2, sumXY, sumX]
+        
+        guard let coeffs = solveLinearSystem(A, B) else { return nil }
+        
+        let a = coeffs[0], b = coeffs[1], c = coeffs[2]
+        
+        var fittedPoints: [CGPoint] = []
+        let startY = roiBottomY
+        let endY = roiTopY
+        let steps = 20
+        
+        for i in 0..<steps {
+            let y = startY - (startY - endY) * Double(i) / Double(steps - 1)
+            let x = a * y * y + b * y + c
+            let clampedX = max(0.0, min(1.0, x))
+            fittedPoints.append(CGPoint(x: clampedX, y: y))
+        }
+        
+        let centerX = 0.5 + roiCenterOffsetX
+        let avgX = fittedPoints.map { $0.x }.reduce(0, +) / Double(fittedPoints.count)
+        
+        if isLeft && avgX > centerX { return nil }
+        if !isLeft && avgX < centerX { return nil }
+        
+        return fittedPoints
+    }
+    
+    private func solveLinearSystem(_ A: [[Double]], _ B: [Double]) -> [Double]? {
+        var M = A
+        var b = B
+        
+        for i in 0..<3 {
+            var maxRow = i
+            for j in (i+1)..<3 {
+                if abs(M[j][i]) > abs(M[maxRow][i]) { maxRow = j }
+            }
+            
+            if abs(M[maxRow][i]) < 1e-10 { return nil }
+            
+            if maxRow != i {
+                M.swapAt(i, maxRow)
+                b.swapAt(i, maxRow)
+            }
+            
+            let pivot = M[i][i]
+            for j in i..<3 { M[i][j] /= pivot }
+            b[i] /= pivot
+            
+            for j in (i+1)..<3 {
+                let factor = M[j][i]
+                for k in i..<3 { M[j][k] -= factor * M[i][k] }
+                b[j] -= factor * b[i]
+            }
+        }
+        
+        var x = [0.0, 0.0, 0.0]
+        for i in (0..<3).reversed() {
+            x[i] = b[i]
+            for j in (i+1)..<3 { x[i] -= M[i][j] * x[j] }
+        }
+        
+        return x
+    }
+    
+    // MARK: - EMA with Grace Window
+    private func applyEMAWithGrace(leftFit: [CGPoint]?, rightFit: [CGPoint]?) -> (left: [CGPoint], right: [CGPoint], leftConf: Float, rightConf: Float) {
+        var leftConf: Float = 0
+        var rightConf: Float = 0
+        var smoothedLeft = emaLeftLane ?? []
+        var smoothedRight = emaRightLane ?? []
+        
+        // LEFT lane
+        if let leftFit {
+            leftConf = 0.8
+            framesSinceConfidentLeft = 0
+            if emaLeftLane == nil {
+                emaLeftLane = leftFit
+                smoothedLeft = leftFit
+            } else {
+                let minCount = min(emaLeftLane!.count, leftFit.count)
+                for i in 0..<minCount {
+                    emaLeftLane![i].x = emaAlpha * leftFit[i].x + (1 - emaAlpha) * emaLeftLane![i].x
+                    emaLeftLane![i].y = emaAlpha * leftFit[i].y + (1 - emaAlpha) * emaLeftLane![i].y
+                }
+                smoothedLeft = emaLeftLane!
+            }
+        } else {
+            framesSinceConfidentLeft += 1
+            if framesSinceConfidentLeft <= graceFrames {
+                // Grace period: hold last EMA with decaying confidence
+                leftConf = max(0.5 - Float(framesSinceConfidentLeft) * 0.5 / Float(graceFrames), 0.1)
+                smoothedLeft = emaLeftLane ?? []
+            } else {
+                // Fade to static fallback
+                leftConf = 0
+                emaLeftLane = nil
+                smoothedLeft = []
+            }
+        }
+        
+        // RIGHT lane
+        if let rightFit {
+            rightConf = 0.8
+            framesSinceConfidentRight = 0
+            if emaRightLane == nil {
+                emaRightLane = rightFit
+                smoothedRight = rightFit
+            } else {
+                let minCount = min(emaRightLane!.count, rightFit.count)
+                for i in 0..<minCount {
+                    emaRightLane![i].x = emaAlpha * rightFit[i].x + (1 - emaAlpha) * emaRightLane![i].x
+                    emaRightLane![i].y = emaAlpha * rightFit[i].y + (1 - emaAlpha) * emaRightLane![i].y
+                }
+                smoothedRight = emaRightLane!
+            }
+        } else {
+            framesSinceConfidentRight += 1
+            if framesSinceConfidentRight <= graceFrames {
+                rightConf = max(0.5 - Float(framesSinceConfidentRight) * 0.5 / Float(graceFrames), 0.1)
+                smoothedRight = emaRightLane ?? []
+            } else {
+                rightConf = 0
+                emaRightLane = nil
+                smoothedRight = []
+            }
+        }
+        
+        return (smoothedLeft, smoothedRight, leftConf, rightConf)
+    }
+    
+    // MARK: - Lane Departure Detection (Anti-False-Positive)
+    private func checkLaneDeparture(speedKMPH: Double, vehicleCenterX: Double) {
+        let now = CACurrentMediaTime()
+        
+        // Reset if LDWS disabled or speed gated
+        if !isLDWSEnabled || speedKMPH < minSpeedForDepartureAlert {
+            leftDepartureStartTime = nil
+            rightDepartureStartTime = nil
+            departureState = .none
+            departureAlertActive = false
+            return
+        }
+        
+        // Require both lanes with good confidence
+        guard leftLaneConfidence > 0.5, rightLaneConfidence > 0.5,
+              !leftLanePoints.isEmpty, !rightLanePoints.isEmpty else {
+            leftDepartureStartTime = nil
+            rightDepartureStartTime = nil
+            departureState = .none
+            return
+        }
+        
+        // Get lane edges at bottom of ROI (normalized coordinates)
+        let bottomLeftX = leftLanePoints.last?.x ?? 0
+        let bottomRightX = rightLanePoints.last?.x ?? 1.0
+        let laneWidth = bottomRightX - bottomLeftX
+        let thresholdRatio = departureThresholdRatio  // 8% of lane width
+        
+        // LEFT departure: vehicle within 8% of left edge OR crossing it
+        let leftDistance = vehicleCenterX - bottomLeftX
+        let isNearLeftEdge = leftDistance < thresholdRatio && leftDistance >= 0
+        let hasCrossedLeft = leftDistance < 0
+        
+        if hasCrossedLeft || isNearLeftEdge {
+            if leftDepartureStartTime == nil { leftDepartureStartTime = now }
+            let duration = now - leftDepartureStartTime!
+            
+            if hasCrossedLeft {
+                departureState = .driftingLeft
+            } else if duration >= departurePersistenceThreshold {
+                departureState = .driftingLeft
+            }
+            
+            // Trigger alert only on actual crossing with persistence + cooldown
+            if hasCrossedLeft && duration >= departurePersistenceThreshold && now - lastDepartureAlertTime >= departureCooldown {
+                departureAlertActive = true
+                lastDepartureAlertTime = now
+            }
+        } else {
+            leftDepartureStartTime = nil
+            if departureState == .driftingLeft { departureState = .none }
+        }
+        
+        // RIGHT departure: vehicle within 8% of right edge OR crossing it
+        let rightDistance = bottomRightX - vehicleCenterX
+        let isNearRightEdge = rightDistance < thresholdRatio && rightDistance >= 0
+        let hasCrossedRight = rightDistance < 0
+        
+        if hasCrossedRight || isNearRightEdge {
+            if rightDepartureStartTime == nil { rightDepartureStartTime = now }
+            let duration = now - rightDepartureStartTime!
+            
+            if hasCrossedRight {
+                departureState = .driftingRight
+            } else if duration >= departurePersistenceThreshold {
+                departureState = .driftingRight
+            }
+            
+            if hasCrossedRight && duration >= departurePersistenceThreshold && now - lastDepartureAlertTime >= departureCooldown {
+                departureAlertActive = true
+                lastDepartureAlertTime = now
+            }
+        } else {
+            rightDepartureStartTime = nil
+            if departureState == .driftingRight { departureState = .none }
+        }
+        
+        // Clear alert after cooldown
+        if departureAlertActive && now - lastDepartureAlertTime >= departureCooldown {
+            departureAlertActive = false
+        }
+    }
+    
+    /// Get dynamic ROI polygon that snaps to detected lanes (for vehicle filtering)
+    func getDynamicROIPolygon(imageSize: CGSize) -> [CGPoint]? {
+        guard leftLaneConfidence > 0.5, rightLaneConfidence > 0.5,
+              !leftLanePoints.isEmpty, !rightLanePoints.isEmpty else {
+            return nil
+        }
+        
+        let topLeft = leftLanePoints.first ?? CGPoint(x: 0.39, y: roiTopY)
+        let topRight = rightLanePoints.first ?? CGPoint(x: 0.61, y: roiTopY)
+        let bottomLeft = leftLanePoints.last ?? CGPoint(x: 0.26, y: roiBottomY)
+        let bottomRight = rightLanePoints.last ?? CGPoint(x: 0.74, y: roiBottomY)
+        
+        return [topLeft, topRight, bottomRight, bottomLeft]
+    }
+    
+    /// Get normalized lane edges at specific Y (for vehicle filter)
+    func getLaneEdgesAtY(_ y: CGFloat, imageSize: CGSize) -> (left: CGFloat, right: CGFloat)? {
+        guard leftLaneConfidence > 0.5, rightLaneConfidence > 0.5 else { return nil }
+        
+        let leftX = interpolateLaneAtY(leftLanePoints, targetY: y)
+        let rightX = interpolateLaneAtY(rightLanePoints, targetY: y)
+        
+        guard let leftX, let rightX, leftX < rightX else { return nil }
+        return (leftX, rightX)
+    }
+    
+    private func interpolateLaneAtY(_ points: [CGPoint], targetY: CGFloat) -> CGFloat? {
+        guard points.count >= 2 else { return nil }
+        
+        for i in 1..<points.count {
+            let p1 = points[i-1]
+            let p2 = points[i]
+            
+            if (p1.y <= targetY && p2.y >= targetY) || (p1.y >= targetY && p2.y <= targetY) {
+                let t = (targetY - p1.y) / (p2.y - p1.y)
+                return p1.x + (p2.x - p1.x) * t
+            }
+        }
+        
+        if targetY > points.last!.y {
+            let p1 = points[points.count-2]
+            let p2 = points.last!
+            let t = (targetY - p1.y) / (p2.y - p1.y)
+            return p1.x + (p2.x - p1.x) * t
+        }
+        
+        return points.first?.x
+    }
+}
+
+extension LaneDetector {
+    func start() {
+        isLaneDetectionActive = true
+    }
+    
+    func stop() {
+        isLaneDetectionActive = false
+        leftLanePoints = []
+        rightLanePoints = []
+        leftLaneConfidence = 0
+        rightLaneConfidence = 0
+        emaLeftLane = nil
+        emaRightLane = nil
+        framesSinceConfidentLeft = 0
+        framesSinceConfidentRight = 0
+        departureState = .none
+        departureAlertActive = false
+        isSpeedGated = false
+    }
+}
+import CoreLocation
+import Foundation
+
+final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelegate {
+    @Published var speedKMPH: Double = 0
+    @Published private(set) var horizontalAccuracy: CLLocationAccuracy = .infinity
+    @Published private(set) var weatherRoadCondition: RoadCondition = .dry
+    @Published private(set) var isAstronomicalNight: Bool? = nil
+    private let manager = CLLocationManager()
+    private let weatherService = WeatherService()
+    private var stallTimer: Timer?
+    private let stallThreshold: TimeInterval = 5.0
+
+    override init() {
+        super.init()
+        manager.delegate = self
+        manager.desiredAccuracy = kCLLocationAccuracyBest
+        manager.distanceFilter = kCLDistanceFilterNone
+    }
+
+    func start() {
+        manager.requestWhenInUseAuthorization()
+        manager.startUpdatingLocation()
+        startStallTimer()
+    }
+
+    func stop() {
+        manager.stopUpdatingLocation()
+        stallTimer?.invalidate()
+        stallTimer = nil
+    }
+
+    private func startStallTimer() {
+        stallTimer?.invalidate()
+        stallTimer = Timer.scheduledTimer(withTimeInterval: stallThreshold, repeats: true) { [weak self] _ in
+            self?.handleStall()
+        }
+    }
+
+    private func handleStall() {
+        DispatchQueue.main.async { [weak self] in
+            self?.speedKMPH = 0
+            self?.horizontalAccuracy = .infinity
+        }
+    }
+
+    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        guard let location = locations.last else { return }
+        horizontalAccuracy = location.horizontalAccuracy
+        guard location.speed >= 0,
+              location.horizontalAccuracy >= 0,
+              location.horizontalAccuracy <= 50 else {
+            return
+        }
+        speedKMPH = location.speed * 3.6
+        startStallTimer()
+        computeIsAstronomicalNight(for: location)
+        weatherService.update(for: location) { [weak self] condition in
+            self?.weatherRoadCondition = condition
+        }
+    }
+
+    /// Compute whether sun is below horizon using NOAA solar elevation formula
+    private func computeIsAstronomicalNight(for location: CLLocation) {
+        var utcCal = Calendar(identifier: .gregorian)
+        utcCal.timeZone = TimeZone(secondsFromGMT: 0)!
+        let date = Date()
+        let year = utcCal.component(.year, from: date)
+        let month = utcCal.component(.month, from: date)
+        let day = utcCal.component(.day, from: date)
+        let hour = utcCal.component(.hour, from: date)
+        let minute = utcCal.component(.minute, from: date)
+        let second = utcCal.component(.second, from: date)
+        
+        // Fractional day of year (1-365/366)
+        var dayOfYear = 0
+        for m in 1..<month {
+            dayOfYear += daysInMonth(month: m, year: year)
+        }
+        dayOfYear += day
+        let dayFraction = Double(hour) / 24.0 + Double(minute) / 1440.0 + Double(second) / 86400.0
+        
+        // Julian day number
+        let jd = Double(dayOfYear) + dayFraction + 2451545.0 - 0.5 + Double(year - 2000) * 365.25
+        
+        // Julian centuries since J2000
+        let n = jd - 2451545.0
+        let L = (280.460 + 0.9856474 * n).truncatingRemainder(dividingBy: 360.0)
+        let g = (357.528 + 0.9856003 * n).truncatingRemainder(dividingBy: 360.0) * .pi / 180.0
+        let lambda = (L + 1.915 * sin(g) + 0.020 * sin(2 * g)) * .pi / 180.0
+        let epsilon = (23.439 - 0.0000004 * n) * .pi / 180.0
+        
+        // Right ascension and declination
+        let sinDelta = sin(epsilon) * sin(lambda)
+        let delta = asin(sinDelta)  // Solar declination
+        
+        // Hour angle
+        let lat = location.coordinate.latitude * .pi / 180.0
+        let lon = location.coordinate.longitude * .pi / 180.0
+        let gmst = (280.46061837 + 360.98564736629 * n) * .pi / 180.0
+        let lst = gmst + lon
+        let hourAngle = lst - atan2(sin(lambda) * cos(epsilon), cos(lambda))
+        
+        // Solar elevation angle
+        let sinElev = sin(lat) * sin(delta) + cos(lat) * cos(delta) * cos(hourAngle)
+        let elevation = asin(max(-1.0, min(1.0, sinElev))) * 180.0 / .pi
+        
+        // Civil twilight zenith: 90.833° (accounts for atmospheric refraction + sun disc)
+        let isNight = elevation < -0.833  // Below horizon (civil twilight)
+        
+        DispatchQueue.main.async { [weak self] in
+            self?.isAstronomicalNight = isNight
+        }
+    }
+    
+    private func daysInMonth(month: Int, year: Int) -> Int {
+        switch month {
+        case 1, 3, 5, 7, 8, 10, 12: return 31
+        case 4, 6, 9, 11: return 30
+        case 2:
+            return (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)) ? 29 : 28
+        default: return 30
+        }
+    }
+}
+import CoreMotion
+import Foundation
+import SwiftUI
+import UIKit
+
+final class MotionManager: ObservableObject {
+    private let motionManager = CMMotionManager()
+    private let updateInterval = 0.1  // 10 Hz
+    
+    // Raw gyroscope values
+    @Published var rollDegrees: Double = 0
+    @Published var pitchDegrees: Double = 0
+    @Published var horizonY: Double = 0.5
+    @Published var isActive: Bool = false
+    @Published var isLevel: Bool = false
+    
+    // Reference mount calibration
+    @AppStorage("calibratedPitch") var calibratedPitch: Double = 0.0
+    @AppStorage("calibratedRoll") var calibratedRoll: Double = 0.0
+    @AppStorage("hasSavedMountProfile") var hasSavedMountProfile: Bool = false
+    
+    // Delta from calibrated reference
+    @Published var deltaPitch: Double = 0
+    @Published var deltaRoll: Double = 0
+    
+    // Dynamic effective horizon (gyro baseline + in-drive EMA)
+    @Published var effectiveHorizonY: Double = 0.45
+    
+    // Mount alignment state
+    @Published var isMountAligned: Bool = false
+    
+    private let verticalFOV: Double = 41.0  // iPhone 1x landscape vertical FOV
+    private let baseHorizonY: Double = 0.45  // Base normalized horizon (45% from top)
+    private let horizonYRange: ClosedRange<Double> = 0.25...0.65
+    private let autoCalibrateAlpha: Double = 0.02  // Slow EMA for in-drive calibration
+    private let autoCalibrateClamp: Double = 0.06  // Max deviation from gyro baseline
+    
+    init() {
+        // Initialize effectiveHorizonY from stored calibration
+        computeDeltasAndHorizon()
+    }
+    
+    func saveCurrentMountAngle() {
+        calibratedPitch = pitchDegrees
+        calibratedRoll = rollDegrees
+        hasSavedMountProfile = true
+        computeDeltasAndHorizon()
+    }
+    
+    func resetMountProfile() {
+        calibratedPitch = 0.0
+        calibratedRoll = 0.0
+        hasSavedMountProfile = false
+        computeDeltasAndHorizon()
+    }
+    
+    private func computeDeltasAndHorizon() {
+        deltaPitch = pitchDegrees - calibratedPitch
+        deltaRoll = rollDegrees - calibratedRoll
+        
+        // Gyro-based horizon from delta pitch
+        var hY = baseHorizonY + (deltaPitch / verticalFOV)
+        hY = max(horizonYRange.lowerBound, min(horizonYRange.upperBound, hY))
+        horizonY = hY
+        
+        // Initialize effectiveHorizonY to gyro baseline
+        effectiveHorizonY = hY
+        
+        // Mount aligned: within ±1.5° of saved reference
+        isMountAligned = hasSavedMountProfile && abs(deltaRoll) <= 1.5 && abs(deltaPitch) <= 1.5
+        
+        // Level check: roll within ±1.5° and pitch within ±3.0° (relative to calibrated)
+        isLevel = abs(deltaRoll) <= 1.5 && abs(deltaPitch) <= 3.0
+    }
+    
+    func start() {
+        guard motionManager.isDeviceMotionAvailable else {
+            print("MotionManager: Device motion not available")
+            return
+        }
+        
+        motionManager.deviceMotionUpdateInterval = updateInterval
+        motionManager.startDeviceMotionUpdates(using: .xArbitraryZVertical, to: .main) { [weak self] motion, error in
+            guard let self, let motion = motion else { return }
+            
+            if let error = error {
+                print("MotionManager: Device motion error: \(error)")
+                return
+            }
+            
+            // Use gravity vector to compute attitude (Gimbal Lock free for landscape mounting)
+            self.updateAttitudeFromGravity(motion.gravity)
+        }
+        isActive = true
+    }
+    
+    /// Call from DriveAssistantModel when driving straight with stable lead vehicle
+    func updateEffectiveHorizonFromVision(inferredHorizonY: Double) {
+        // Slow EMA toward vision-inferred horizon
+        let newEffective = effectiveHorizonY * (1 - autoCalibrateAlpha) + inferredHorizonY * autoCalibrateAlpha
+        
+        // Clamp within ±0.06 of gyro baseline
+        let minAllowed = horizonY - autoCalibrateClamp
+        let maxAllowed = horizonY + autoCalibrateClamp
+        effectiveHorizonY = max(minAllowed, min(maxAllowed, newEffective))
+    }
+    
+    func stop() {
+        motionManager.stopDeviceMotionUpdates()
+        isActive = false
+    }
+    
+    deinit {
+        stop()
+    }
+}
+
+// MARK: - Gravity-vector attitude computation (Gimbal Lock free)
+extension MotionManager {
+    /// Update roll/pitch from gravity vector. Call on each device motion update.
+    /// Uses gravity vector directly - works in any orientation without Gimbal Lock.
+    func updateAttitudeFromGravity(_ gravity: CMAcceleration) {
+        let gx = gravity.x
+        let gy = gravity.y
+        let gz = gravity.z
+        
+        // Roll: lateral tilt (left/right horizon tilt)
+        // gx <= 0: notch left (landscapeLeft) -> atan2(-gy, -gx)
+        // gx > 0: notch right (landscapeRight) -> atan2(gy, gx)
+        // Both give 0° when iPhone is held upright in landscape
+        let rawRoll: Double
+        if gx <= 0 {
+            rawRoll = atan2(-gy, -gx) * 180.0 / .pi
+        } else {
+            rawRoll = atan2(gy, gx) * 180.0 / .pi
+        }
+        
+        // Pitch: vertical camera elevation (0 when horizontal/level to road)
+        // asin(clamp(gz)) gives angle from horizontal plane
+        // Positive pitch = tilted up toward sky, negative = tilted down toward hood
+        let rawPitch = asin(max(-1.0, min(1.0, gz))) * 180.0 / .pi
+        
+        // Smooth with EMA
+        let alpha = 0.3
+        rollDegrees = rollDegrees * (1 - alpha) + rawRoll * alpha
+        pitchDegrees = pitchDegrees * (1 - alpha) + rawPitch * alpha
+        
+        computeDeltasAndHorizon()
+    }
+}
+import SwiftUI
+import UIKit
+
+struct SettingsView: View {
+    @ObservedObject var model: DriveAssistantModel
+    @State private var exportURL: URL?
+    @State private var isShareSheetPresented = false
+    @State private var isClearConfirmationPresented = false
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section(model.usesVietnamese ? "Hiệu chỉnh" : "Calibration") {
+                    Picker(model.usesVietnamese ? "Quy tắc khoảng cách" : "Distance rule", selection: $model.distanceRuleMode) {
+                        Text(model.usesVietnamese ? "Luật VN (TT38)" : "VN Law (TT38)").tag(DistanceRuleMode.vnLaw)
+                        Text(model.usesVietnamese ? "Thời gian bám (giây)" : "Time Headway (Seconds)").tag(DistanceRuleMode.timeHeadway)
+                    }
+                    .pickerStyle(.segmented)
+                    VStack(alignment: .leading) {
+                        Text(model.usesVietnamese ? "Hệ số khoảng cách" : "Distance calibration factor")
+                        Slider(value: $model.calibrationFactor, in: 0.50...2.00, step: 0.05)
+                        Text(String(format: "%.2f", model.calibrationFactor)).font(.caption.monospacedDigit()).foregroundColor(.secondary)
+                    }
+                    VStack(alignment: .leading) {
+                        Text(model.usesVietnamese ? "Độ dài mui xe (m)" : "Hood offset (m)")
+                        Slider(value: $model.hoodOffsetMeters, in: 0.0...3.0, step: 0.1)
+                        Text(String(format: "%.1f m", model.hoodOffsetMeters)).font(.caption.monospacedDigit()).foregroundColor(.secondary)
+                    }
+                    VStack(alignment: .leading) {
+                        Text(model.usesVietnamese ? "Độ lệch làn đường" : "Lane center offset")
+                        Slider(value: $model.laneCenterOffsetX, in: -0.15...0.15, step: 0.01)
+                        Text(String(format: "%.2f", model.laneCenterOffsetX)).font(.caption.monospacedDigit()).foregroundColor(.secondary)
+                    }
+                    if model.distanceRuleMode == .timeHeadway {
+                        VStack(alignment: .leading) { Text(model.usesVietnamese ? "Thời gian an toàn" : "Safe time headway"); Slider(value: $model.timeHeadway, in: 1.5...4.0, step: 0.1); Text(String(format: "%.1f s", model.timeHeadway)).font(.caption.monospacedDigit()).foregroundColor(.secondary) }
+                    } else {
+                        Picker(model.usesVietnamese ? "Điều kiện đường" : "Road condition", selection: $model.roadCondition) {
+                            Text(model.usesVietnamese ? "Tự động (Thời tiết)" : "Auto (Weather)").tag(RoadCondition.auto)
+                            Text(model.usesVietnamese ? "Đường khô" : "Dry Road").tag(RoadCondition.dry)
+                            Text(model.usesVietnamese ? "Mưa / Ướt" : "Rain / Wet").tag(RoadCondition.wet)
+                        }
+                        .pickerStyle(.segmented)
+                    }
+                }
+                
+                Section(model.usesVietnamese ? "Cài đặt góc gắn" : "Mount Calibration") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if model.motion.hasSavedMountProfile {
+                            HStack {
+                                Text(model.usesVietnamese ? "Góc tham chiếu đã lưu" : "Saved reference angle")
+                                Spacer()
+                                Text(String(format: "Pitch: %.1f°  Roll: %.1f°", model.motion.calibratedPitch, model.motion.calibratedRoll))
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundColor(.secondary)
+                            }
+                            HStack {
+                                Text(model.usesVietnamese ? "Độ lệch hiện tại" : "Current delta")
+                                Spacer()
+                                Text(String(format: "ΔPitch: %.1f°  ΔRoll: %.1f°", model.motion.deltaPitch, model.motion.deltaRoll))
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundColor(model.motion.isMountAligned ? .green : .orange)
+                            }
+                            Text(model.motion.isMountAligned ? (model.usesVietnamese ? "✓ Đã căn chỉnh" : "✓ Mount aligned") : (model.usesVietnamese ? "⚠ Cần căn chỉnh lại" : "⚠ Realignment needed"))
+                                .font(.caption)
+                                .foregroundColor(model.motion.isMountAligned ? .green : .orange)
+                        } else {
+                            Text(model.usesVietnamese ? "Chưa lưu góc gắn. Đặt iPhone vào giá, chọn \"Lưu góc gắn hiện tại\"." : "No mount angle saved. Place iPhone in mount, tap \"Save Current Mount Angle\".")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        
+                        Button {
+                            model.motion.saveCurrentMountAngle()
+                        } label: {
+                            HStack {
+                                Image(systemName: "checkmark.circle.fill")
+                                Text(model.motion.hasSavedMountProfile ? (model.usesVietnamese ? "Cập nhật góc gắn" : "Update Mount Angle") : (model.usesVietnamese ? "Lưu góc gắn hiện tại" : "Save Current Mount Angle"))
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!model.motion.isActive)
+                        
+                        if model.motion.hasSavedMountProfile {
+                            Button(role: .destructive) {
+                                model.motion.resetMountProfile()
+                            } label: {
+                                HStack {
+                                    Image(systemName: "arrow.counterclockwise")
+                                    Text(model.usesVietnamese ? "Xóa góc tham chiếu" : "Reset Mount Profile")
+                                }
+                                .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                }
+                
+                Section(model.usesVietnamese ? "Cảnh báo" : "Alerts") { Toggle(model.usesVietnamese ? "Cảnh báo bằng giọng nói" : "Voice alerts", isOn: $model.voiceAlertsEnabled) }
+                
+                Section(model.usesVietnamese ? "Phát hiện làn đường" : "Lane Detection") {
+                    Toggle(model.usesVietnamese ? "Bật LDWS" : "Enable LDWS", isOn: $model.enableLaneDetection)
+                    
+                    if model.enableLaneDetection {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(model.usesVietnamese ? "Ngưỡng tốc độ kích hoạt: \(Int(model.ldwsMinSpeedKmh)) km/h" : "LDWS activation threshold: \(Int(model.ldwsMinSpeedKmh)) km/h")
+                                .font(.subheadline)
+                            Slider(value: $model.ldwsMinSpeedKmh, in: 40...70, step: 5)
+                            Text(model.usesVietnamese ? "Chỉ cảnh báo khi tốc độ ≥ ngưỡng" : "Only alert when speed ≥ threshold")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+                
+                Section(model.usesVietnamese ? "Giao diện" : "Interface") {
+                    Picker(model.usesVietnamese ? "Ngôn ngữ" : "Language", selection: $model.usesVietnamese) { Text("Tiếng Việt").tag(true); Text("English").tag(false) }.pickerStyle(.segmented)
+                    
+                    Picker(model.usesVietnamese ? "Giao diện" : "Display Theme", selection: $model.displayThemeMode) {
+                        Text(model.usesVietnamese ? "Tự động" : "Auto").tag(DisplayThemeMode.auto)
+                        Text(model.usesVietnamese ? "Ngày" : "Day").tag(DisplayThemeMode.day)
+                        Text(model.usesVietnamese ? "Đêm" : "Night").tag(DisplayThemeMode.night)
+                    }
+                    .pickerStyle(.segmented)
+                    
+                    Toggle(model.usesVietnamese ? "Phản chiếu kính lái (HUD Mirror)" : "Windshield Mirror Mode", isOn: $model.hudMirrorMode)
+                    
+                    Toggle(model.usesVietnamese ? "HUD đen tiết kiệm" : "Eco Black HUD", isOn: $model.ecoBlackHUD)
+                    Toggle(model.usesVietnamese ? "Hiệu ứng kính" : "Glass effect", isOn: $model.glassHUD)
+                    Toggle(model.usesVietnamese ? "Hiển thị đường chân trời" : "Show Horizon Guide", isOn: $model.showHorizonGuide)
+                    Toggle(model.usesVietnamese ? "Hiển thị xe ngoài làn" : "Show Out-of-Lane Vehicles", isOn: $model.showOutOfROIVehicles)
+                }
+                Section(model.usesVietnamese ? "Chẩn đoán" : "Diagnostics") {
+                    Button {
+                        exportURL = model.exportDiagnostics()
+                        isShareSheetPresented = true
+                    } label: {
+                        Label(model.usesVietnamese ? "Xuất nhật ký kiểm tra" : "Export diagnostics", systemImage: "square.and.arrow.up")
+                    }
+                    Text(model.usesVietnamese ? "Xuất sau khi đỗ xe. Tệp gồm dữ liệu phiên chạy và trạng thái camera." : "Export after parking. File contains drive-session and camera-state data.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Button(role: .destructive) {
+                        isClearConfirmationPresented = true
+                    } label: {
+                        Label(model.usesVietnamese ? "Xóa nhật ký" : "Clear logs", systemImage: "trash")
+                    }
+                }
+            }
+            .navigationTitle(model.usesVietnamese ? "Cài đặt nhanh" : "Quick Settings")
+            .toolbar { ToolbarItem(placement: .navigationBarTrailing) { Button(model.usesVietnamese ? "Xong" : "Done") { model.isSettingsPresented = false } } }
+        }
+        .sheet(isPresented: $isShareSheetPresented) {
+            if let exportURL {
+                ActivityView(activityItems: [exportURL])
+            }
+        }
+        .alert(model.usesVietnamese ? "Xóa nhật ký?" : "Clear logs?", isPresented: $isClearConfirmationPresented) {
+            Button(model.usesVietnamese ? "Xóa" : "Clear", role: .destructive) {
+                model.clearDiagnostics()
+            }
+            Button(model.usesVietnamese ? "Hủy" : "Cancel", role: .cancel) {}
+        } message: {
+            Text(model.usesVietnamese ? "Không thể khôi phục nhật ký hiện tại." : "Current logs cannot be restored.")
+        }
+    }
+}
+
+private struct ActivityView: UIViewControllerRepresentable {
+    let activityItems: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ viewController: UIActivityViewController, context: Context) {}
+}
+import CoreLocation
+import Foundation
+
+final class WeatherService {
+    private let queue = DispatchQueue(label: "drive-assistant.weather")
+    private var lastRequestDate: Date?
+    private var lastRequestLocation: CLLocation?
+    private let session: URLSession
+
+    init() {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 8
+        config.timeoutIntervalForResource = 10
+        config.waitsForConnectivity = false
+        self.session = URLSession(configuration: config)
+    }
+
+    func update(for location: CLLocation, completion: @escaping (RoadCondition) -> Void) {
+        queue.async {
+            if let lastRequestDate = self.lastRequestDate,
+               let lastRequestLocation = self.lastRequestLocation,
+               Date().timeIntervalSince(lastRequestDate) < 300,
+               location.distance(from: lastRequestLocation) <= 5_000 {
+                return
+            }
+
+            self.lastRequestDate = Date()
+            self.lastRequestLocation = location
+            guard var components = URLComponents(string: "https://api.open-meteo.com/v1/forecast") else {
+                DispatchQueue.main.async { completion(.dry) }
+                return
+            }
+            components.queryItems = [
+                URLQueryItem(name: "latitude", value: String(location.coordinate.latitude)),
+                URLQueryItem(name: "longitude", value: String(location.coordinate.longitude)),
+                URLQueryItem(name: "current", value: "precipitation,rain,weather_code")
+            ]
+            guard let url = components.url else {
+                DispatchQueue.main.async { completion(.dry) }
+                return
+            }
+
+            self.session.dataTask(with: url) { data, response, _ in
+                guard let httpResponse = response as? HTTPURLResponse,
+                      (200...299).contains(httpResponse.statusCode),
+                      let data,
+                      let payload = try? JSONDecoder().decode(OpenMeteoResponse.self, from: data) else {
+                    DispatchQueue.main.async { completion(.dry) }
+                    return
+                }
+                let current = payload.current
+                let isWet = current.precipitation > 0.1 || current.rain > 0.1 || current.weatherCode >= 51
+                DispatchQueue.main.async { completion(isWet ? .wet : .dry) }
+            }.resume()
+        }
+    }
+}
+
+private struct OpenMeteoResponse: Decodable {
+    let current: CurrentWeather
+
+    struct CurrentWeather: Decodable {
+        let precipitation: Double
+        let rain: Double
+        let weatherCode: Int
+
+        enum CodingKeys: String, CodingKey {
+            case precipitation
+            case rain
+            case weatherCode = "weather_code"
+        }
+    }
+}
