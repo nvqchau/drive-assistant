@@ -1,9 +1,15 @@
 import AVFoundation
 import CoreLocation
+import CoreMotion
+import Photos
 import SwiftUI
+import UIKit
 
 struct ContentView: View {
     @ObservedObject var model: DriveAssistantModel
+    @State private var screenshotFlash = false
+    @State private var screenshotSaved = false
+    @State private var isCapturingScreenshot = false
 
     private var activeStateColor: Color {
         switch model.alertState {
@@ -13,20 +19,94 @@ struct ContentView: View {
         }
     }
 
+    private func takeScreenshot() {
+        isCapturingScreenshot = true
+
+        // Flash screen
+        withAnimation(.easeInOut(duration: 0.08)) { screenshotFlash = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            withAnimation(.easeInOut(duration: 0.15)) { screenshotFlash = false }
+        }
+
+        // Allow SwiftUI to render CameraPreview hidden before capturing
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) {
+            // Capture the full screen (HUD overlay)
+            guard let window = UIApplication.shared.connectedScenes
+                .compactMap({ ($0 as? UIWindowScene)?.keyWindow }).first else {
+                isCapturingScreenshot = false
+                return
+            }
+
+            let bounds = window.bounds
+            let renderer = UIGraphicsImageRenderer(bounds: bounds)
+
+            // First get the camera frame
+            let cameraImage = model.camera.snapshotCameraImage()
+
+            let composited = renderer.image { ctx in
+                // 1. Draw camera image (aspectFill to match CameraPreview)
+                if let camImg = cameraImage {
+                    let videoSize = model.camera.cameraFrameSize
+                    let scale = max(bounds.width / videoSize.width, bounds.height / videoSize.height)
+                    let scaledVideoSize = CGSize(width: videoSize.width * scale, height: videoSize.height * scale)
+                    let xOffset = (bounds.width - scaledVideoSize.width) / 2
+                    let yOffset = (bounds.height - scaledVideoSize.height) / 2
+                    camImg.draw(in: CGRect(x: xOffset, y: yOffset, width: scaledVideoSize.width, height: scaledVideoSize.height))
+                }
+
+                // 2. Draw the HUD overlay (window hierarchy) - skip CameraPreview black background
+                window.drawHierarchy(in: bounds, afterScreenUpdates: true)
+            }
+
+            isCapturingScreenshot = false
+
+            // Save to photo library
+            PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
+                guard status == .authorized else { return }
+                PHPhotoLibrary.shared().performChanges({
+                    PHAssetChangeRequest.creationRequestForAsset(from: composited)
+                }) { success, _ in
+                    if success {
+                        DispatchQueue.main.async { screenshotSaved = true }
+                    }
+                }
+            }
+        }
+    }
+
     var body: some View {
         GeometryReader { proxy in
             let screenBox = model.camera.leadVehicleBox.map { screenRect(forVisionBox: $0, in: proxy.size) }
             ZStack {
-                if model.ecoBlackHUD {
+                if model.ecoBlackHUD || model.hudMirrorMode {
                     Color.black
+                } else if isCapturingScreenshot {
+                    Color.clear
                 } else {
                     CameraPreview(camera: model.camera)
                 }
 
-                LaneCarpet(color: activeStateColor, vehicleRect: screenBox)
+                if model.showHorizonGuide && model.motion.isActive {
+                    HorizonOverlay(motion: model.motion)
+                }
+
+                LaneCarpet(cameraFrameSize: model.camera.cameraFrameSize, laneDetector: model.laneDetector, vehicleRect: screenBox, horizonY: model.motion.effectiveHorizonY, isLDWSEnabled: model.enableLaneDetection)
 
                 if let screenBox {
                     VehicleTargetOverlay(screenRect: screenBox, distance: model.distance, color: activeStateColor)
+                }
+
+                // Out-of-ROI vehicles: subtle gray boxes (no alerts)
+                if model.showOutOfROIVehicles {
+                    ForEach(Array(model.camera.outOfROIVehicles.enumerated()), id: \.offset) { _, item in
+                        let (box, conf, label) = item
+                        let screenRect = screenRect(forVisionBox: box, in: proxy.size)
+                        Rectangle()
+                            .stroke(Color.gray.opacity(0.35), lineWidth: 1)
+                            .frame(width: screenRect.width, height: screenRect.height)
+                            .position(x: screenRect.midX, y: screenRect.midY)
+                            .allowsHitTesting(false)
+                    }
                 }
 
                 hud
@@ -34,6 +114,7 @@ struct ContentView: View {
         }
         .background(Color.black)
         .ignoresSafeArea(.all)
+        .scaleEffect(x: 1, y: model.hudMirrorMode ? -1 : 1)
         .sheet(isPresented: $model.isSettingsPresented) { SettingsView(model: model) }
         .statusBarHidden(true)
         .onAppear { model.start() }
@@ -42,6 +123,16 @@ struct ContentView: View {
             if model.camera.cameraAuthorizationStatus == .denied || model.camera.cameraAuthorizationStatus == .restricted {
                 CameraPermissionBanner()
             }
+        }
+        .overlay(alignment: .topTrailing) {
+            if screenshotFlash {
+                Color.white.opacity(0.3)
+                    .ignoresSafeArea()
+                    .transition(.opacity)
+            }
+        }
+        .alert("Screenshot saved", isPresented: $screenshotSaved) {
+            Button("OK", role: .cancel) {}
         }
     }
 
@@ -70,11 +161,11 @@ struct ContentView: View {
             VStack {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 8) {
-                        GPSSpeedPill(speed: model.speedKMPH, accuracy: model.gpsAccuracy)
+                        GPSSpeedPill(speed: model.speedKMPH, accuracy: model.gpsAccuracy, glassEnabled: model.glassHUD, nightDim: model.isNightThemeActive && !model.hudMirrorMode)
                         ThermalBadge(state: model.camera.thermalState)
                     }
                     Spacer()
-                    RuleWeatherPill(model: model)
+                    RuleWeatherPill(model: model, nightDim: model.isNightThemeActive && !model.hudMirrorMode)
                 }
                 .padding(.horizontal, 28)
                 .padding(.top, 22)
@@ -82,22 +173,29 @@ struct ContentView: View {
                 Spacer()
 
                 HStack(alignment: .bottom) {
-                    DistanceCard(model: model, color: activeStateColor)
+                    DistanceCard(model: model, color: activeStateColor, nightDim: model.isNightThemeActive && !model.hudMirrorMode)
                     Spacer()
                     HStack(spacing: 10) {
+                        Button { takeScreenshot() } label: {
+                            Image(systemName: "camera.fill")
+                                .foregroundColor(.white)
+                                .font(.system(size: 20, weight: .semibold))
+                                .frame(width: 50, height: 50)
+                                .glassCircle(enabled: model.glassHUD)
+                        }
                         Button { model.ecoBlackHUD.toggle() } label: {
                             Image(systemName: model.ecoBlackHUD ? "leaf.fill" : "flame.fill")
                                 .foregroundColor(model.ecoBlackHUD ? .green : .white)
                                 .font(.system(size: 20, weight: .semibold))
                                 .frame(width: 50, height: 50)
-                                .glassCircle()
+                                .glassCircle(enabled: model.glassHUD)
                         }
                         Button { model.isSettingsPresented = true } label: {
                             Image(systemName: "gearshape.fill")
                                 .foregroundColor(.white)
                                 .font(.system(size: 20, weight: .semibold))
                                 .frame(width: 50, height: 50)
-                                .glassCircle()
+                                .glassCircle(enabled: model.glassHUD)
                         }
                     }
                 }
@@ -107,6 +205,7 @@ struct ContentView: View {
         }
         .ignoresSafeArea(.all)
     }
+
 }
 
 private struct CameraPermissionBanner: View {
@@ -130,11 +229,14 @@ private struct CameraPermissionBanner: View {
 private struct GPSSpeedPill: View {
     let speed: Double
     let accuracy: CLLocationAccuracy
+    let glassEnabled: Bool
+    let nightDim: Bool
 
     private var signalColor: Color { accuracy >= 0 && accuracy < 20 ? .cyan : .gray }
 
     var body: some View {
         HStack(spacing: 10) {
+
             Image(systemName: "antenna.radiowaves.left.and.right")
                 .font(.system(size: 21, weight: .bold))
                 .foregroundColor(signalColor)
@@ -144,23 +246,39 @@ private struct GPSSpeedPill: View {
                 .foregroundColor(.white)
             Text("km/h")
                 .font(.system(size: 16, weight: .semibold, design: .rounded))
-                .foregroundColor(.white.opacity(0.82))
+                .foregroundColor(.white.opacity(nightDim ? 0.78 : 0.82))
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
-        .glassCapsule()
+        .glassCapsule(enabled: glassEnabled, nightDim: nightDim)
     }
 }
 
+
 private struct RuleWeatherPill: View {
     @ObservedObject var model: DriveAssistantModel
+    let nightDim: Bool
 
     var body: some View {
         Button(action: model.cycleRoadCondition) {
             HStack(spacing: 10) {
                 Text(model.distanceRuleMode == .vnLaw ? "TT38 • MIN \(String(format: "%.0f", model.activeMinimumDistance))m" : "MIN \(String(format: "%.0f", model.activeMinimumDistance))m")
                     .font(.system(size: 16, weight: .bold, design: .rounded))
-                Divider().frame(height: 20).overlay(Color.white.opacity(0.35))
+                Divider().frame(height: 20).overlay(Color.white.opacity(nightDim ? 0.27 : 0.35))
+                
+                // LDWS status indicator (compact)
+                if model.enableLaneDetection && (model.laneDetector.isLaneDetectionActive || model.laneDetector.isSpeedGated) {
+                    VStack(spacing: 1) {
+                        Image(systemName: "road.lanes")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(ldwsStatusColor)
+                        Text("LDWS")
+                            .font(.system(size: 9, weight: .medium, design: .rounded))
+                            .foregroundColor(ldwsStatusColor)
+                    }
+                    Divider().frame(height: 20).overlay(Color.white.opacity(nightDim ? 0.27 : 0.35))
+                }
+                
                 VStack(spacing: 1) {
                     Image(systemName: weatherIcon)
                         .font(.system(size: 13, weight: .semibold))
@@ -168,28 +286,48 @@ private struct RuleWeatherPill: View {
                         .font(.system(size: 9, weight: .medium, design: .rounded))
                 }
             }
-            .foregroundColor(.white)
+            .foregroundColor(.white.opacity(nightDim ? 0.78 : 1.0))
             .padding(.horizontal, 16)
             .padding(.vertical, 11)
-            .glassCapsule()
+            .glassCapsule(enabled: model.glassHUD, nightDim: nightDim)
         }
         .buttonStyle(.plain)
     }
 
+    private var ldwsStatusColor: Color {
+        if model.laneDetector.isSpeedGated {
+            return .gray
+        }
+        switch model.laneDetector.departureState {
+        case .driftingLeft, .driftingRight:
+            return model.laneDetector.departureAlertActive ? .red : .orange
+        case .none:
+            return .cyan
+        }
+    }
+
     private var weatherText: String {
-        switch model.roadCondition {
-        case .auto: return "Auto"
-        case .dry: return "Dry"
-        case .wet: return "Wet"
+        if model.usesVietnamese {
+            switch model.roadCondition {
+            case .auto: return "Tự động"
+            case .dry: return "Nắng"
+            case .wet: return "Mưa"
+            }
+        } else {
+            switch model.roadCondition {
+            case .auto: return "Auto"
+            case .dry: return "Dry"
+            case .wet: return "Wet"
+            }
         }
     }
 
     private var weatherIcon: String { model.effectiveRoadCondition == .wet ? "cloud.rain.fill" : "sun.max.fill" }
 }
-
 private struct DistanceCard: View {
     @ObservedObject var model: DriveAssistantModel
     let color: Color
+    let nightDim: Bool
 
     private var progress: Double {
         guard let distance = model.distance else { return 0 }
@@ -197,10 +335,18 @@ private struct DistanceCard: View {
     }
 
     private var statusText: String {
-        switch model.alertState {
-        case .normal: return "SAFE GAP"
-        case .warning: return "GAP CLOSING"
-        case .critical: return "TOO CLOSE"
+        if model.usesVietnamese {
+            switch model.alertState {
+            case .normal: return "Đủ khoảng cách"
+            case .warning: return "Thiếu khoảng cách"
+            case .critical: return "Quá gần"
+            }
+        } else {
+            switch model.alertState {
+            case .normal: return "Safe gap"
+            case .warning: return "Gap closing"
+            case .critical: return "Too close"
+            }
         }
     }
 
@@ -222,7 +368,7 @@ private struct DistanceCard: View {
         }
         .padding(18)
         .frame(width: 245, alignment: .leading)
-        .glassCard(cornerRadius: 20)
+        .glassCard(cornerRadius: 20, enabled: model.glassHUD, nightDim: nightDim)
     }
 }
 
@@ -258,28 +404,176 @@ private struct SegmentedProgressBar: View {
 }
 
 private struct LaneCarpet: View {
-    let color: Color
+    let cameraFrameSize: CGSize
+    @ObservedObject var laneDetector: LaneDetector
     let vehicleRect: CGRect?
+    let horizonY: Double
+    let isLDWSEnabled: Bool
 
     var body: some View {
         GeometryReader { proxy in
-            let shape = LaneCarpetShape(vehicleRect: vehicleRect, canvasSize: proxy.size)
-            shape
-                .fill(LinearGradient(colors: [color.opacity(0.06), color.opacity(0.32)], startPoint: .top, endPoint: .bottom))
-                .overlay(shape.stroke(color.opacity(0.72), style: StrokeStyle(lineWidth: 2, lineCap: .round)))
-                .shadow(color: color.opacity(0.55), radius: 8)
+            let canvasSize = proxy.size
+            
+            // Use dynamic lanes if detected with good confidence, else static fallback
+            let (leftPath, rightPath, fillPath, leftColor, rightColor, showLeftAlert, showRightAlert) = buildLanePaths(canvasSize: canvasSize, cameraFrameSize: cameraFrameSize)
+            
+            ZStack {
+                // Interior fill
+                fillPath
+                    .fill(
+                        LinearGradient(
+                            colors: [.cyan.opacity(0.08), .cyan.opacity(0.0)],
+                            startPoint: .bottom,
+                            endPoint: .top
+                        )
+                    )
+                
+                // Left lane line - color based on state: cyan (normal) -> amber (drifting) -> red (alert)
+                leftPath
+                    .stroke(
+                        LinearGradient(
+                            colors: [leftColor.opacity(0.55), leftColor.opacity(0.0)],
+                            startPoint: .bottom,
+                            endPoint: .top
+                        ),
+                        style: StrokeStyle(lineWidth: 2.5, lineCap: .round)
+                    )
+                
+                // Right lane line
+                rightPath
+                    .stroke(
+                        LinearGradient(
+                            colors: [rightColor.opacity(0.55), rightColor.opacity(0.0)],
+                            startPoint: .bottom,
+                            endPoint: .top
+                        ),
+                        style: StrokeStyle(lineWidth: 2.5, lineCap: .round)
+                    )
+                
+                // Departure pulsing alert on crossed rail
+                if showLeftAlert {
+                    leftPath
+                        .stroke(Color.red.opacity(0.9), style: StrokeStyle(lineWidth: 5, lineCap: .round, dash: [6, 3]))
+                        .animation(.easeInOut(duration: 0.4).repeatForever(autoreverses: true), value: laneDetector.departureAlertActive)
+                }
+                if showRightAlert {
+                    rightPath
+                        .stroke(Color.red.opacity(0.9), style: StrokeStyle(lineWidth: 5, lineCap: .round, dash: [6, 3]))
+                        .animation(.easeInOut(duration: 0.4).repeatForever(autoreverses: true), value: laneDetector.departureAlertActive)
+                }
+            }
         }
         .ignoresSafeArea(.all)
         .allowsHitTesting(false)
+    }
+    
+    private func buildLanePaths(canvasSize: CGSize, cameraFrameSize: CGSize) -> (left: Path, right: Path, fill: Path, leftColor: Color, rightColor: Color, showLeftAlert: Bool, showRightAlert: Bool) {
+        var leftPath = Path()
+        var rightPath = Path()
+        var fillPath = Path()
+        
+        let hasDynamicLanes = laneDetector.isLaneDetectionActive &&
+                              laneDetector.leftLaneConfidence > 0.5 &&
+                              laneDetector.rightLaneConfidence > 0.5 &&
+                              !laneDetector.leftLanePoints.isEmpty &&
+                              !laneDetector.rightLanePoints.isEmpty
+        
+        // Determine colors based on departure state
+        let leftColor: Color
+        let rightColor: Color
+        let showLeftAlert: Bool
+        let showRightAlert: Bool
+        
+        switch laneDetector.departureState {
+        case .driftingLeft:
+            leftColor = .orange
+            rightColor = .cyan
+            showLeftAlert = laneDetector.departureAlertActive
+            showRightAlert = false
+        case .driftingRight:
+            leftColor = .cyan
+            rightColor = .orange
+            showLeftAlert = false
+            showRightAlert = laneDetector.departureAlertActive
+        case .none:
+            leftColor = .cyan
+            rightColor = .cyan
+            showLeftAlert = false
+            showRightAlert = false
+        }
+        
+
+        if hasDynamicLanes {
+            // Aspect-fill transform matching screenRect(forVisionBox:in:)
+            let videoSize = cameraFrameSize
+            let scale = max(canvasSize.width / videoSize.width, canvasSize.height / videoSize.height)
+            let scaledVideoSize = CGSize(width: videoSize.width * scale, height: videoSize.height * scale)
+            let xOffset = (canvasSize.width - scaledVideoSize.width) / 2
+            let yOffset = (canvasSize.height - scaledVideoSize.height) / 2
+            func transformPoint(_ pt: CGPoint) -> CGPoint {
+                // pt is normalized (0..1) top-left origin from LaneDetector
+                // Convert directly to raw video pixel coordinates (no Y-flip needed)
+                let rawX = pt.x * videoSize.width
+                let rawY = pt.y * videoSize.height
+                // Apply aspect-fill scale and offset
+                return CGPoint(x: rawX * scale + xOffset, y: rawY * scale + yOffset)
+            }
+
+            let leftPoints = laneDetector.leftLanePoints.map(transformPoint)
+            let rightPoints = laneDetector.rightLanePoints.map(transformPoint)
+
+            leftPath.move(to: leftPoints[0])
+            for i in 1..<leftPoints.count {
+                leftPath.addLine(to: leftPoints[i])
+            }
+
+            rightPath.move(to: rightPoints[0])
+            for i in 1..<rightPoints.count {
+                rightPath.addLine(to: rightPoints[i])
+            }
+
+            fillPath.move(to: leftPoints[0])
+            for point in leftPoints { fillPath.addLine(to: point) }
+            for point in rightPoints.reversed() { fillPath.addLine(to: point) }
+            fillPath.closeSubpath()
+
+        } else {
+
+            // Static fallback trapezoid
+            let topY = vehicleRect?.maxY ?? canvasSize.height * horizonY
+            let topWidth = vehicleRect?.width ?? canvasSize.width * 0.12
+            let topCenter = vehicleRect?.midX ?? canvasSize.width / 2
+            let bottomY = canvasSize.height
+            let bottomWidth = canvasSize.width * 0.36
+            let leftTop = CGPoint(x: topCenter - topWidth / 2, y: topY)
+            let rightTop = CGPoint(x: topCenter + topWidth / 2, y: topY)
+            let leftBottom = CGPoint(x: canvasSize.width / 2 - bottomWidth / 2, y: bottomY)
+            let rightBottom = CGPoint(x: canvasSize.width / 2 + bottomWidth / 2, y: bottomY)
+            
+            leftPath.move(to: leftBottom)
+            leftPath.addLine(to: leftTop)
+            
+            rightPath.move(to: rightTop)
+            rightPath.addLine(to: rightBottom)
+            
+            fillPath.move(to: leftTop)
+            fillPath.addLine(to: rightTop)
+            fillPath.addLine(to: rightBottom)
+            fillPath.addLine(to: leftBottom)
+            fillPath.closeSubpath()
+        }
+        
+        return (leftPath, rightPath, fillPath, leftColor, rightColor, showLeftAlert, showRightAlert)
     }
 }
 
 private struct LaneCarpetShape: Shape {
     let vehicleRect: CGRect?
     let canvasSize: CGSize
+    let horizonY: Double
 
     func path(in rect: CGRect) -> Path {
-        let topY = vehicleRect?.maxY ?? canvasSize.height * 0.45
+        let topY = vehicleRect?.maxY ?? canvasSize.height * horizonY
         let topWidth = vehicleRect?.width ?? canvasSize.width * 0.12
         let topCenter = vehicleRect?.midX ?? canvasSize.width / 2
         let bottomY = canvasSize.height
@@ -319,7 +613,7 @@ private struct VehicleTargetOverlay: View {
                     }
                 }
                 .opacity(pulse ? 0.45 : 1)
-                .animation(.easeInOut(duration: 0.55), value: pulse)
+                .animation(.easeInOut(duration: 0.55).repeatForever(autoreverses: true), value: pulse)
         }
         .onAppear {
             withAnimation(.easeInOut(duration: 0.55).repeatForever(autoreverses: true)) { pulse = true }
@@ -338,7 +632,7 @@ private struct ThermalBadge: View {
                 .foregroundColor(.orange)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
-                .background(Color.black.opacity(0.78), in: Capsule())
+                .background(Color.black.opacity(0.55), in: Capsule())
         }
     }
 }
@@ -361,22 +655,152 @@ private struct BracketShape: Shape {
     }
 }
 
-private extension View {
-    func glassCapsule() -> some View {
-        background(Color.black.opacity(0.60), in: Capsule())
-            .background(.ultraThinMaterial, in: Capsule())
-            .overlay(Capsule().stroke(Color.white.opacity(0.18), lineWidth: 1))
+private struct HorizonOverlay: View {
+    @ObservedObject var motion: MotionManager
+    
+    private var levelColor: Color {
+        (motion.isLevel || motion.isMountAligned) ? Color(red: 0.0, green: 0.902, blue: 0.463) : Color(red: 1.0, green: 0.769, blue: 0.0)
+    }
+    
+    private var levelText: String {
+        if motion.isMountAligned {
+            return "MOUNT ALIGNED"
+        } else if motion.isLevel {
+            return "0.0° LEVEL"
+        } else {
+            return String(format: "R: %.1f° P: %.1f°", motion.deltaRoll, motion.deltaPitch)
+        }
+    }
+    
+    private var rollRadians: Double { motion.rollDegrees * .pi / 180 }
+    
+    private func makeLinePath(in size: CGSize) -> Path {
+        let center = CGPoint(x: size.width / 2, y: size.height / 2)
+        let horizonY = size.height * motion.effectiveHorizonY
+        let lineLen = size.width * 1.2
+        let halfLen = lineLen / 2
+        let rollRad = rollRadians
+        let dy = horizonY - center.y
+        
+        let rotCenterX = center.x - dy * sin(rollRad)
+        let rotCenterY = center.y + dy * cos(rollRad)
+        let dirX = cos(rollRad)
+        let dirY = sin(rollRad)
+        
+        let startX = rotCenterX - dirX * halfLen
+        let startY = rotCenterY - dirY * halfLen
+        let endX = rotCenterX + dirX * halfLen
+        let endY = rotCenterY + dirY * halfLen
+        
+        return Path { path in
+            path.move(to: CGPoint(x: startX, y: startY))
+            path.addLine(to: CGPoint(x: endX, y: endY))
+        }
+    }
+    
+    var body: some View {
+        GeometryReader { proxy in
+            let linePath = makeLinePath(in: proxy.size)
+            let center = CGPoint(x: proxy.size.width / 2, y: proxy.size.height / 2)
+            
+            let horizonLine = linePath
+                .stroke(style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: [12, 8], dashPhase: 0))
+                .foregroundColor(levelColor)
+                .shadow(color: levelColor.opacity(0.6), radius: 3)
+            
+            let centerText = Text(levelText)
+                .font(.system(size: 14, weight: .bold, design: .rounded))
+                .foregroundColor(levelColor)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Color.black.opacity(0.65), in: Capsule())
+                .position(center)
+            
+            ZStack {
+                horizonLine
+                centerText
+            }
+        }
+        .allowsHitTesting(false)
+        .ignoresSafeArea(.all)
+    }
+}
+
+extension View {
+    func glassCapsule(enabled: Bool, nightDim: Bool = false) -> some View {
+        modifier(GlassBackgroundModifier(shape: Capsule(), isEnabled: enabled, nightDim: nightDim))
     }
 
-    func glassCard(cornerRadius: CGFloat) -> some View {
-        background(Color.black.opacity(0.62), in: RoundedRectangle(cornerRadius: cornerRadius))
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: cornerRadius))
-            .overlay(RoundedRectangle(cornerRadius: cornerRadius).stroke(Color.white.opacity(0.16), lineWidth: 1))
+    func glassCard(cornerRadius: CGFloat, enabled: Bool, nightDim: Bool = false) -> some View {
+        modifier(GlassBackgroundModifier(shape: RoundedRectangle(cornerRadius: cornerRadius), isEnabled: enabled, nightDim: nightDim))
     }
 
-    func glassCircle() -> some View {
-        background(Color.black.opacity(0.62), in: Circle())
-            .background(.ultraThinMaterial, in: Circle())
-            .overlay(Circle().stroke(Color.white.opacity(0.2), lineWidth: 1))
+    func glassCircle(enabled: Bool, nightDim: Bool = false) -> some View {
+        modifier(GlassBackgroundModifier(shape: Circle(), isEnabled: enabled, nightDim: nightDim))
+    }
+}
+
+private struct GlassBackgroundModifier<ShapeType: Shape>: ViewModifier {
+    let shape: ShapeType
+    let isEnabled: Bool
+    let nightDim: Bool
+
+    func body(content: Content) -> some View {
+        content.background {
+            if isEnabled {
+                GlassSurface(shape: shape, nightDim: nightDim)
+            } else {
+                SolidSurface(shape: shape, nightDim: nightDim)
+            }
+        }
+    }
+}
+
+private struct GlassSurface<ShapeType: Shape>: View {
+    let shape: ShapeType
+    let nightDim: Bool
+
+    var body: some View {
+        shape
+            .fill(.ultraThinMaterial)
+            .overlay(
+                LinearGradient(
+                    colors: [
+                        Color.white.opacity(nightDim ? 0.15 : 0.22),
+                        Color.white.opacity(nightDim ? 0.03 : 0.05),
+                        Color.black.opacity(nightDim ? 0.10 : 0.07)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                .clipShape(shape)
+            )
+            .overlay(
+                shape
+                    .stroke(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(nightDim ? 0.30 : 0.45),
+                                Color.white.opacity(nightDim ? 0.05 : 0.08),
+                                Color.white.opacity(nightDim ? 0.15 : 0.22)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 1
+                    )
+            )
+            .shadow(color: Color.black.opacity(nightDim ? 0.20 : 0.16), radius: 10, x: 0, y: 5)
+    }
+}
+
+private struct SolidSurface<ShapeType: Shape>: View {
+    let shape: ShapeType
+    let nightDim: Bool
+
+    var body: some View {
+        shape
+            .fill(Color.black.opacity(nightDim ? 0.75 : 0.58))
+            .overlay(shape.stroke(Color.white.opacity(nightDim ? 0.08 : 0.12), lineWidth: 1))
     }
 }

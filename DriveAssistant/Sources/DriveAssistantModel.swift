@@ -1,6 +1,8 @@
 import AVFoundation
+import SwiftUI
 import Combine
 import CoreLocation
+import CoreMotion
 import Foundation
 import UIKit
 
@@ -21,6 +23,12 @@ enum RoadCondition: String, CaseIterable {
     case wet = "wet"
 }
 
+enum DisplayThemeMode: String, CaseIterable {
+    case auto = "auto"
+    case day = "day"
+    case night = "night"
+}
+
 final class DriveAssistantModel: ObservableObject {
     @Published var distance: Double?
     @Published var speedKMPH: Double = 0
@@ -33,7 +41,12 @@ final class DriveAssistantModel: ObservableObject {
     @Published var ecoBlackHUD: Bool {
         didSet { UserDefaults.standard.set(ecoBlackHUD, forKey: "ecoBlackHUD") }
     }
-    @Published var voiceAlertsEnabled = true
+    @Published var glassHUD: Bool {
+        didSet { UserDefaults.standard.set(glassHUD, forKey: "glassHUD") }
+    }
+    @Published var voiceAlertsEnabled: Bool {
+        didSet { UserDefaults.standard.set(voiceAlertsEnabled, forKey: "voiceAlertsEnabled") }
+    }
     @Published var usesVietnamese = true
     @Published var distanceRuleMode: DistanceRuleMode {
         didSet { UserDefaults.standard.set(distanceRuleMode.rawValue, forKey: "distanceRuleMode") }
@@ -43,9 +56,71 @@ final class DriveAssistantModel: ObservableObject {
     }
     @Published private(set) var detectedRoadCondition: RoadCondition = .dry
     @Published var timeHeadway: Double = 2.5
-    @Published var calibrationFactor: Double = 1.40
+    @Published var calibrationFactor: Double = 1.15 {
+        didSet { UserDefaults.standard.set(calibrationFactor, forKey: "calibrationFactor") }
+    }
+    @Published var showOutOfROIVehicles: Bool = true {
+        didSet { UserDefaults.standard.set(showOutOfROIVehicles, forKey: "showOutOfROIVehicles") }
+    }
+    @Published var hoodOffsetMeters: Double = 1.8 {
+        didSet { UserDefaults.standard.set(hoodOffsetMeters, forKey: "hoodOffsetMeters") }
+    }
+    @Published var laneCenterOffsetX: Double = -0.03 {
+        didSet { 
+            UserDefaults.standard.set(laneCenterOffsetX, forKey: "laneCenterOffsetX")
+            camera.setLaneCenterOffsetX(laneCenterOffsetX)
+            laneDetector.setROIOffset(laneCenterOffsetX)
+        }
+    }
+    @Published var showHorizonGuide: Bool = true {
+        didSet { UserDefaults.standard.set(showHorizonGuide, forKey: "showHorizonGuide") }
+    }
+    @Published var enableLaneDetection: Bool = true {
+        didSet { UserDefaults.standard.set(enableLaneDetection, forKey: "enableLaneDetection") }
+    }
+    @Published var ldwsMinSpeedKmh: Double = 50.0 {
+        didSet { 
+            UserDefaults.standard.set(ldwsMinSpeedKmh, forKey: "ldwsMinSpeedKmh")
+            laneDetector.setMinSpeedForDepartureAlert(ldwsMinSpeedKmh)
+        }
+    }
+    
+    // Display Theme & Mirror Mode
+    @Published var displayThemeMode: DisplayThemeMode = .auto {
+        didSet { UserDefaults.standard.set(displayThemeMode.rawValue, forKey: "displayThemeMode") }
+    }
+    var isNightThemeActive: Bool {
+        if displayThemeMode == .night { return true }
+        if displayThemeMode == .day { return false }
+        // auto: 3-tier fallback
+        // 1) Camera luminance (handles tunnels, heavy rain, real twilight)
+        if !ecoBlackHUD && !hudMirrorMode && camera.hasValidCameraBrightness {
+            return camera.isLowLightScene
+        }
+        // 2) GPS astronomical sunrise/sunset
+        if let astroNight = location.isAstronomicalNight {
+            return astroNight
+        }
+        // 3) Clock fallback
+        let hour = Calendar.current.component(.hour, from: Date())
+        return hour < 6 || hour >= 18
+    }
+    @Published var hudMirrorMode: Bool = false {
+        didSet {
+            UserDefaults.standard.set(hudMirrorMode, forKey: "hudMirrorMode")
+            if hudMirrorMode {
+                savedBrightness = UIScreen.main.brightness
+                UIScreen.main.brightness = 1.0
+            } else {
+                UIScreen.main.brightness = savedBrightness
+            }
+        }
+    }
+    private var savedBrightness: CGFloat = 1.0
 
     let camera = CameraManager()
+    let motion = MotionManager()
+    let laneDetector = LaneDetector()
     let diagnostics = DiagnosticsLogStore()
     private let location = LocationManager()
     private let alerts = AlertManager()
@@ -58,6 +133,12 @@ final class DriveAssistantModel: ObservableObject {
     private var lastSpeedKMPH: Double = 0
     private var lastSpeedUpdateTime: TimeInterval = 0
     private let maxAccelerationMPS2: Double = 6.0
+    private let maxClosingSpeedMPS: Double = 25.0
+    
+    // For dynamic horizon calibration
+    private var lastTrackedBox: CGRect?
+    private var lastTrackedConfidence: Float = 0
+    private var horizonCalibrationFrames = 0
 
     var safeDistance: Double { max(5, speedKMPH / 3.6 * timeHeadway) }
 
@@ -88,15 +169,44 @@ final class DriveAssistantModel: ObservableObject {
     init() {
         let defaults = UserDefaults.standard
         ecoBlackHUD = defaults.bool(forKey: "ecoBlackHUD")
+        glassHUD = defaults.object(forKey: "glassHUD") as? Bool ?? true
+        voiceAlertsEnabled = defaults.object(forKey: "voiceAlertsEnabled") as? Bool ?? false
         distanceRuleMode = DistanceRuleMode(rawValue: defaults.string(forKey: "distanceRuleMode") ?? "") ?? .vnLaw
         roadCondition = RoadCondition(rawValue: defaults.string(forKey: "roadCondition") ?? "") ?? .dry
+        calibrationFactor = defaults.object(forKey: "calibrationFactor") as? Double ?? 1.15
+        showOutOfROIVehicles = defaults.object(forKey: "showOutOfROIVehicles") as? Bool ?? true
+        hoodOffsetMeters = defaults.object(forKey: "hoodOffsetMeters") as? Double ?? 1.8
+        laneCenterOffsetX = defaults.object(forKey: "laneCenterOffsetX") as? Double ?? -0.03
+        showHorizonGuide = defaults.object(forKey: "showHorizonGuide") as? Bool ?? true
+        enableLaneDetection = defaults.object(forKey: "enableLaneDetection") as? Bool ?? true
+        ldwsMinSpeedKmh = defaults.object(forKey: "ldwsMinSpeedKmh") as? Double ?? 50.0
+        displayThemeMode = DisplayThemeMode(rawValue: defaults.string(forKey: "displayThemeMode") ?? "") ?? .auto
+        hudMirrorMode = defaults.bool(forKey: "hudMirrorMode")
+        if hudMirrorMode {
+            savedBrightness = UIScreen.main.brightness
+            UIScreen.main.brightness = 1.0
+        }
+        
         camera.attachDiagnostics(diagnostics)
         camera.setCalibrationFactor(calibrationFactor)
+        camera.setLaneCenterOffsetX(laneCenterOffsetX)
+        camera.laneDetector = laneDetector
+        laneDetector.setROIOffset(laneCenterOffsetX)
+        laneDetector.setMinSpeedForDepartureAlert(ldwsMinSpeedKmh)
+
+        // Forward camera & location changes to trigger reactive theme updates
+        camera.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+        location.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
 
         location.$speedKMPH
             .receive(on: DispatchQueue.main)
             .sink { [weak self] newSpeed in
                 self?.applySpeedRateLimit(newSpeed)
+                self?.camera.currentSpeedKMPH = newSpeed
             }
             .store(in: &cancellables)
 
@@ -113,11 +223,12 @@ final class DriveAssistantModel: ObservableObject {
             .sink { [weak self] rawDistance in
                 guard let self else { return }
                 if let rawDistance {
+                    let bumperDistance = max(0.5, rawDistance - self.hoodOffsetMeters)
                     self.smoothedDistance = self.smoothedDistance.map {
-                        self.distanceEMAAlpha * rawDistance + (1 - self.distanceEMAAlpha) * $0
-                    } ?? rawDistance
+                        self.distanceEMAAlpha * bumperDistance + (1 - self.distanceEMAAlpha) * $0
+                    } ?? bumperDistance
                     self.distance = self.smoothedDistance
-                    self.updateDistanceHistory(distance: self.smoothedDistance ?? rawDistance)
+                    self.updateDistanceHistory(distance: self.smoothedDistance ?? bumperDistance)
                 } else {
                     self.smoothedDistance = nil
                     self.distance = nil
@@ -131,9 +242,58 @@ final class DriveAssistantModel: ObservableObject {
             self?.camera.setCalibrationFactor(factor)
             self?.updateAlertState()
         }.store(in: &cancellables)
+        $hoodOffsetMeters.dropFirst().sink { [weak self] _ in
+            self?.updateAlertState()
+        }.store(in: &cancellables)
+        $laneCenterOffsetX.dropFirst().sink { [weak self] offset in
+            self?.camera.setLaneCenterOffsetX(offset)
+            self?.laneDetector.setROIOffset(offset)
+            self?.updateAlertState()
+        }.store(in: &cancellables)
+        $showHorizonGuide.dropFirst().sink { [weak self] enabled in
+            self?.camera.setHorizonFilterEnabled(enabled)
+            if enabled {
+                self?.motion.start()
+            } else {
+                self?.motion.stop()
+            }
+        }.store(in: &cancellables)
         $timeHeadway.dropFirst().sink { [weak self] _ in self?.updateAlertState() }.store(in: &cancellables)
         $distanceRuleMode.dropFirst().sink { [weak self] _ in self?.updateAlertState() }.store(in: &cancellables)
         $roadCondition.dropFirst().sink { [weak self] _ in self?.updateAlertState() }.store(in: &cancellables)
+        $enableLaneDetection.dropFirst().sink { [weak self] enabled in
+            self?.laneDetector.setLDWSEnabled(enabled)
+            if !enabled {
+                self?.laneDetector.stop()
+            }
+        }.store(in: &cancellables)
+        $ldwsMinSpeedKmh.dropFirst().sink { [weak self] speed in
+            self?.laneDetector.setMinSpeedForDepartureAlert(speed)
+        }.store(in: &cancellables)
+        // Sync effectiveHorizonY to CameraManager and trigger auto-calibration
+        camera.$leadVehicleBox
+            .combineLatest(camera.$leadVehicleConfidence, motion.$effectiveHorizonY)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] box, confidence, effectiveHorizonY in
+                self?.camera.setEffectiveHorizonY(effectiveHorizonY)
+                self?.attemptHorizonAutoCalibration(box: box, confidence: confidence)
+            }
+            .store(in: &cancellables)
+
+        // Lane departure alerts
+        laneDetector.$departureAlertActive
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] active in
+                if active {
+                    self?.alerts.playLaneDepartureAlert(speak: self?.voiceAlertsEnabled ?? false)
+                }
+            }
+            .store(in: &cancellables)
+
+        // Start motion manager if enabled
+        if showHorizonGuide {
+            motion.start()
+        }
     }
 
     private func applySpeedRateLimit(_ newSpeedKMPH: Double) {
@@ -161,12 +321,24 @@ final class DriveAssistantModel: ObservableObject {
         diagnostics.record(type: "session_started", orientation: String(describing: UIDevice.current.orientation))
         camera.start()
         location.start()
+        if showHorizonGuide {
+            motion.start()
+        }
+        if enableLaneDetection {
+            laneDetector.start()
+        }
     }
 
     func stop() {
         diagnostics.record(type: "session_stopped", speedKMPH: speedKMPH, distanceMeters: distance, isDangerous: isDangerous, orientation: String(describing: UIDevice.current.orientation))
         camera.stop()
         location.stop()
+        motion.stop()
+        laneDetector.stop()
+        // Restore brightness on app stop if mirror mode was on
+        if hudMirrorMode {
+            UIScreen.main.brightness = savedBrightness
+        }
     }
 
     func exportDiagnostics() -> URL {
@@ -201,8 +373,8 @@ final class DriveAssistantModel: ObservableObject {
         }
         let elapsed = now - oldest.timestamp
         let closingSpeed = max(0, (oldest.distance - distance) / elapsed)
-        closingSpeedMPS = closingSpeed
-        timeToCollision = closingSpeed > 0.5 ? distance / closingSpeed : nil
+        closingSpeedMPS = min(closingSpeed, maxClosingSpeedMPS)
+        timeToCollision = closingSpeedMPS > 0.5 ? distance / closingSpeedMPS : nil
     }
 
     private func updateAlertState() {
@@ -252,4 +424,49 @@ final class DriveAssistantModel: ObservableObject {
         isDangerous = state == .critical
         diagnostics.record(type: "alert_state_changed", speedKMPH: speedKMPH, distanceMeters: distance, isDangerous: isDangerous, orientation: String(describing: UIDevice.current.orientation), details: "state=\(String(describing: state)), closingSpeedMPS=\(closingSpeedMPS), ttc=\(timeToCollision.map { String($0) } ?? "nil")")
     }
+    
+    /// Dynamic in-drive horizon auto-calibration
+    private func attemptHorizonAutoCalibration(box: CGRect?, confidence: Float) {
+        guard showHorizonGuide,
+              motion.isActive,
+              speedKMPH > 30.0,
+              abs(motion.deltaRoll) < 2.0,
+              let box = box,
+              confidence >= 0.70,
+              box.width >= 0.05 && box.width <= 0.25 else {
+            horizonCalibrationFrames = 0
+            lastTrackedBox = nil
+            return
+        }
+        
+        if let lastBox = lastTrackedBox {
+            let iou = intersectionOverUnion(lastBox, box)
+            if iou < 0.5 {
+                horizonCalibrationFrames = 0
+                lastTrackedBox = box
+                return
+            }
+        }
+        
+        lastTrackedBox = box
+        horizonCalibrationFrames += 1
+        
+        guard horizonCalibrationFrames >= 5 else { return }
+        
+        let inferredHorizonY = (1.0 - box.minY) - (box.height * 0.15)
+        let clampedInferred = max(0.25, min(0.65, inferredHorizonY))
+        
+        motion.updateEffectiveHorizonFromVision(inferredHorizonY: clampedInferred)
+    }
+    
+    private func intersectionOverUnion(_ lhs: CGRect, _ rhs: CGRect) -> CGFloat {
+        let intersection = lhs.intersection(rhs)
+        guard !intersection.isNull, intersection.width > 0, intersection.height > 0 else { return 0 }
+        let union = lhs.width * lhs.height + rhs.width * rhs.height - intersection.width * intersection.height
+        return union > 0 ? intersection.width * intersection.height / union : 0
+    }
+}
+
+private extension CGRect {
+    var area: CGFloat { width * height }
 }

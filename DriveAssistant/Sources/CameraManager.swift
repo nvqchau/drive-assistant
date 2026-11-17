@@ -1,4 +1,5 @@
 import AVFoundation
+import SwiftUI
 import CoreML
 import ImageIO
 import os
@@ -18,9 +19,18 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
     @Published private(set) var thermalState: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState
     @Published var cameraAuthorizationStatus: AVAuthorizationStatus = .notDetermined
     @Published var isModelReady: Bool = false
+    @Published private(set) var leadVehicleConfidence: Float = 0
+    @Published private(set) var outOfROIVehicles: [(CGRect, Float, String)] = []
+    @Published private(set) var inROIVehicles: [(CGRect, Float, String)] = []
+    
+    // Live camera ambient luminance
+    @Published private(set) var isLowLightScene: Bool = false
+    @Published private(set) var hasValidCameraBrightness: Bool = false
 
     let session = AVCaptureSession()
     private let output = AVCaptureVideoDataOutput()
+    @Published var currentSpeedKMPH: Double = 0
+    var laneDetector: LaneDetector?
     private let sessionQueue = DispatchQueue(label: "drive-assistant.session", qos: .userInitiated)
     private let queue = DispatchQueue(label: "drive-assistant.camera", qos: .userInitiated)
     private var visionModel: VNCoreMLModel?
@@ -34,6 +44,11 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
     private var warmupComplete = false
     private let calibrationLock = NSLock()
     private var calibrationFactor: Double = 1.40
+    private let laneOffsetLock = NSLock()
+    private var laneCenterOffsetX: Double = -0.03
+    private let horizonLock = NSLock()
+    private var horizonFilterEnabled: Bool = true
+    private var horizonY: Double = 0.45
     private var orientationObserver: NSObjectProtocol?
     private var runtimeErrorObserver: NSObjectProtocol?
     private let orientationLock = NSLock()
@@ -49,10 +64,18 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
     private var performanceWindowStart = CACurrentMediaTime()
     private var thermalObserver: NSObjectProtocol?
     private let thermalLock = NSLock()
+    private let frameLock = NSLock()
+    private var latestFramePixelBuffer: CVPixelBuffer?
     private var currentThermalState = ProcessInfo.processInfo.thermalState
     private var cachedVideoOrientation: AVCaptureVideoOrientation = .landscapeRight
     private var cachedVisionOrientation: CGImagePropertyOrientation = .up
     private let logger = Logger(subsystem: "vn.ai.driveassistant", category: "Camera")
+    
+    // Camera brightness sampling (every ~1.5s)
+    private var lastBrightnessSampleTime: TimeInterval = 0
+    private let brightnessSampleInterval: TimeInterval = 1.5
+    private let lowLightThreshold: Double = 1.2    // switch to night
+    private let daylightThreshold: Double = 2.2    // switch back to day (hysteresis)
 
     override init() {
         super.init()
@@ -84,6 +107,49 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
         }
         updateThermalState()
         loadModelAsync()
+        cameraAuthorizationStatus = AVCaptureDevice.authorizationStatus(for: .video)
+    }
+
+    func setLaneCenterOffsetX(_ offset: Double) {
+        laneOffsetLock.lock()
+        laneCenterOffsetX = offset
+        laneOffsetLock.unlock()
+    }
+
+    private var currentLaneCenterOffsetX: Double {
+        laneOffsetLock.lock()
+        defer { laneOffsetLock.unlock() }
+        return laneCenterOffsetX
+    }
+
+    func setHorizonFilterEnabled(_ enabled: Bool) {
+        horizonLock.lock()
+        horizonFilterEnabled = enabled
+        horizonLock.unlock()
+    }
+
+    func updateHorizonY(_ y: Double) {
+        horizonLock.lock()
+        horizonY = max(0.25, min(0.65, y))
+        horizonLock.unlock()
+    }
+
+    func setEffectiveHorizonY(_ y: Double) {
+        horizonLock.lock()
+        horizonY = max(0.25, min(0.65, y))
+        horizonLock.unlock()
+    }
+
+    private var currentHorizonY: Double {
+        horizonLock.lock()
+        defer { horizonLock.unlock() }
+        return horizonY
+    }
+
+    private var isHorizonFilterEnabled: Bool {
+        horizonLock.lock()
+        defer { horizonLock.unlock() }
+        return horizonFilterEnabled
     }
 
     private func loadModelAsync() {
@@ -91,17 +157,24 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
             guard let self else { return }
             let modelConfiguration = MLModelConfiguration()
             modelConfiguration.computeUnits = .cpuAndNeuralEngine
-            if let modelURL = Bundle.main.url(forResource: "YOLOv3TinyInt8LUT", withExtension: "mlmodelc"),
-               let model = try? MLModel(contentsOf: modelURL, configuration: modelConfiguration),
-               let visionModel = try? VNCoreMLModel(for: model) {
-                DispatchQueue.main.async {
-                    self.visionModel = visionModel
-                    self.isModelReady = true
-                    self.logger.info("Vision model loaded and ready")
+            let extensions = ["mlmodelc"]
+            var loaded = false
+            for ext in extensions {
+                if let modelURL = Bundle.main.url(forResource: "yolov8n", withExtension: ext),
+                   let model = try? MLModel(contentsOf: modelURL, configuration: modelConfiguration),
+                   let visionModel = try? VNCoreMLModel(for: model) {
+                    DispatchQueue.main.async {
+                        self.visionModel = visionModel
+                        self.isModelReady = true
+                        self.logger.info("Vision model loaded and ready from .\(ext)")
+                    }
+                    loaded = true
+                    break
                 }
-            } else {
+            }
+            if !loaded {
                 DispatchQueue.main.async {
-                    self.logger.error("Failed to load Vision model")
+                    self.logger.error("Failed to load Vision model (tried .mlmodelc)")
                 }
             }
         }
@@ -128,31 +201,66 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
             NotificationCenter.default.removeObserver(thermalObserver)
         }
         UIDevice.current.endGeneratingDeviceOrientationNotifications()
+
+        // Clean up retained pixel buffer - no need to manually release in modern Swift
+        frameLock.lock()
+        latestFramePixelBuffer = nil
+        frameLock.unlock()
+    }
+
+    /// Thread-safe snapshot of the latest camera frame as UIImage
+    /// AVCaptureConnection.videoOrientation already rotates the CVPixelBuffer, so no extra orientation needed
+    func snapshotCameraImage() -> UIImage? {
+        frameLock.lock()
+        defer { frameLock.unlock() }
+        
+        guard let pixelBuffer = latestFramePixelBuffer else { return nil }
+        
+        let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+        let context = CIContext()
+        
+        guard let cgImage = context.createCGImage(ciImage, from: ciImage.extent) else {
+            return nil
+        }
+        
+        return UIImage(cgImage: cgImage)
     }
 
     func start() {
         logger.info("Camera start requested")
-        guard isModelReady else {
-            logger.warning("Camera start deferred: model not ready")
-            return
-        }
-        AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
-            guard let self else { return }
-            let status = AVCaptureDevice.authorizationStatus(for: .video)
-            DispatchQueue.main.async {
-                self.cameraAuthorizationStatus = status
-            }
-            self.logger.info("Camera permission result: \(granted ? "granted" : "denied", privacy: .public)")
-            guard granted else { return }
-            self.sessionQueue.async {
-                self.logger.info("Configuring capture session")
-                self.configureIfNeeded()
-                self.logger.info("Starting capture session")
-                self.session.startRunning()
-                self.logger.info("Capture session running: \(self.session.isRunning, privacy: .public)")
-                DispatchQueue.main.async {
-                    self.updateVideoOrientation()
+        let currentStatus = AVCaptureDevice.authorizationStatus(for: .video)
+        DispatchQueue.main.async { self.cameraAuthorizationStatus = currentStatus }
+        
+        switch currentStatus {
+        case .authorized:
+            configureAndStartSession()
+        case .notDetermined:
+            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+                guard let self else { return }
+                let status = AVCaptureDevice.authorizationStatus(for: .video)
+                DispatchQueue.main.async { self.cameraAuthorizationStatus = status }
+                self.logger.info("Camera permission result: \(granted ? "granted" : "denied", privacy: .public)")
+                if granted {
+                    self.configureAndStartSession()
                 }
+            }
+        case .denied, .restricted:
+            logger.warning("Camera access denied/restricted")
+        @unknown default:
+            logger.warning("Unknown camera authorization status")
+        }
+    }
+
+    private func configureAndStartSession() {
+        sessionQueue.async { [weak self] in
+            guard let self else { return }
+            self.logger.info("Configuring capture session")
+            self.configureIfNeeded()
+            self.logger.info("Starting capture session")
+            self.session.startRunning()
+            self.logger.info("Capture session running: \(self.session.isRunning, privacy: .public)")
+            DispatchQueue.main.async {
+                self.updateVideoOrientation()
             }
         }
     }
@@ -163,6 +271,11 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
             guard let self, self.session.isRunning else { return }
             self.session.stopRunning()
             self.logger.info("Capture session stopped")
+        }
+        // Reset camera brightness state
+        DispatchQueue.main.async {
+            self.hasValidCameraBrightness = false
+            self.isLowLightScene = false
         }
     }
 
@@ -209,12 +322,31 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
                 self?.cameraFrameSize = frameSize
             }
         }
+        
+        // Store latest frame for snapshot (no manual retain needed - ARC handles it)
+        frameLock.lock()
+        latestFramePixelBuffer = pixelBuffer
+        frameLock.unlock()
+        
         if !hasLoggedFrameFormat {
             hasLoggedFrameFormat = true
             diagnostics?.record(type: "camera_frame_format", details: "width=\(CVPixelBufferGetWidth(pixelBuffer)), height=\(CVPixelBufferGetHeight(pixelBuffer)), videoOrientation=\(videoOrientation)")
         }
         lastInference = now
         inferenceCount += 1
+        
+        // Sample camera ambient brightness every ~1.5s
+        if now - lastBrightnessSampleTime >= brightnessSampleInterval {
+            lastBrightnessSampleTime = now
+            sampleCameraBrightness(sampleBuffer: sampleBuffer)
+        }
+        
+        // Feed frame to lane detector (runs on its own queue) - every 2nd frame, skip on serious/critical thermal
+        let thermal = thermalStateForInference()
+        if inferenceCount % 2 == 0 && thermal != .serious && thermal != .critical {
+            laneDetector?.processFrame(pixelBuffer: pixelBuffer, speedKMPH: currentSpeedKMPH)
+        }
+        
         autoreleasepool {
             let inferenceStart = CACurrentMediaTime()
             let request = VNCoreMLRequest(model: visionModel) { [weak self] request, error in
@@ -225,12 +357,76 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
                 self?.recordInferenceDuration(CACurrentMediaTime() - inferenceStart)
                 self?.handle(request: request, pixelBuffer: pixelBuffer)
             }
-            request.imageCropAndScaleOption = .scaleFit
+            request.imageCropAndScaleOption = .centerCrop
+            request.regionOfInterest = CGRect(x: 0, y: 0, width: 1, height: 1)
             let orientation = visionOrientation
             do {
                 try VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation).perform([request])
             } catch {
                 logger.error("Vision handler failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+    }
+    
+    private func sampleCameraBrightness(sampleBuffer: CMSampleBuffer) {
+        // Try EXIF brightness value first
+        if let exifDict = CMGetAttachment(sampleBuffer, key: kCGImagePropertyExifDictionary, attachmentModeOut: nil) as? [String: Any],
+           let brightnessValue = exifDict[kCGImagePropertyExifBrightnessValue as String] as? Double {
+            updateBrightnessState(brightnessValue)
+            return
+        }
+        
+        // Fallback: compute average luma from pixel buffer
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+        let brightness = computeAverageLuma(pixelBuffer: pixelBuffer)
+        updateBrightnessState(brightness)
+    }
+    
+    private func computeAverageLuma(pixelBuffer: CVPixelBuffer) -> Double {
+        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+        
+        guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else { return 1.0 }
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+        
+        // Sample every 8th pixel for performance
+        var totalLuma: Double = 0
+        var sampleCount = 0
+        let sampleStride = 8
+        
+        for y in stride(from: 0, to: height, by: sampleStride) {
+            let rowPtr = baseAddress.advanced(by: y * bytesPerRow).assumingMemoryBound(to: UInt8.self)
+            for x in stride(from: 0, to: width, by: sampleStride) {
+                let pixelOffset = x * 4 // Assuming BGRA/ARGB 32-bit
+                if pixelOffset + 2 < bytesPerRow {
+                    let b = Double(rowPtr[pixelOffset])
+                    let g = Double(rowPtr[pixelOffset + 1])
+                    let r = Double(rowPtr[pixelOffset + 2])
+                    // Standard luma coefficients (Rec. 709)
+                    let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+                    totalLuma += luma
+                    sampleCount += 1
+                }
+            }
+        }
+        
+        guard sampleCount > 0 else { return 1.0 }
+        let avgLuma = totalLuma / Double(sampleCount)
+        // Normalize to EV-like scale (0-255 -> roughly -3 to +3 EV)
+        return (avgLuma / 255.0) * 6.0 - 3.0
+    }
+    
+    private func updateBrightnessState(_ brightnessEV: Double) {
+        DispatchQueue.main.async {
+            self.hasValidCameraBrightness = true
+            if !self.isLowLightScene && brightnessEV < self.lowLightThreshold {
+                self.isLowLightScene = true
+                self.diagnostics?.record(type: "camera_brightness_night", details: "brightnessEV=\(brightnessEV)")
+            } else if self.isLowLightScene && brightnessEV > self.daylightThreshold {
+                self.isLowLightScene = false
+                self.diagnostics?.record(type: "camera_brightness_day", details: "brightnessEV=\(brightnessEV)")
             }
         }
     }
@@ -391,24 +587,105 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
     private func handle(request: VNRequest, pixelBuffer: CVPixelBuffer) {
         let now = CACurrentMediaTime()
         let candidates = (request.results as? [VNRecognizedObjectObservation] ?? []).compactMap { observation -> (CGRect, Float, String)? in
-            guard let label = observation.labels.first, label.confidence >= 0.5,
-                  ["car", "truck", "bus", "motorbike"].contains(label.identifier) else { return nil }
+            guard let label = observation.labels.first,
+                  ["car", "truck", "bus", "motorcycle", "motorbike"].contains(label.identifier) else { return nil }
+            guard label.confidence >= 0.42 else { return nil }
             let box = observation.boundingBox
-            guard box.width >= 0.06, box.height >= 0.06 else { return nil }
+            guard box.width >= 0.032, box.height >= 0.032 else { return nil }
             return (box, label.confidence, label.identifier)
         }
-        let observations = mergeOverlappingDetections(candidates).filter { observation in
+        
+        let hasLockedTarget = trackedBox != nil
+        let laneOffset = currentLaneCenterOffsetX
+        let horizonEnabled = isHorizonFilterEnabled
+        let horizonY = currentHorizonY
+        
+        let effectiveHorizonForFilter = horizonEnabled ? max(horizonY, 0.48) : horizonY
+        let ceilingY = min(effectiveHorizonForFilter, 0.45) - 0.03
+        
+        let horizonFiltered = mergeOverlappingDetections(candidates).filter { observation in
             let box = observation.0
-            return Self.isInsideForwardLaneROI(x: box.midX, yFromTop: 1 - box.minY)
+            
+            if horizonEnabled {
+                let boxBottomYFromTop = 1.0 - box.minY
+                if boxBottomYFromTop < ceilingY {
+                    return false
+                }
+            }
+            return true
         }
-        let selected = selectLeadVehicle(from: observations)
-        logDetectionFrame(observations, selected: selected)
+        
+        var inROI: [(CGRect, Float, String)] = []
+        var outOfROI: [(CGRect, Float, String)] = []
+        
+        // Ego-vehicle hood exclusion: discard wide detections touching bottom of frame
+        let hoodFiltered = horizonFiltered.filter { observation in
+            let box = observation.0
+            let boxBottomYFromTop = 1.0 - box.minY
+            return !(boxBottomYFromTop >= 0.88 && box.width > 0.55)
+        }
+        
+        // Get dynamic lane edges from LaneDetector (normalized 0...1, top-left origin)
+        // Note: laneDetector processes frames at a lower rate, so check if it has recent data
+        let dynamicLaneEdgesAvailable = laneDetector?.leftLaneConfidence ?? 0 > 0.5 && laneDetector?.rightLaneConfidence ?? 0 > 0.5
+        
+        for observation in hoodFiltered {
+            let box = observation.0
+            
+            let bottomYFromTop = 1.0 - box.minY
+            var isInLane = false
+            
+            if dynamicLaneEdgesAvailable,
+               let laneEdges = laneDetector?.getLaneEdgesAtY(bottomYFromTop, imageSize: cameraFrameSize) {
+                // Dynamic lane edges from detected road markings
+                let leftEdge = laneEdges.left
+                let rightEdge = laneEdges.right
+                
+                // Check if box center is within lane edges OR 40% bottom edge overlap
+                let centerInside = box.midX >= leftEdge && box.midX <= rightEdge
+                let boxLeft = box.minX
+                let boxRight = box.maxX
+                let boxWidth = boxRight - boxLeft
+                if boxWidth > 0 {
+                    let overlapLeft = max(boxLeft, leftEdge)
+                    let overlapRight = min(boxRight, rightEdge)
+                    let overlapWidth = max(0, overlapRight - overlapLeft)
+                    let edgeOverlap = overlapWidth / boxWidth >= 0.40
+                    isInLane = centerInside || edgeOverlap
+                }
+            } else {
+                // Fallback to static trapezoid ROI
+                let bottomCenterInside = Self.isInsideForwardLaneROI(x: box.midX, yFromTop: bottomYFromTop,
+                                                                      laneCenterOffsetX: laneOffset,
+                                                                      truncateTopY: nil)
+                let bottomEdgeOverlap = Self.hasSufficientBottomEdgeOverlap(box: box, laneCenterOffsetX: laneOffset, bottomYFromTop: bottomYFromTop)
+                isInLane = bottomCenterInside || bottomEdgeOverlap
+            }
+            
+            if isInLane {
+                inROI.append(observation)
+            } else {
+                outOfROI.append(observation)
+            }
+        }
+        
+        DispatchQueue.main.async {
+            self.inROIVehicles = inROI
+            self.outOfROIVehicles = outOfROI
+        }
+        
+        let selected = selectLeadVehicle(from: inROI)
+        logDetectionFrame(inROI, selected: selected)
         guard let selected else {
             if trackedBox != nil && now - trackedBoxTimestamp < 0.20 {
                 return
             }
             self.trackedBox = nil
-            DispatchQueue.main.async { self.leadVehicleDistance = nil; self.leadVehicleBox = nil }
+            DispatchQueue.main.async {
+                self.leadVehicleDistance = nil
+                self.leadVehicleBox = nil
+                self.leadVehicleConfidence = 0
+            }
             return
         }
         let smoothedBox = smoothTrackedBox(selected.0)
@@ -416,7 +693,7 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
         switch selected.2 {
         case "car": realWidth = 1.8
         case "truck", "bus": realWidth = 2.5
-        case "motorbike": realWidth = 0.75
+        case "motorcycle", "motorbike": realWidth = 0.75
         default: realWidth = 1.8
         }
         calibrationLock.lock()
@@ -425,9 +702,13 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
         let normalizedBoxWidth = Double(smoothedBox.width)
         guard normalizedBoxWidth > 0 else { return }
         let distance = (realWidth * factor) / normalizedBoxWidth
-        DispatchQueue.main.async { self.leadVehicleDistance = distance; self.leadVehicleBox = smoothedBox }
+        let selectedConfidence = selected.1
+        DispatchQueue.main.async {
+            self.leadVehicleDistance = distance
+            self.leadVehicleBox = smoothedBox
+            self.leadVehicleConfidence = selectedConfidence
+        }
     }
-
     private func selectLeadVehicle(from observations: [(CGRect, Float, String)]) -> (CGRect, Float, String)? {
         guard !observations.isEmpty else {
             pendingBox = nil
@@ -545,14 +826,61 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
         hypot(lhs.midX - rhs.midX, lhs.midY - rhs.midY)
     }
 
-    private static func isInsideForwardLaneROI(x: CGFloat, yFromTop: CGFloat) -> Bool {
+    // MARK: - Forward Lane ROI
+    
+    private static func isInsideForwardLaneROI(x: CGFloat, yFromTop: CGFloat,
+                                                laneCenterOffsetX: Double,
+                                                truncateTopY: CGFloat? = nil) -> Bool {
         let topY: CGFloat = 0.38
         let bottomY: CGFloat = 0.95
+        let topWidth: CGFloat = 0.22
+        let bottomWidth: CGFloat = 0.48
+        
         guard yFromTop >= topY && yFromTop <= bottomY else { return false }
+        
         let progress = (yFromTop - topY) / (bottomY - topY)
-        let left = 0.38 + (0.20 - 0.38) * progress
-        let right = 0.62 + (0.80 - 0.62) * progress
+        let centerX = 0.5 + laneCenterOffsetX
+        let halfTopWidth = topWidth / 2
+        let halfBottomWidth = bottomWidth / 2
+        
+        let left = centerX - (halfTopWidth + (halfBottomWidth - halfTopWidth) * progress)
+        let right = centerX + (halfTopWidth + (halfBottomWidth - halfTopWidth) * progress)
+        
+        if let truncateY = truncateTopY, yFromTop < truncateY {
+            return false
+        }
+        
         return x >= left && x <= right
+    }
+    
+    private static func hasSufficientBottomEdgeOverlap(box: CGRect, laneCenterOffsetX: Double, bottomYFromTop: CGFloat) -> Bool {
+        let topY: CGFloat = 0.38
+        let bottomY: CGFloat = 0.95
+        let topWidth: CGFloat = 0.22
+        let bottomWidth: CGFloat = 0.48
+        
+        let boxBottomY = box.minY
+        let yFromTop = bottomYFromTop
+        guard yFromTop >= topY && yFromTop <= bottomY else { return false }
+        
+        let progress = (yFromTop - topY) / (bottomY - topY)
+        let centerX = 0.5 + laneCenterOffsetX
+        let halfTopWidth = topWidth / 2
+        let halfBottomWidth = bottomWidth / 2
+        
+        let trapLeft = centerX - (halfTopWidth + (halfBottomWidth - halfTopWidth) * progress)
+        let trapRight = centerX + (halfTopWidth + (halfBottomWidth - halfTopWidth) * progress)
+        
+        let boxLeft = box.minX
+        let boxRight = box.maxX
+        let boxWidth = boxRight - boxLeft
+        guard boxWidth > 0 else { return false }
+        
+        let overlapLeft = max(boxLeft, trapLeft)
+        let overlapRight = min(boxRight, trapRight)
+        let overlapWidth = max(0, overlapRight - overlapLeft)
+        
+        return overlapWidth / boxWidth >= 0.40
     }
 }
 

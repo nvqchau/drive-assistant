@@ -16,7 +16,21 @@ struct SettingsView: View {
                         Text(model.usesVietnamese ? "Thời gian bám (giây)" : "Time Headway (Seconds)").tag(DistanceRuleMode.timeHeadway)
                     }
                     .pickerStyle(.segmented)
-                    VStack(alignment: .leading) { Text(model.usesVietnamese ? "Hệ số khoảng cách" : "Distance calibration factor"); Slider(value: $model.calibrationFactor, in: 0.80...2.20, step: 0.05); Text(String(format: "%.2f", model.calibrationFactor)).font(.caption.monospacedDigit()).foregroundColor(.secondary) }
+                    VStack(alignment: .leading) {
+                        Text(model.usesVietnamese ? "Hệ số khoảng cách" : "Distance calibration factor")
+                        Slider(value: $model.calibrationFactor, in: 0.50...2.00, step: 0.05)
+                        Text(String(format: "%.2f", model.calibrationFactor)).font(.caption.monospacedDigit()).foregroundColor(.secondary)
+                    }
+                    VStack(alignment: .leading) {
+                        Text(model.usesVietnamese ? "Độ dài mui xe (m)" : "Hood offset (m)")
+                        Slider(value: $model.hoodOffsetMeters, in: 0.0...3.0, step: 0.1)
+                        Text(String(format: "%.1f m", model.hoodOffsetMeters)).font(.caption.monospacedDigit()).foregroundColor(.secondary)
+                    }
+                    VStack(alignment: .leading) {
+                        Text(model.usesVietnamese ? "Độ lệch làn đường" : "Lane center offset")
+                        Slider(value: $model.laneCenterOffsetX, in: -0.15...0.15, step: 0.01)
+                        Text(String(format: "%.2f", model.laneCenterOffsetX)).font(.caption.monospacedDigit()).foregroundColor(.secondary)
+                    }
                     if model.distanceRuleMode == .timeHeadway {
                         VStack(alignment: .leading) { Text(model.usesVietnamese ? "Thời gian an toàn" : "Safe time headway"); Slider(value: $model.timeHeadway, in: 1.5...4.0, step: 0.1); Text(String(format: "%.1f s", model.timeHeadway)).font(.caption.monospacedDigit()).foregroundColor(.secondary) }
                     } else {
@@ -28,10 +42,93 @@ struct SettingsView: View {
                         .pickerStyle(.segmented)
                     }
                 }
+                
+                Section(model.usesVietnamese ? "Cài đặt góc gắn" : "Mount Calibration") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        if model.motion.hasSavedMountProfile {
+                            HStack {
+                                Text(model.usesVietnamese ? "Góc tham chiếu đã lưu" : "Saved reference angle")
+                                Spacer()
+                                Text(String(format: "Pitch: %.1f°  Roll: %.1f°", model.motion.calibratedPitch, model.motion.calibratedRoll))
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundColor(.secondary)
+                            }
+                            HStack {
+                                Text(model.usesVietnamese ? "Độ lệch hiện tại" : "Current delta")
+                                Spacer()
+                                Text(String(format: "ΔPitch: %.1f°  ΔRoll: %.1f°", model.motion.deltaPitch, model.motion.deltaRoll))
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundColor(model.motion.isMountAligned ? .green : .orange)
+                            }
+                            Text(model.motion.isMountAligned ? (model.usesVietnamese ? "✓ Đã căn chỉnh" : "✓ Mount aligned") : (model.usesVietnamese ? "⚠ Cần căn chỉnh lại" : "⚠ Realignment needed"))
+                                .font(.caption)
+                                .foregroundColor(model.motion.isMountAligned ? .green : .orange)
+                        } else {
+                            Text(model.usesVietnamese ? "Chưa lưu góc gắn. Đặt iPhone vào giá, chọn \"Lưu góc gắn hiện tại\"." : "No mount angle saved. Place iPhone in mount, tap \"Save Current Mount Angle\".")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        
+                        Button {
+                            model.motion.saveCurrentMountAngle()
+                        } label: {
+                            HStack {
+                                Image(systemName: "checkmark.circle.fill")
+                                Text(model.motion.hasSavedMountProfile ? (model.usesVietnamese ? "Cập nhật góc gắn" : "Update Mount Angle") : (model.usesVietnamese ? "Lưu góc gắn hiện tại" : "Save Current Mount Angle"))
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!model.motion.isActive)
+                        
+                        if model.motion.hasSavedMountProfile {
+                            Button(role: .destructive) {
+                                model.motion.resetMountProfile()
+                            } label: {
+                                HStack {
+                                    Image(systemName: "arrow.counterclockwise")
+                                    Text(model.usesVietnamese ? "Xóa góc tham chiếu" : "Reset Mount Profile")
+                                }
+                                .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                }
+                
                 Section(model.usesVietnamese ? "Cảnh báo" : "Alerts") { Toggle(model.usesVietnamese ? "Cảnh báo bằng giọng nói" : "Voice alerts", isOn: $model.voiceAlertsEnabled) }
+                
+                Section(model.usesVietnamese ? "Phát hiện làn đường" : "Lane Detection") {
+                    Toggle(model.usesVietnamese ? "Bật LDWS" : "Enable LDWS", isOn: $model.enableLaneDetection)
+                    
+                    if model.enableLaneDetection {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(model.usesVietnamese ? "Ngưỡng tốc độ kích hoạt: \(Int(model.ldwsMinSpeedKmh)) km/h" : "LDWS activation threshold: \(Int(model.ldwsMinSpeedKmh)) km/h")
+                                .font(.subheadline)
+                            Slider(value: $model.ldwsMinSpeedKmh, in: 40...70, step: 5)
+                            Text(model.usesVietnamese ? "Chỉ cảnh báo khi tốc độ ≥ ngưỡng" : "Only alert when speed ≥ threshold")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+                
                 Section(model.usesVietnamese ? "Giao diện" : "Interface") {
                     Picker(model.usesVietnamese ? "Ngôn ngữ" : "Language", selection: $model.usesVietnamese) { Text("Tiếng Việt").tag(true); Text("English").tag(false) }.pickerStyle(.segmented)
+                    
+                    Picker(model.usesVietnamese ? "Giao diện" : "Display Theme", selection: $model.displayThemeMode) {
+                        Text(model.usesVietnamese ? "Tự động" : "Auto").tag(DisplayThemeMode.auto)
+                        Text(model.usesVietnamese ? "Ngày" : "Day").tag(DisplayThemeMode.day)
+                        Text(model.usesVietnamese ? "Đêm" : "Night").tag(DisplayThemeMode.night)
+                    }
+                    .pickerStyle(.segmented)
+                    
+                    Toggle(model.usesVietnamese ? "Phản chiếu kính lái (HUD Mirror)" : "Windshield Mirror Mode", isOn: $model.hudMirrorMode)
+                    
                     Toggle(model.usesVietnamese ? "HUD đen tiết kiệm" : "Eco Black HUD", isOn: $model.ecoBlackHUD)
+                    Toggle(model.usesVietnamese ? "Hiệu ứng kính" : "Glass effect", isOn: $model.glassHUD)
+                    Toggle(model.usesVietnamese ? "Hiển thị đường chân trời" : "Show Horizon Guide", isOn: $model.showHorizonGuide)
+                    Toggle(model.usesVietnamese ? "Hiển thị xe ngoài làn" : "Show Out-of-Lane Vehicles", isOn: $model.showOutOfROIVehicles)
                 }
                 Section(model.usesVietnamese ? "Chẩn đoán" : "Diagnostics") {
                     Button {
