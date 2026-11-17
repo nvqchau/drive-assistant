@@ -161,7 +161,16 @@ struct ContentView: View {
             VStack {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 8) {
-                        GPSSpeedPill(speed: model.speedKMPH, accuracy: model.gpsAccuracy, glassEnabled: model.glassHUD, nightDim: model.isNightThemeActive && !model.hudMirrorMode)
+                        HStack(spacing: 8) {
+                            GPSSpeedPill(speed: model.speedKMPH, accuracy: model.gpsAccuracy, glassEnabled: model.glassHUD, nightDim: model.isNightThemeActive && !model.hudMirrorMode, isOverspeeding: model.isOverspeeding)
+                            if model.enableSpeedSignRecognition {
+                                SpeedLimitSignBadge(
+                                    limit: model.detectedSpeedLimit,
+                                    isOverspeeding: model.isOverspeeding,
+                                    onTap: { model.camera.trafficSignDetector.clearDetectedLimit() }
+                                )
+                            }
+                        }
                         ThermalBadge(state: model.camera.thermalState)
                     }
                     Spacer()
@@ -231,8 +240,10 @@ private struct GPSSpeedPill: View {
     let accuracy: CLLocationAccuracy
     let glassEnabled: Bool
     let nightDim: Bool
+    let isOverspeeding: Bool
 
     private var signalColor: Color { accuracy >= 0 && accuracy < 20 ? .cyan : .gray }
+    private var speedColor: Color { isOverspeeding ? Color(red: 1.0, green: 0.2, blue: 0.0) : .white }  // Red-orange when overspeeding
 
     var body: some View {
         HStack(spacing: 10) {
@@ -243,10 +254,10 @@ private struct GPSSpeedPill: View {
             Text(String(format: "%.0f", speed))
                 .font(.system(size: 28, weight: .bold, design: .rounded))
                 .monospacedDigit()
-                .foregroundColor(.white)
+                .foregroundColor(speedColor)
             Text("km/h")
                 .font(.system(size: 16, weight: .semibold, design: .rounded))
-                .foregroundColor(.white.opacity(nightDim ? 0.78 : 0.82))
+                .foregroundColor(speedColor.opacity(nightDim ? 0.78 : 0.82))
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -324,6 +335,51 @@ private struct RuleWeatherPill: View {
 
     private var weatherIcon: String { model.effectiveRoadCondition == .wet ? "cloud.rain.fill" : "sun.max.fill" }
 }
+
+// MARK: - Vietnam Speed Limit Sign Badge (TSR)
+private struct SpeedLimitSignBadge: View {
+    let limit: Int?
+    let isOverspeeding: Bool
+    let onTap: () -> Void
+
+    @State private var pulse = false
+
+    var body: some View {
+        ZStack {
+            // White circle background
+            Circle()
+                .fill(Color.white)
+                .frame(width: 38, height: 38)
+
+            // Red border (Vietnam speed limit sign style)
+            Circle()
+                .stroke(Color.red, lineWidth: 4)
+                .frame(width: 38, height: 38)
+
+            // Speed limit number or "--"
+            Text(limit.map { String($0) } ?? "--")
+                .font(.system(size: 16, weight: .black, design: .rounded))
+                .foregroundColor(limit == nil ? .gray.opacity(0.5) : .black)
+                .monospacedDigit()
+
+            // Red glow pulse when overspeeding
+            if isOverspeeding {
+                Circle()
+                    .stroke(Color.red, lineWidth: 3)
+                    .frame(width: 46, height: 46)
+                    .scaleEffect(pulse ? 1.15 : 1.0)
+                    .opacity(pulse ? 0.3 : 0.7)
+                    .animation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true), value: pulse)
+                    .onAppear { pulse = true }
+            }
+        }
+        .frame(width: 38, height: 38)
+        .contentShape(Circle())
+        .onTapGesture(perform: onTap)
+        .shadow(color: isOverspeeding ? Color.red.opacity(0.6) : Color.black.opacity(0.3), radius: isOverspeeding ? 8 : 4)
+    }
+}
+
 private struct DistanceCard: View {
     @ObservedObject var model: DriveAssistantModel
     let color: Color

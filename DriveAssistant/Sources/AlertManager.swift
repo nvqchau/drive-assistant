@@ -7,6 +7,8 @@ final class AlertManager {
     private var lastWarningAlert = Date.distantPast
     private var lastCriticalAlert = Date.distantPast
     private var lastLaneDepartureAlert = Date.distantPast
+    private var lastOverspeedAlert = Date.distantPast
+    private let overspeedAlertCooldown: TimeInterval = 10.0
     private let synthesizer = AVSpeechSynthesizer()
     private let audioSession = AVAudioSession.sharedInstance()
     private var interruptionObserver: NSObjectProtocol?
@@ -211,6 +213,55 @@ extension AlertManager {
         }
 
         // Play first note immediately
+        if !audioEngine.isRunning {
+            try? audioEngine.start()
+        }
+        playerNode.play()
+    }
+}
+
+// MARK: - Overspeed Alert (Speed Limit Sign Recognition)
+extension AlertManager {
+    func playOverspeedAlert(limit: Int, speak: Bool) {
+        guard Date().timeIntervalSince(lastOverspeedAlert) >= overspeedAlertCooldown else { return }
+        lastOverspeedAlert = Date()
+
+        // Sharp warning chime: high-pitched single beep (~880Hz A5) distinct from collision (~880Hz rapid)
+        playOverspeedChime()
+
+        // Error haptic for overspeed
+        hapticGenerator.notificationOccurred(.error)
+
+        if speak {
+            let utterance = AVSpeechUtterance(string: "Vượt quá tốc độ giới hạn \(limit) ki-lô-mét trên giờ")
+            utterance.voice = AVSpeechSynthesisVoice(language: "vi-VN")
+            utterance.rate = 0.48
+            do {
+                try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+            } catch { }
+            synthesizer.speak(utterance)
+        }
+    }
+
+    private func playOverspeedChime() {
+        let sampleRate = audioEngine.mainMixerNode.outputFormat(forBus: 0).sampleRate
+        let duration = 0.15
+        let frameCount = AVAudioFrameCount(sampleRate * duration)
+        let frequency = 880.0  // A5 - sharp warning pitch
+
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
+
+        buffer.frameLength = frameCount
+        let channelData = buffer.floatChannelData?[0]
+        for frame in 0..<Int(frameCount) {
+            let t = Double(frame) / sampleRate
+            let envelope = exp(-t * 12.0)  // Very fast decay for sharp beep
+            let sample = sin(2.0 * .pi * frequency * t) * envelope * 0.35
+            channelData?[frame] = Float(sample)
+        }
+
+        playerNode.scheduleBuffer(buffer, at: nil, options: .interrupts, completionHandler: nil)
         if !audioEngine.isRunning {
             try? audioEngine.start()
         }
