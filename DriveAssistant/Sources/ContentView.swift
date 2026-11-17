@@ -350,6 +350,24 @@ private struct DistanceCard: View {
         }
     }
 
+    // Calibration status text for HUD
+    private var calibrationStatusText: String? {
+        let motion = model.motion
+        if motion.isMountShifted {
+            return model.usesVietnamese ? "⚠ Máy bị xê dịch" : "⚠ Mount shifted"
+        } else if !motion.isAutoCalibrated && model.speedKMPH > 25 {
+            return model.usesVietnamese ? "Đang tự hiệu chỉnh \(motion.calibrationProgress)%" : "Auto-calibrating \(motion.calibrationProgress)%"
+        }
+        return nil
+    }
+
+    private var calibrationStatusColor: Color {
+        if model.motion.isMountShifted {
+            return .orange
+        }
+        return .cyan
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .lastTextBaseline, spacing: 7) {
@@ -365,10 +383,19 @@ private struct DistanceCard: View {
                 .font(.system(size: 13, weight: .bold, design: .rounded))
                 .foregroundColor(color)
             SegmentedProgressBar(progress: progress, color: color, activeMinimumDistance: model.activeMinimumDistance)
+
+            // Calibration status indicator (only when relevant)
+            if let statusText = calibrationStatusText {
+                Text(statusText)
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .foregroundColor(calibrationStatusColor)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
         }
         .padding(18)
         .frame(width: 245, alignment: .leading)
         .glassCard(cornerRadius: 20, enabled: model.glassHUD, nightDim: nightDim)
+        .animation(.easeInOut(duration: 0.3), value: calibrationStatusText)
     }
 }
 

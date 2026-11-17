@@ -194,11 +194,14 @@ final class DriveAssistantModel: ObservableObject {
         laneDetector.setROIOffset(laneCenterOffsetX)
         laneDetector.setMinSpeedForDepartureAlert(ldwsMinSpeedKmh)
 
-        // Forward camera & location changes to trigger reactive theme updates
+        // Forward camera, location & motion changes to trigger reactive theme & calibration updates
         camera.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
         location.objectWillChange
+            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+        motion.objectWillChange
             .sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
 
@@ -425,37 +428,71 @@ final class DriveAssistantModel: ObservableObject {
         diagnostics.record(type: "alert_state_changed", speedKMPH: speedKMPH, distanceMeters: distance, isDangerous: isDangerous, orientation: String(describing: UIDevice.current.orientation), details: "state=\(String(describing: state)), closingSpeedMPS=\(closingSpeedMPS), ttc=\(timeToCollision.map { String($0) } ?? "nil")")
     }
     
-    /// Dynamic in-drive horizon auto-calibration
+    /// Dynamic in-drive horizon auto-calibration with progress tracking
     private func attemptHorizonAutoCalibration(box: CGRect?, confidence: Float) {
+        // Check for mount shift on every frame
+        motion.checkMountShift(speedKMPH: speedKMPH)
+
+        // Skip calibration if mount is shifted or already auto-calibrated
         guard showHorizonGuide,
               motion.isActive,
-              speedKMPH > 30.0,
+              speedKMPH > 25.0,
               abs(motion.deltaRoll) < 2.0,
-              let box = box,
-              confidence >= 0.70,
-              box.width >= 0.05 && box.width <= 0.25 else {
+              !motion.isMountShifted else {
             horizonCalibrationFrames = 0
             lastTrackedBox = nil
             return
         }
-        
-        if let lastBox = lastTrackedBox {
-            let iou = intersectionOverUnion(lastBox, box)
-            if iou < 0.5 {
-                horizonCalibrationFrames = 0
-                lastTrackedBox = box
-                return
+
+        // Use lead vehicle box or confident lane lines for stable tracking
+        let hasStableLeadVehicle = box != nil && confidence >= 0.70 && box!.width >= 0.05 && box!.width <= 0.25
+        let hasConfidentLanes = laneDetector.isLaneDetectionActive &&
+                                laneDetector.leftLaneConfidence > 0.6 &&
+                                laneDetector.rightLaneConfidence > 0.6 &&
+                                !laneDetector.leftLanePoints.isEmpty &&
+                                !laneDetector.rightLanePoints.isEmpty
+        let hasStableTracking = hasStableLeadVehicle || hasConfidentLanes
+
+        if hasStableLeadVehicle, let box = box {
+            if let lastBox = lastTrackedBox {
+                let iou = intersectionOverUnion(lastBox, box)
+                if iou < 0.5 {
+                    horizonCalibrationFrames = 0
+                    lastTrackedBox = box
+                    // Still record calibration frame for lane-based stability
+                    motion.recordCalibrationFrame(speedKMPH: speedKMPH, hasStableTracking: hasConfidentLanes, horizonGuideEnabled: showHorizonGuide)
+                    return
+                }
             }
+            lastTrackedBox = box
+            horizonCalibrationFrames += 1
+        } else if hasConfidentLanes {
+            // Lane-based calibration frame
+            horizonCalibrationFrames += 1
+        } else {
+            horizonCalibrationFrames = 0
+            lastTrackedBox = nil
+            motion.recordCalibrationFrame(speedKMPH: speedKMPH, hasStableTracking: false, horizonGuideEnabled: showHorizonGuide)
+            return
         }
-        
-        lastTrackedBox = box
-        horizonCalibrationFrames += 1
-        
+
+        // Record calibration progress
+        motion.recordCalibrationFrame(speedKMPH: speedKMPH, hasStableTracking: hasStableTracking, horizonGuideEnabled: showHorizonGuide)
+
         guard horizonCalibrationFrames >= 5 else { return }
-        
-        let inferredHorizonY = (1.0 - box.minY) - (box.height * 0.15)
+
+        // Infer horizon from lead vehicle or lane geometry
+        var inferredHorizonY: Double = 0.45
+        if hasStableLeadVehicle, let box = box {
+            inferredHorizonY = (1.0 - box.minY) - (box.height * 0.15)
+        } else if hasConfidentLanes,
+                  let laneEdges = laneDetector.getLaneEdgesAtY(0.85, imageSize: camera.cameraFrameSize) {
+            // Use lane geometry to infer horizon (vanishing point)
+            let laneCenter = (laneEdges.left + laneEdges.right) / 2.0
+            inferredHorizonY = 0.45 + (laneCenter - 0.5) * 0.1  // Small adjustment
+        }
+
         let clampedInferred = max(0.25, min(0.65, inferredHorizonY))
-        
         motion.updateEffectiveHorizonFromVision(inferredHorizonY: clampedInferred)
     }
     
