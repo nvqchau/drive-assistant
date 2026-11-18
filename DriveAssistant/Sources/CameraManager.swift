@@ -188,6 +188,7 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
 
     func attachDiagnostics(_ diagnostics: DiagnosticsLogStore) {
         self.diagnostics = diagnostics
+        trafficSignDetector.attachDiagnostics(diagnostics)
     }
 
     func setCalibrationFactor(_ factor: Double) {
@@ -355,6 +356,7 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
 
         // Feed frame to traffic sign detector (TSR) - lightweight 2 Hz OCR + red-ring verification
         trafficSignDetector.setThermalState(thermal)
+        trafficSignDetector.setVisionOrientation(visionOrientation)
         if enableSpeedSignRecognition {
             trafficSignDetector.processFrameIfNeeded(pixelBuffer)
         }
