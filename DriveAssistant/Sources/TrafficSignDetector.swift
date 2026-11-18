@@ -158,9 +158,12 @@ final class TrafficSignDetector: ObservableObject {
             let cropBox = observation.boundingBox  // normalized to cropped image (origin bottom-left)
 
             // Convert crop-normalized bbox to full-image normalized bbox
+            // roiRect uses top-left origin; Vision/CIImage use bottom-left.
+            // Crop starts at bottom-left y = (1 - roiRect.maxY)
+            let cropOriginY = 1.0 - roiRect.maxY
             let boundingBox = CGRect(
                 x: roiRect.minX + cropBox.minX * roiRect.width,
-                y: roiRect.minY + cropBox.minY * roiRect.height,
+                y: cropOriginY + cropBox.minY * roiRect.height,
                 width: cropBox.width * roiRect.width,
                 height: cropBox.height * roiRect.height
             )
@@ -254,9 +257,11 @@ final class TrafficSignDetector: ObservableObject {
                     guard cropBox.width >= 0.04 && cropBox.height >= 0.04 else { continue }
 
                     // Convert crop-normalized bbox to full-image normalized bbox
+                    // roiRect uses top-left origin; Vision/CIImage use bottom-left.
+                    let cropOriginY = 1.0 - roiRect.maxY
                     let boundingBox = CGRect(
                         x: roiRect.minX + cropBox.minX * roiRect.width,
-                        y: roiRect.minY + cropBox.minY * roiRect.height,
+                        y: cropOriginY + cropBox.minY * roiRect.height,
                         width: cropBox.width * roiRect.width,
                         height: cropBox.height * roiRect.height
                     )
