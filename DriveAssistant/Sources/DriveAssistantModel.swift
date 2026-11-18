@@ -101,6 +101,7 @@ final class DriveAssistantModel: ObservableObject {
     @Published private(set) var detectedSpeedLimit: Int?
     @Published private(set) var isOverspeeding: Bool = false
     @Published private(set) var showSpeedLimitCleared: Bool = false
+    @Published private(set) var showEndOfAllRestrictions: Bool = false  // DP.135 indicator
 
     // Display Theme & Mirror Mode
     @Published var displayThemeMode: DisplayThemeMode = .auto {
@@ -352,6 +353,14 @@ final class DriveAssistantModel: ObservableObject {
                 } catch {
                     print("DriveAssistantModel: Speed limit cleared handling failed: \(error)")
                 }
+            }
+            .store(in: &cancellables)
+
+        // DP.135 (End of All Restrictions) persistent indicator
+        camera.trafficSignDetector.$detectedEndOfAllRestrictions
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] detected in
+                self?.showEndOfAllRestrictions = detected
             }
             .store(in: &cancellables)
 
