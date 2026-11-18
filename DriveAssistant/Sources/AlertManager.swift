@@ -336,21 +336,25 @@ extension AlertManager {
 
             // Note 2: C5 (523.25 Hz) - delayed 0.12s
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
-                guard let self,
-                      let buffer2 = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
-                buffer2.frameLength = frameCount
-                let channelData = buffer2.floatChannelData?[0]
-                for frame in 0..<Int(frameCount) {
-                    let t = Double(frame) / sampleRate
-                    let envelope = exp(-t * 8.0)
-                    let sample = sin(2.0 * .pi * 523.25 * t) * envelope * 0.2
-                    channelData?[frame] = Float(sample)
+                guard let self else { return }
+                do {
+                    guard let buffer2 = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
+                    buffer2.frameLength = frameCount
+                    let channelData = buffer2.floatChannelData?[0]
+                    for frame in 0..<Int(frameCount) {
+                        let t = Double(frame) / sampleRate
+                        let envelope = exp(-t * 8.0)
+                        let sample = sin(2.0 * .pi * 523.25 * t) * envelope * 0.2
+                        channelData?[frame] = Float(sample)
+                    }
+                    self.playerNode.scheduleBuffer(buffer2, at: nil, options: .interrupts, completionHandler: nil)
+                    if !self.audioEngine.isRunning {
+                        try self.audioEngine.start()
+                    }
+                    self.playerNode.play()
+                } catch {
+                    print("AlertManager: Cleared chime note2 failed: \(error)")
                 }
-                self.playerNode.scheduleBuffer(buffer2, at: nil, options: .interrupts, completionHandler: nil)
-                if !self.audioEngine.isRunning {
-                    try? self.audioEngine.start()
-                }
-                self.playerNode.play()
             }
 
             if !audioEngine.isRunning {

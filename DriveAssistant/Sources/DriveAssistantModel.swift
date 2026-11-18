@@ -339,14 +339,18 @@ final class DriveAssistantModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] eventDate in
                 guard let self, eventDate != nil else { return }
-                self.detectedSpeedLimit = nil
-                self.isOverspeeding = false
-                self.showSpeedLimitCleared = true
-                self.alerts.playSpeedLimitClearedAlert(speak: self.voiceAlertsEnabled)
+                do {
+                    self.detectedSpeedLimit = nil
+                    self.isOverspeeding = false
+                    self.showSpeedLimitCleared = true
+                    self.alerts.playSpeedLimitClearedAlert(speak: self.voiceAlertsEnabled)
 
-                // Auto-hide micro-badge after 2.5s
-                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
-                    self?.showSpeedLimitCleared = false
+                    // Auto-hide micro-badge after 2.5s
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+                        self?.showSpeedLimitCleared = false
+                    }
+                } catch {
+                    print("DriveAssistantModel: Speed limit cleared handling failed: \(error)")
                 }
             }
             .store(in: &cancellables)
@@ -356,7 +360,11 @@ final class DriveAssistantModel: ObservableObject {
             .combineLatest($overspeedToleranceKmh)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _, _ in
-                self?.updateOverspeedState()
+                do {
+                    self?.updateOverspeedState()
+                } catch {
+                    print("DriveAssistantModel: updateOverspeedState failed: \(error)")
+                }
             }
             .store(in: &cancellables)
 
