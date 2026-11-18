@@ -155,15 +155,23 @@ final class TrafficSignDetector: ObservableObject {
                 .filter { validSpeedLimits.contains($0) }
             let speedValue = tokens.first
 
-            let boundingBox = observation.boundingBox  // normalized to cropped image (origin bottom-left)
+            let cropBox = observation.boundingBox  // normalized to cropped image (origin bottom-left)
 
-            // Verify near-square aspect ratio
-            let aspectRatio = boundingBox.width / boundingBox.height
+            // Convert crop-normalized bbox to full-image normalized bbox
+            let boundingBox = CGRect(
+                x: roiRect.minX + cropBox.minX * roiRect.width,
+                y: roiRect.minY + cropBox.minY * roiRect.height,
+                width: cropBox.width * roiRect.width,
+                height: cropBox.height * roiRect.height
+            )
+
+            // Verify near-square aspect ratio (use crop box for aspect since sign is upright in crop)
+            let aspectRatio = cropBox.width / cropBox.height
             let aspectOK = aspectRatioRange.contains(aspectRatio)
 
-            // Classify: check red ring strength on expanded box
-            let redRingRatio = measureRedRingRatio(in: croppedImage, normalizedBox: boundingBox, scale: expandedBoxScale)
-            let darkDiagonalRatio = measureDarkDiagonalRatio(in: croppedImage, normalizedBox: boundingBox, scale: expandedBoxScale)
+            // Classify: check red ring strength on expanded box using FULL image (avoids crop-edge clamping)
+            let redRingRatio = measureRedRingRatio(in: ciImage, normalizedBox: boundingBox, scale: expandedBoxScale)
+            let darkDiagonalRatio = measureDarkDiagonalRatio(in: ciImage, normalizedBox: boundingBox, scale: expandedBoxScale)
 
             var accepted = false
             var reason = ""
@@ -226,7 +234,7 @@ final class TrafficSignDetector: ObservableObject {
         if let contours = contourRequest.results as? [VNContoursObservation] {
             for contourObs in contours {
                 for contour in contourObs.topLevelContours {
-                    // VNContour has normalizedPoints - compute bounding box from points
+                    // VNContour has normalizedPoints - compute bounding box from points (crop-normalized)
                     let points = contour.normalizedPoints
                     guard !points.isEmpty else { continue }
                     var minX: Float = points[0].x
@@ -239,13 +247,21 @@ final class TrafficSignDetector: ObservableObject {
                         minY = Swift.min(minY, pt.y)
                         maxY = Swift.max(maxY, pt.y)
                     }
-                    let boundingBox = CGRect(x: CGFloat(minX), y: CGFloat(minY), width: CGFloat(maxX - minX), height: CGFloat(maxY - minY))
-                    let aspectRatio = boundingBox.width / boundingBox.height
+                    let cropBox = CGRect(x: CGFloat(minX), y: CGFloat(minY), width: CGFloat(maxX - minX), height: CGFloat(maxY - minY))
+                    let aspectRatio = cropBox.width / cropBox.height
                     guard contourAspectRatioRange.contains(aspectRatio) else { continue }
-                    guard boundingBox.width >= 0.04 && boundingBox.height >= 0.04 else { continue }
+                    guard cropBox.width >= 0.04 && cropBox.height >= 0.04 else { continue }
 
-                    // Check for dark diagonal slash inside this near-circular contour
-                    let darkDiagonalRatio = measureDarkDiagonalRatio(in: croppedImage, normalizedBox: boundingBox, scale: 1.0)
+                    // Convert crop-normalized bbox to full-image normalized bbox
+                    let boundingBox = CGRect(
+                        x: roiRect.minX + cropBox.minX * roiRect.width,
+                        y: roiRect.minY + cropBox.minY * roiRect.height,
+                        width: cropBox.width * roiRect.width,
+                        height: cropBox.height * roiRect.height
+                    )
+
+                    // Check for dark diagonal slash using FULL image
+                    let darkDiagonalRatio = measureDarkDiagonalRatio(in: ciImage, normalizedBox: boundingBox, scale: 1.0)
                     if darkDiagonalRatio >= 0.40 {
                         foundEndOfAllRestrictions = true
                         break
