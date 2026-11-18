@@ -19,22 +19,22 @@ final class TrafficSignDetector: ObservableObject {
     private let minimumTextHeight: Float = 0.018  // 1.8% of crop height for distant/medium signs
     private let processInterval: TimeInterval = 0.5  // 2 Hz
     private let requiredConsecutiveMatches = 2
-    private let aspectRatioRange: ClosedRange<Double> = 0.65...1.45
+    private let aspectRatioRange: ClosedRange<Double> = 0.45...2.0  // widened for tall/narrow digits (e.g., "60" ar≈0.62)
     private let redBorderThreshold: Float = 0.35  // R channel dominance ratio
 
     // DP.134 / DP.135 detection thresholds
     private let endSignRequiredConsecutive = 2
-    private let expandedBoxScale: CGFloat = 1.6
-    private let redRingStrongThreshold: Float = 0.22
+    private let expandedBoxScale: CGFloat = 2.1   // square-normalized: side = max(w,h) * 2.1 around digit bbox
+    private let redRingStrongThreshold: Float = 0.15  // relaxed for screen/glare
     private let darkDiagonalThreshold: Float = 0.35
     private let contourAspectRatioRange: ClosedRange<Double> = 0.75...1.30
     private let darkLumaThreshold: UInt8 = 90
 
-    // Circular annulus sampling for red ring (normalized radius from center)
-    private let redRingInnerRadius: Float = 0.34
+    // Circular annulus sampling for red ring (normalized radius from center of square)
+    private let redRingInnerRadius: Float = 0.36
     private let redRingOuterRadius: Float = 0.48
-    private let redPixelThreshold: UInt8 = 130
-    private let redDominanceRatio: Float = 1.25
+    private let redPixelThreshold: UInt8 = 120
+    private let redDominanceRatio: Float = 1.15
 
     // MARK: - State
     private var lastProcessTime: TimeInterval = 0
@@ -89,19 +89,10 @@ final class TrafficSignDetector: ObservableObject {
 
     /// Call from CameraManager.captureOutput for each frame.
     func processFrameIfNeeded(_ pixelBuffer: CVPixelBuffer) {
-        guard !isProcessing else {
-            diagnostics?.record(type: "tsr_skip", details: "reason=processing")
-            return
-        }
+        guard !isProcessing else { return }
         let now = CACurrentMediaTime()
-        guard now - lastProcessTime >= processInterval else {
-            diagnostics?.record(type: "tsr_skip", details: "reason=interval")
-            return
-        }
-        guard thermalState != .critical else {
-            diagnostics?.record(type: "tsr_skip", details: "reason=thermal_critical")
-            return
-        }
+        guard now - lastProcessTime >= processInterval else { return }
+        guard thermalState != .critical else { return }
 
         lastProcessTime = now
         isProcessing = true
@@ -126,9 +117,6 @@ final class TrafficSignDetector: ObservableObject {
             height: roiRect.height * extent.height
         )
         let croppedImage = ciImage.cropped(to: cropRect)
-
-        // ROI validation logging
-        diagnostics?.record(type: "tsr_roi", details: "cropRect=\(cropRect), extent=\(extent), roiRect=\(roiRect)")
 
         // Run Vision OCR for speed limit digits
         let ocrHandler = VNImageRequestHandler(ciImage: croppedImage, orientation: visionOrientation, options: [:])
@@ -258,9 +246,7 @@ final class TrafficSignDetector: ObservableObject {
 
                     // Check for dark diagonal slash inside this near-circular contour
                     let darkDiagonalRatio = measureDarkDiagonalRatio(in: croppedImage, normalizedBox: boundingBox, scale: 1.0)
-                    let accepted = darkDiagonalRatio >= 0.40
-                    diagnostics?.record(type: "tsr_contour", details: "box=(\(String(format: "%.3f", boundingBox.minX)),\(String(format: "%.3f", boundingBox.minY)),\(String(format: "%.3f", boundingBox.width)),\(String(format: "%.3f", boundingBox.height))) ar=\(String(format: "%.2f", aspectRatio)) dd=\(String(format: "%.2f", darkDiagonalRatio)) accept=\(accepted)")
-                    if accepted {
+                    if darkDiagonalRatio >= 0.40 {
                         foundEndOfAllRestrictions = true
                         break
                     }
@@ -281,8 +267,6 @@ final class TrafficSignDetector: ObservableObject {
                 lastMatchedLimit = limit
             }
 
-            diagnostics?.record(type: "tsr_state", details: "consecutiveMatchCount=\(consecutiveMatchCount) lastMatched=\(lastMatchedLimit?.description ?? "nil") newLimit=\(limit) action=P127_candidate")
-
             if consecutiveMatchCount >= requiredConsecutiveMatches {
                 DispatchQueue.main.async { [weak self] in
                     self?.detectedSpeedLimit = limit
@@ -292,12 +276,10 @@ final class TrafficSignDetector: ObservableObject {
         }
         // Handle end-of-speed-limit detection (DP.134)
         else if foundEndOfSpeedLimit && detectedSpeedLimit != nil {
-            diagnostics?.record(type: "tsr_state", details: "action=DP134_candidate consecutive=\(endSignConsecutiveCount + 1)")
             handleEndSignDetection(.dp134)
         }
         // Handle end-of-all-restrictions detection (DP.135)
         else if foundEndOfAllRestrictions && detectedSpeedLimit != nil {
-            diagnostics?.record(type: "tsr_state", details: "action=DP135_candidate consecutive=\(endSignConsecutiveCount + 1)")
             handleEndSignDetection(.dp135)
         }
         // No relevant sign detected - reset end-sign counter
@@ -328,22 +310,29 @@ final class TrafficSignDetector: ObservableObject {
         }
     }
 
-    /// Measure red ring strength on expanded bounding box using circular annulus sampling.
-    /// Samples pixels where normalized radial distance r = hypot(u-0.5, v-0.5) is in [0.34, 0.48].
-    /// Returns ratio of annulus pixels where R >= 130 && R > G*1.25 && R > B*1.25
+    /// Measure red ring strength using square-normalized bbox around digits.
+    /// OCR bbox wraps tall/narrow digits (e.g., 0.065×0.100). We center a square of
+    /// side = max(w,h) * expandedBoxScale (≈2.1) on the digit center — this encompasses
+    /// the full sign's red ring. Annulus sampled at normalized radius [0.36, 0.48].
     private func measureRedRingRatio(in image: CIImage, normalizedBox: CGRect, scale: CGFloat) -> Float {
         let extent = image.extent
         // Vision boundingBox uses bottom-left origin, matching CIImage
-        let pixelBox = CGRect(
+        let digitBox = CGRect(
             x: normalizedBox.minX * extent.width,
             y: normalizedBox.minY * extent.height,
             width: normalizedBox.width * extent.width,
             height: normalizedBox.height * extent.height
         )
 
-        let expandedBox = pixelBox.insetBy(dx: -pixelBox.width * (scale - 1.0) / 2.0,
-                                           dy: -pixelBox.height * (scale - 1.0) / 2.0)
-        let clampedBox = expandedBox.intersection(extent)
+        // Square box centered on digits, sized to encompass sign's red ring
+        let side = max(digitBox.width, digitBox.height) * scale
+        let squareBox = CGRect(
+            x: digitBox.midX - side / 2.0,
+            y: digitBox.midY - side / 2.0,
+            width: side,
+            height: side
+        )
+        let clampedBox = squareBox.intersection(extent)
         guard !clampedBox.isEmpty, clampedBox.width > 4, clampedBox.height > 4 else { return 0 }
 
         let ringRegion = image.cropped(to: clampedBox)
@@ -352,14 +341,8 @@ final class TrafficSignDetector: ObservableObject {
 
         // Render with explicit RGBA8 format to guarantee R=bytes[0], G=bytes[1], B=bytes[2]
         let colorSpace = CGColorSpaceCreateDeviceRGB()
-        guard let cgImage = ciContext.createCGImage(scaledImage, from: scaledImage.extent, format: .RGBA8, colorSpace: colorSpace) else {
-            diagnostics?.record(type: "tsr_render_fail", details: "type=redRing scaleFactor=\(scaleFactor) clampedBox=\(clampedBox)")
-            return 0
-        }
-        guard let data = cgImage.dataProvider?.data else {
-            diagnostics?.record(type: "tsr_render_fail", details: "type=redRing no_data_provider")
-            return 0
-        }
+        guard let cgImage = ciContext.createCGImage(scaledImage, from: scaledImage.extent, format: .RGBA8, colorSpace: colorSpace) else { return 0 }
+        guard let data = cgImage.dataProvider?.data else { return 0 }
         let bytes = CFDataGetBytePtr(data)
         let width = cgImage.width
         let height = cgImage.height
@@ -368,7 +351,7 @@ final class TrafficSignDetector: ObservableObject {
         var redStrongCount = 0
         var totalSampled = 0
 
-        // Sample pixels in circular annulus: center (0.5, 0.5), radius in [0.34, 0.48]
+        // Sample pixels in circular annulus: center (0.5, 0.5), radius in [0.36, 0.48]
         for y in 0..<height {
             let v = Float(y) / Float(height)
             let dy = v - 0.5
@@ -392,42 +375,38 @@ final class TrafficSignDetector: ObservableObject {
         }
 
         guard totalSampled > 0 else { return 0 }
-        let ratio = Float(redStrongCount) / Float(totalSampled)
-        diagnostics?.record(type: "tsr_sampling", details: "type=redRing totalSampled=\(totalSampled) redStrong=\(redStrongCount) ratio=\(String(format: "%.3f", ratio))")
-        return ratio
+        return Float(redStrongCount) / Float(totalSampled)
     }
 
-    /// Measure dark diagonal slash ratio (top-right to bottom-left anti-diagonal).
-    /// Samples band where |(1 - u) - v| < 0.14 in normalized box coordinates.
+    /// Measure dark diagonal slash ratio using square-normalized bbox around digits.
+    /// Same square expansion as red ring. Samples anti-diagonal band |(1-u)-v| < 0.14.
     private func measureDarkDiagonalRatio(in image: CIImage, normalizedBox: CGRect, scale: CGFloat) -> Float {
         let extent = image.extent
-        // Vision boundingBox uses bottom-left origin, matching CIImage
-        let pixelBox = CGRect(
+        let digitBox = CGRect(
             x: normalizedBox.minX * extent.width,
             y: normalizedBox.minY * extent.height,
             width: normalizedBox.width * extent.width,
             height: normalizedBox.height * extent.height
         )
 
-        let expandedBox = pixelBox.insetBy(dx: -pixelBox.width * (scale - 1.0) / 2.0,
-                                           dy: -pixelBox.height * (scale - 1.0) / 2.0)
-        let clampedBox = expandedBox.intersection(extent)
+        // Square box centered on digits, sized to encompass sign
+        let side = max(digitBox.width, digitBox.height) * scale
+        let squareBox = CGRect(
+            x: digitBox.midX - side / 2.0,
+            y: digitBox.midY - side / 2.0,
+            width: side,
+            height: side
+        )
+        let clampedBox = squareBox.intersection(extent)
         guard !clampedBox.isEmpty, clampedBox.width > 4, clampedBox.height > 4 else { return 0 }
 
         let ringRegion = image.cropped(to: clampedBox)
         let scaleFactor = min(48.0 / clampedBox.width, 48.0 / clampedBox.height, 1.0)
         let scaledImage = ringRegion.transformed(by: CGAffineTransform(scaleX: scaleFactor, y: scaleFactor))
 
-        // Render with explicit RGBA8 format to guarantee R=bytes[0], G=bytes[1], B=bytes[2]
         let colorSpace = CGColorSpaceCreateDeviceRGB()
-        guard let cgImage = ciContext.createCGImage(scaledImage, from: scaledImage.extent, format: .RGBA8, colorSpace: colorSpace) else {
-            diagnostics?.record(type: "tsr_render_fail", details: "type=darkDiag scaleFactor=\(scaleFactor) clampedBox=\(clampedBox)")
-            return 0
-        }
-        guard let data = cgImage.dataProvider?.data else {
-            diagnostics?.record(type: "tsr_render_fail", details: "type=darkDiag no_data_provider")
-            return 0
-        }
+        guard let cgImage = ciContext.createCGImage(scaledImage, from: scaledImage.extent, format: .RGBA8, colorSpace: colorSpace) else { return 0 }
+        guard let data = cgImage.dataProvider?.data else { return 0 }
         let bytes = CFDataGetBytePtr(data)
         let width = cgImage.width
         let height = cgImage.height
@@ -437,7 +416,6 @@ final class TrafficSignDetector: ObservableObject {
         var totalSampled = 0
 
         // Sample pixels along anti-diagonal band: |(1 - u) - v| < 0.14
-        // where u = x/width, v = y/height (both 0..1 from top-left)
         for y in 0..<height {
             let v = Float(y) / Float(height)
             for x in 0..<width {
@@ -458,9 +436,7 @@ final class TrafficSignDetector: ObservableObject {
         }
 
         guard totalSampled > 0 else { return 0 }
-        let ratio = Float(darkDiagonalCount) / Float(totalSampled)
-        diagnostics?.record(type: "tsr_sampling", details: "type=darkDiag totalSampled=\(totalSampled) darkCount=\(darkDiagonalCount) ratio=\(String(format: "%.3f", ratio))")
-        return ratio
+        return Float(darkDiagonalCount) / Float(totalSampled)
     }
 
     /// Update thermal state (called from CameraManager)
