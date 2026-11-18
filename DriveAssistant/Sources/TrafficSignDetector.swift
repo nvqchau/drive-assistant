@@ -331,132 +331,140 @@ final class TrafficSignDetector: ObservableObject {
     /// side = max(w,h) * expandedBoxScale (≈2.1) on the digit center — this encompasses
     /// the full sign's red ring. Annulus sampled at normalized radius [0.36, 0.48].
     private func measureRedRingRatio(in image: CIImage, normalizedBox: CGRect, scale: CGFloat) -> Float {
-        let extent = image.extent
-        // Vision boundingBox uses bottom-left origin, matching CIImage
-        let digitBox = CGRect(
-            x: normalizedBox.minX * extent.width,
-            y: normalizedBox.minY * extent.height,
-            width: normalizedBox.width * extent.width,
-            height: normalizedBox.height * extent.height
-        )
+        return autoreleasepool {
+            let extent = image.extent
+            // Vision boundingBox uses bottom-left origin, matching CIImage
+            let digitBox = CGRect(
+                x: normalizedBox.minX * extent.width,
+                y: normalizedBox.minY * extent.height,
+                width: normalizedBox.width * extent.width,
+                height: normalizedBox.height * extent.height
+            )
 
-        // Square box centered on digits, sized to encompass sign's red ring
-        let side = max(digitBox.width, digitBox.height) * scale
-        let squareBox = CGRect(
-            x: digitBox.midX - side / 2.0,
-            y: digitBox.midY - side / 2.0,
-            width: side,
-            height: side
-        )
-        let clampedBox = squareBox.intersection(extent)
-        guard !clampedBox.isEmpty, clampedBox.width > 4, clampedBox.height > 4 else { return 0 }
+            // Square box centered on digits, sized to encompass sign's red ring
+            let side = max(digitBox.width, digitBox.height) * scale
+            // Cap max square side to 200px (we scale down to 48px anyway) to limit memory
+            let cappedSide = min(side, 200.0)
+            let squareBox = CGRect(
+                x: digitBox.midX - cappedSide / 2.0,
+                y: digitBox.midY - cappedSide / 2.0,
+                width: cappedSide,
+                height: cappedSide
+            )
+            let clampedBox = squareBox.intersection(extent)
+            guard !clampedBox.isEmpty, clampedBox.width > 4, clampedBox.height > 4 else { return 0 }
 
-        let ringRegion = image.cropped(to: clampedBox)
-        let scaleFactor = min(48.0 / clampedBox.width, 48.0 / clampedBox.height, 1.0)
-        let scaledImage = ringRegion.transformed(by: CGAffineTransform(scaleX: scaleFactor, y: scaleFactor))
+            let ringRegion = image.cropped(to: clampedBox)
+            let scaleFactor = min(48.0 / clampedBox.width, 48.0 / clampedBox.height, 1.0)
+            let scaledImage = ringRegion.transformed(by: CGAffineTransform(scaleX: scaleFactor, y: scaleFactor))
 
-        // Render with explicit RGBA8 format to guarantee R=bytes[0], G=bytes[1], B=bytes[2]
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        guard let cgImage = ciContext.createCGImage(scaledImage, from: scaledImage.extent, format: .RGBA8, colorSpace: colorSpace) else { return 0 }
-        guard let data = cgImage.dataProvider?.data else { return 0 }
-        let bytes = CFDataGetBytePtr(data)
-        guard let bytes = bytes else { return 0 }
-        let width = cgImage.width
-        let height = cgImage.height
-        let bytesPerRow = cgImage.bytesPerRow
-        guard bytesPerRow >= width * 4 else { return 0 }
+            // Render with explicit RGBA8 format to guarantee R=bytes[0], G=bytes[1], B=bytes[2]
+            let colorSpace = CGColorSpaceCreateDeviceRGB()
+            guard let cgImage = ciContext.createCGImage(scaledImage, from: scaledImage.extent, format: .RGBA8, colorSpace: colorSpace) else { return 0 }
+            guard let data = cgImage.dataProvider?.data else { return 0 }
+            let bytes = CFDataGetBytePtr(data)
+            guard let bytes = bytes else { return 0 }
+            let width = cgImage.width
+            let height = cgImage.height
+            let bytesPerRow = cgImage.bytesPerRow
+            guard bytesPerRow >= width * 4 else { return 0 }
 
-        var redStrongCount = 0
-        var totalSampled = 0
+            var redStrongCount = 0
+            var totalSampled = 0
 
-        // Sample pixels in circular annulus: center (0.5, 0.5), radius in [0.36, 0.48]
-        for y in 0..<height {
-            let v = Float(y) / Float(height)
-            let dy = v - 0.5
-            for x in 0..<width {
-                let u = Float(x) / Float(width)
-                let dx = u - 0.5
-                let r = hypotf(dx, dy)
-                guard r >= redRingInnerRadius, r <= redRingOuterRadius else { continue }
+            // Sample pixels in circular annulus: center (0.5, 0.5), radius in [0.36, 0.48]
+            for y in 0..<height {
+                let v = Float(y) / Float(height)
+                let dy = v - 0.5
+                for x in 0..<width {
+                    let u = Float(x) / Float(width)
+                    let dx = u - 0.5
+                    let r = hypotf(dx, dy)
+                    guard r >= redRingInnerRadius, r <= redRingOuterRadius else { continue }
 
-                let offset = y * bytesPerRow + x * 4
-                let rVal = bytes[offset]
-                let gVal = bytes[offset + 1]
-                let bVal = bytes[offset + 2]
-                if rVal >= redPixelThreshold,
-                   Float(rVal) > Float(gVal) * redDominanceRatio,
-                   Float(rVal) > Float(bVal) * redDominanceRatio {
-                    redStrongCount += 1
+                    let offset = y * bytesPerRow + x * 4
+                    let rVal = bytes[offset]
+                    let gVal = bytes[offset + 1]
+                    let bVal = bytes[offset + 2]
+                    if rVal >= redPixelThreshold,
+                       Float(rVal) > Float(gVal) * redDominanceRatio,
+                       Float(rVal) > Float(bVal) * redDominanceRatio {
+                        redStrongCount += 1
+                    }
+                    totalSampled += 1
                 }
-                totalSampled += 1
             }
-        }
 
-        guard totalSampled > 0 else { return 0 }
-        return Float(redStrongCount) / Float(totalSampled)
+            guard totalSampled > 0 else { return 0 }
+            return Float(redStrongCount) / Float(totalSampled)
+        }
     }
 
     /// Measure dark diagonal slash ratio using square-normalized bbox around digits.
     /// Same square expansion as red ring. Samples anti-diagonal band |(1-u)-v| < 0.14.
     private func measureDarkDiagonalRatio(in image: CIImage, normalizedBox: CGRect, scale: CGFloat) -> Float {
-        let extent = image.extent
-        let digitBox = CGRect(
-            x: normalizedBox.minX * extent.width,
-            y: normalizedBox.minY * extent.height,
-            width: normalizedBox.width * extent.width,
-            height: normalizedBox.height * extent.height
-        )
+        return autoreleasepool {
+            let extent = image.extent
+            let digitBox = CGRect(
+                x: normalizedBox.minX * extent.width,
+                y: normalizedBox.minY * extent.height,
+                width: normalizedBox.width * extent.width,
+                height: normalizedBox.height * extent.height
+            )
 
-        // Square box centered on digits, sized to encompass sign
-        let side = max(digitBox.width, digitBox.height) * scale
-        let squareBox = CGRect(
-            x: digitBox.midX - side / 2.0,
-            y: digitBox.midY - side / 2.0,
-            width: side,
-            height: side
-        )
-        let clampedBox = squareBox.intersection(extent)
-        guard !clampedBox.isEmpty, clampedBox.width > 4, clampedBox.height > 4 else { return 0 }
+            // Square box centered on digits, sized to encompass sign
+            let side = max(digitBox.width, digitBox.height) * scale
+            // Cap max square side to 200px (we scale down to 48px anyway) to limit memory
+            let cappedSide = min(side, 200.0)
+            let squareBox = CGRect(
+                x: digitBox.midX - cappedSide / 2.0,
+                y: digitBox.midY - cappedSide / 2.0,
+                width: cappedSide,
+                height: cappedSide
+            )
+            let clampedBox = squareBox.intersection(extent)
+            guard !clampedBox.isEmpty, clampedBox.width > 4, clampedBox.height > 4 else { return 0 }
 
-        let ringRegion = image.cropped(to: clampedBox)
-        let scaleFactor = min(48.0 / clampedBox.width, 48.0 / clampedBox.height, 1.0)
-        let scaledImage = ringRegion.transformed(by: CGAffineTransform(scaleX: scaleFactor, y: scaleFactor))
+            let ringRegion = image.cropped(to: clampedBox)
+            let scaleFactor = min(48.0 / clampedBox.width, 48.0 / clampedBox.height, 1.0)
+            let scaledImage = ringRegion.transformed(by: CGAffineTransform(scaleX: scaleFactor, y: scaleFactor))
 
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
-        guard let cgImage = ciContext.createCGImage(scaledImage, from: scaledImage.extent, format: .RGBA8, colorSpace: colorSpace) else { return 0 }
-        guard let data = cgImage.dataProvider?.data else { return 0 }
-        let bytes = CFDataGetBytePtr(data)
-        guard let bytes = bytes else { return 0 }
-        let width = cgImage.width
-        let height = cgImage.height
-        let bytesPerRow = cgImage.bytesPerRow
-        guard bytesPerRow >= width * 4 else { return 0 }
+            let colorSpace = CGColorSpaceCreateDeviceRGB()
+            guard let cgImage = ciContext.createCGImage(scaledImage, from: scaledImage.extent, format: .RGBA8, colorSpace: colorSpace) else { return 0 }
+            guard let data = cgImage.dataProvider?.data else { return 0 }
+            let bytes = CFDataGetBytePtr(data)
+            guard let bytes = bytes else { return 0 }
+            let width = cgImage.width
+            let height = cgImage.height
+            let bytesPerRow = cgImage.bytesPerRow
+            guard bytesPerRow >= width * 4 else { return 0 }
 
-        var darkDiagonalCount = 0
-        var totalSampled = 0
+            var darkDiagonalCount = 0
+            var totalSampled = 0
 
-        // Sample pixels along anti-diagonal band: |(1 - u) - v| < 0.14
-        for y in 0..<height {
-            let v = Float(y) / Float(height)
-            for x in 0..<width {
-                let u = Float(x) / Float(width)
-                let antiDiagDist = abs((1.0 - u) - v)
-                if antiDiagDist < 0.14 {
-                    let offset = y * bytesPerRow + x * 4
-                    let r = Float(bytes[offset])
-                    let g = Float(bytes[offset + 1])
-                    let b = Float(bytes[offset + 2])
-                    let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
-                    if luma < Float(darkLumaThreshold) {
-                        darkDiagonalCount += 1
+            // Sample pixels along anti-diagonal band: |(1 - u) - v| < 0.14
+            for y in 0..<height {
+                let v = Float(y) / Float(height)
+                for x in 0..<width {
+                    let u = Float(x) / Float(width)
+                    let antiDiagDist = abs((1.0 - u) - v)
+                    if antiDiagDist < 0.14 {
+                        let offset = y * bytesPerRow + x * 4
+                        let r = Float(bytes[offset])
+                        let g = Float(bytes[offset + 1])
+                        let b = Float(bytes[offset + 2])
+                        let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+                        if luma < Float(darkLumaThreshold) {
+                            darkDiagonalCount += 1
+                        }
+                        totalSampled += 1
                     }
-                    totalSampled += 1
                 }
             }
-        }
 
-        guard totalSampled > 0 else { return 0 }
-        return Float(darkDiagonalCount) / Float(totalSampled)
+            guard totalSampled > 0 else { return 0 }
+            return Float(darkDiagonalCount) / Float(totalSampled)
+        }
     }
 
     /// Update thermal state (called from CameraManager)
