@@ -16,7 +16,7 @@ final class TrafficSignDetector: ObservableObject {
     // MARK: - Configuration
     private let validSpeedLimits: Set<Int> = [30, 40, 50, 60, 70, 80, 90, 100, 120]
     private let roiRect = CGRect(x: 0.48, y: 0.05, width: 0.50, height: 0.50)  // upper-right roadside/gantry
-    private let minimumTextHeight: Float = 0.04
+    private let minimumTextHeight: Float = 0.018  // 1.8% of crop height for distant/medium signs
     private let processInterval: TimeInterval = 0.5  // 2 Hz
     private let requiredConsecutiveMatches = 2
     private let aspectRatioRange: ClosedRange<Double> = 0.65...1.45
@@ -45,6 +45,11 @@ final class TrafficSignDetector: ObservableObject {
     private let textRequest = VNRecognizeTextRequest()
     private let contourRequest = VNDetectContoursRequest()
 
+    // Diagnostics
+    private weak var diagnostics: DiagnosticsLogStore?
+    private var visionOrientation: CGImagePropertyOrientation = .up
+    private var lastTSRLogTime: TimeInterval = 0
+
     // End-sign consecutive detection state
     private var endSignConsecutiveCount = 0
     private var lastEndSignType: EndSignType?
@@ -57,6 +62,16 @@ final class TrafficSignDetector: ObservableObject {
     init() {
         configureTextRequest()
         configureContourRequest()
+    }
+
+    /// Attach diagnostics store for TSR event logging
+    func attachDiagnostics(_ diagnostics: DiagnosticsLogStore) {
+        self.diagnostics = diagnostics
+    }
+
+    /// Set vision orientation (matches CameraManager's visionOrientation)
+    func setVisionOrientation(_ orientation: CGImagePropertyOrientation) {
+        visionOrientation = orientation
     }
 
     private func configureTextRequest() {
@@ -104,7 +119,7 @@ final class TrafficSignDetector: ObservableObject {
         let croppedImage = ciImage.cropped(to: cropRect)
 
         // Run Vision OCR for speed limit digits
-        let ocrHandler = VNImageRequestHandler(ciImage: croppedImage, orientation: .up, options: [:])
+        let ocrHandler = VNImageRequestHandler(ciImage: croppedImage, orientation: visionOrientation, options: [:])
         var textObservations: [VNRecognizedTextObservation] = []
         do {
             try ocrHandler.perform([textRequest])
@@ -116,6 +131,19 @@ final class TrafficSignDetector: ObservableObject {
         var foundActiveSpeedLimit: Int?
         var foundEndOfSpeedLimit = false
 
+        // For diagnostics: collect all candidate details
+        struct TSRCandidate {
+            let rawText: String
+            let speedValue: Int?
+            let boundingBox: CGRect
+            let aspectRatio: Double
+            let redRingRatio: Float
+            let darkDiagonalRatio: Float
+            let accepted: Bool
+            let reason: String
+        }
+        var candidates: [TSRCandidate] = []
+
         // Process OCR results for speed limit signs (P.127) and end-of-speed-limit (DP.134)
         for observation in textObservations {
             guard let topCandidate = observation.topCandidates(1).first else { continue }
@@ -125,27 +153,65 @@ final class TrafficSignDetector: ObservableObject {
             let tokens = text.components(separatedBy: CharacterSet.decimalDigits.inverted)
                 .compactMap { Int($0) }
                 .filter { validSpeedLimits.contains($0) }
-            guard let speedValue = tokens.first else { continue }
+            let speedValue = tokens.first
 
             let boundingBox = observation.boundingBox  // normalized to cropped image (origin bottom-left)
 
             // Verify near-square aspect ratio
             let aspectRatio = boundingBox.width / boundingBox.height
-            guard aspectRatioRange.contains(aspectRatio) else { continue }
+            let aspectOK = aspectRatioRange.contains(aspectRatio)
 
-            // Classify: check red ring strength on expanded box (1.35x)
+            // Classify: check red ring strength on expanded box
             let redRingRatio = measureRedRingRatio(in: croppedImage, normalizedBox: boundingBox, scale: expandedBoxScale)
+            let darkDiagonalRatio = measureDarkDiagonalRatio(in: croppedImage, normalizedBox: boundingBox, scale: expandedBoxScale)
 
-            if redRingRatio >= redRingStrongThreshold {
-                // Strong red ring → active speed limit P.127
-                foundActiveSpeedLimit = speedValue
+            var accepted = false
+            var reason = ""
+
+            if speedValue != nil && aspectOK {
+                if redRingRatio >= redRingStrongThreshold {
+                    accepted = true
+                    reason = "P127_active"
+                } else if darkDiagonalRatio >= darkDiagonalThreshold {
+                    accepted = true
+                    reason = "DP134_end"
+                } else {
+                    reason = "aspectOK_redRing=\(String(format: "%.2f", redRingRatio))_darkDiag=\(String(format: "%.2f", darkDiagonalRatio))"
+                }
+            } else if speedValue == nil {
+                reason = "no_valid_speed_token"
             } else {
-                // Weak/absent red ring → check for dark diagonal slash (DP.134)
-                let darkDiagonalRatio = measureDarkDiagonalRatio(in: croppedImage, normalizedBox: boundingBox, scale: expandedBoxScale)
-                if darkDiagonalRatio >= darkDiagonalThreshold {
+                reason = "aspect_fail=\(String(format: "%.2f", aspectRatio))"
+            }
+
+            if let sv = speedValue, accepted {
+                if reason == "P127_active" {
+                    foundActiveSpeedLimit = sv
+                } else if reason == "DP134_end" {
                     foundEndOfSpeedLimit = true
                 }
             }
+
+            candidates.append(TSRCandidate(
+                rawText: text,
+                speedValue: speedValue,
+                boundingBox: boundingBox,
+                aspectRatio: aspectRatio,
+                redRingRatio: redRingRatio,
+                darkDiagonalRatio: darkDiagonalRatio,
+                accepted: accepted && speedValue != nil,
+                reason: reason
+            ))
+        }
+
+        // Diagnostic logging: every 1.0s record all raw OCR candidates with analysis
+        let now = CACurrentMediaTime()
+        if now - lastTSRLogTime >= 1.0 {
+            lastTSRLogTime = now
+            let details = candidates.map { c in
+                "txt=\(c.rawText) spd=\(c.speedValue?.description ?? "nil") box=(\(String(format: "%.3f", c.boundingBox.minX)),\(String(format: "%.3f", c.boundingBox.minY)),\(String(format: "%.3f", c.boundingBox.width)),\(String(format: "%.3f", c.boundingBox.height))) ar=\(String(format: "%.2f", c.aspectRatio)) rr=\(String(format: "%.2f", c.redRingRatio)) dd=\(String(format: "%.2f", c.darkDiagonalRatio)) acc=\(c.accepted) reason=\(c.reason)"
+            }.joined(separator: "; ")
+            diagnostics?.record(type: "tsr_scan", details: details.isEmpty ? "no_candidates" : details)
         }
 
         // Also run contour detection for DP.135 (End of All Restrictions - no digits)
