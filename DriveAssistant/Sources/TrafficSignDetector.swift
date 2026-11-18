@@ -26,7 +26,7 @@ final class TrafficSignDetector: ObservableObject {
     private let endSignRequiredConsecutive = 2
     private let expandedBoxScale: CGFloat = 4.0   // square-normalized: side = max(w,h) * 4.0 (encompasses full sign; red ring at ~1.5x digit height)
     private let redRingStrongThreshold: Float = 0.03  // very low for screen photo
-    private let darkDiagonalThreshold: Float = 0.35
+    private let darkDiagonalThreshold: Float = 0.25  // lowered for screen photo diagonal visibility
     private let contourAspectRatioRange: ClosedRange<Double> = 0.75...1.30
     private let darkLumaThreshold: UInt8 = 90
 
@@ -226,6 +226,8 @@ final class TrafficSignDetector: ObservableObject {
         }
 
         // Also run contour detection for DP.135 (End of All Restrictions - no digits)
+        // Fallback: if active speed limit exists and contour finds circular+diagonal but OCR got no digits,
+        // treat as DP.134 (end of specific speed limit) rather than DP.135 (end of all restrictions).
         let contourHandler = VNImageRequestHandler(ciImage: croppedImage, orientation: .up, options: [:])
         do {
             try contourHandler.perform([contourRequest])
@@ -234,6 +236,7 @@ final class TrafficSignDetector: ObservableObject {
         }
 
         var foundEndOfAllRestrictions = false
+        var foundEndOfSpeedLimitViaContour = false  // DP.134 fallback via contour
         if let contours = contourRequest.results as? [VNContoursObservation] {
             for contourObs in contours {
                 for contour in contourObs.topLevelContours {
@@ -272,6 +275,10 @@ final class TrafficSignDetector: ObservableObject {
                         foundEndOfAllRestrictions = true
                         break
                     }
+                    // Fallback: active speed limit + circular contour + diagonal but no OCR digits -> DP.134
+                    if detectedSpeedLimit != nil, !foundEndOfSpeedLimit, darkDiagonalRatio >= 0.25 {
+                        foundEndOfSpeedLimitViaContour = true
+                    }
                 }
                 if foundEndOfAllRestrictions { break }
             }
@@ -296,8 +303,12 @@ final class TrafficSignDetector: ObservableObject {
                 diagnostics?.record(type: "tsr_state", details: "action=P127_confirmed limit=\(limit) consecutive=\(consecutiveMatchCount)")
             }
         }
-        // Handle end-of-speed-limit detection (DP.134)
+        // Handle end-of-speed-limit detection (DP.134) — OCR digits + diagonal
         else if foundEndOfSpeedLimit && detectedSpeedLimit != nil {
+            handleEndSignDetection(.dp134)
+        }
+        // Fallback: contour detected circular+diagonal but OCR got no digits -> treat as DP.134
+        else if foundEndOfSpeedLimitViaContour && detectedSpeedLimit != nil {
             handleEndSignDetection(.dp134)
         }
         // Handle end-of-all-restrictions detection (DP.135)
