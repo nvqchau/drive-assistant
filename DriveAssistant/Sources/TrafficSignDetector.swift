@@ -12,10 +12,11 @@ final class TrafficSignDetector: ObservableObject {
     @Published private(set) var detectedSpeedLimit: Int?
     @Published private(set) var isProcessing = false
     @Published private(set) var didClearSpeedLimitEvent: Date?  // fires when DP.134/DP.135 clears limit
+    @Published private(set) var detectedEndOfAllRestrictions: Bool = false  // DP.135 detected (persistent)
 
     // MARK: - Configuration
     private let validSpeedLimits: Set<Int> = [30, 40, 50, 60, 70, 80, 90, 100, 120]
-    private let roiRect = CGRect(x: 0.48, y: 0.05, width: 0.50, height: 0.50)  // upper-right roadside/gantry
+    private let roiRect = CGRect(x: 0.45, y: 0.04, width: 0.53, height: 0.62)  // expanded for large roadside DP.134 signs
     private let minimumTextHeight: Float = 0.018  // 1.8% of crop height for distant/medium signs
     private let processInterval: TimeInterval = 0.5  // 2 Hz
     private let requiredConsecutiveMatches = 2
@@ -24,17 +25,17 @@ final class TrafficSignDetector: ObservableObject {
 
     // DP.134 / DP.135 detection thresholds
     private let endSignRequiredConsecutive = 2
-    private let expandedBoxScale: CGFloat = 4.0   // square-normalized: side = max(w,h) * 4.0 (encompasses full sign; red ring at ~1.5x digit height)
-    private let redRingStrongThreshold: Float = 0.03  // very low for screen photo
-    private let darkDiagonalThreshold: Float = 0.25  // lowered for screen photo diagonal visibility
+    private let expandedBoxScale: CGFloat = 2.3   // targets actual border ring (was 4.0 — encompassed foliage)
+    private let redRingStrongThreshold: Float = 0.14  // genuine red ring discrimination
+    private let darkDiagonalThreshold: Float = 0.28  // diagonal slash threshold for DP.134
     private let contourAspectRatioRange: ClosedRange<Double> = 0.75...1.30
     private let darkLumaThreshold: UInt8 = 90
 
     // Circular annulus sampling for red ring (normalized radius from center of square)
-    private let redRingInnerRadius: Float = 0.25
-    private let redRingOuterRadius: Float = 0.85
-    private let redPixelThreshold: UInt8 = 60   // very low for screen photo glare
-    private let redDominanceRatio: Float = 1.0  // minimal dominance (R >= G, R >= B)
+    private let redRingInnerRadius: Float = 0.34
+    private let redRingOuterRadius: Float = 0.50
+    private let redPixelThreshold: UInt8 = 115  // genuine red pixel minimum
+    private let redDominanceRatio: Float = 1.18  // R > 1.18*G and R > 1.18*B
 
     // MARK: - State
     private var lastProcessTime: TimeInterval = 0
@@ -173,19 +174,22 @@ final class TrafficSignDetector: ObservableObject {
             let aspectOK = aspectRatioRange.contains(aspectRatio)
 
             // Classify: check red ring strength on expanded box using FULL image (avoids crop-edge clamping)
+            // DP.134 priority: diagonal slash present + weak red ring -> DP.134 (not P.127)
+            // Use scale 2.0 for diagonal to cover sign interior where slash sits
             let redRingRatio = measureRedRingRatio(in: ciImage, normalizedBox: boundingBox, scale: expandedBoxScale)
-            let darkDiagonalRatio = measureDarkDiagonalRatio(in: ciImage, normalizedBox: boundingBox, scale: expandedBoxScale)
+            let darkDiagonalRatio = measureDarkDiagonalRatio(in: ciImage, normalizedBox: boundingBox, scale: 2.0)
 
             var accepted = false
             var reason = ""
 
             if speedValue != nil && aspectOK {
-                if redRingRatio >= redRingStrongThreshold {
-                    accepted = true
-                    reason = "P127_active"
-                } else if darkDiagonalRatio >= darkDiagonalThreshold {
+                // DP.134 takes priority over P.127 when diagonal slash is clear and red ring is weak
+                if darkDiagonalRatio >= darkDiagonalThreshold && redRingRatio < redRingStrongThreshold {
                     accepted = true
                     reason = "DP134_end"
+                } else if redRingRatio >= redRingStrongThreshold {
+                    accepted = true
+                    reason = "P127_active"
                 } else {
                     reason = "aspectOK_redRing=\(String(format: "%.2f", redRingRatio))_darkDiag=\(String(format: "%.2f", darkDiagonalRatio))"
                 }
@@ -228,7 +232,7 @@ final class TrafficSignDetector: ObservableObject {
         // Also run contour detection for DP.135 (End of All Restrictions - no digits)
         // Fallback: if active speed limit exists and contour finds circular+diagonal but OCR got no digits,
         // treat as DP.134 (end of specific speed limit) rather than DP.135 (end of all restrictions).
-        let contourHandler = VNImageRequestHandler(ciImage: croppedImage, orientation: .up, options: [:])
+        let contourHandler = VNImageRequestHandler(ciImage: croppedImage, orientation: visionOrientation, options: [:])
         do {
             try contourHandler.perform([contourRequest])
         } catch {
@@ -299,6 +303,7 @@ final class TrafficSignDetector: ObservableObject {
             if consecutiveMatchCount >= requiredConsecutiveMatches {
                 DispatchQueue.main.async { [weak self] in
                     self?.detectedSpeedLimit = limit
+                    self?.detectedEndOfAllRestrictions = false  // Clear DP.135 when new speed limit found
                 }
                 diagnostics?.record(type: "tsr_state", details: "action=P127_confirmed limit=\(limit) consecutive=\(consecutiveMatchCount)")
             }
@@ -334,6 +339,7 @@ final class TrafficSignDetector: ObservableObject {
             DispatchQueue.main.async { [weak self] in
                 self?.detectedSpeedLimit = nil
                 self?.didClearSpeedLimitEvent = Date()
+                self?.detectedEndOfAllRestrictions = true  // Show for both DP.134 and DP.135 (testing placeholder)
             }
             diagnostics?.record(type: "tsr_state", details: "action=\(type)_confirmed cleared_limit=\(lastMatchedLimit?.description ?? "nil")")
             endSignConsecutiveCount = 0
@@ -512,5 +518,6 @@ final class TrafficSignDetector: ObservableObject {
         endSignConsecutiveCount = 0
         lastEndSignType = nil
         didClearSpeedLimitEvent = nil
+        detectedEndOfAllRestrictions = false
     }
 }

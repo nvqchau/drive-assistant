@@ -164,21 +164,48 @@ struct ContentView: View {
                         HStack(spacing: 8) {
                             GPSSpeedPill(speed: model.speedKMPH, accuracy: model.gpsAccuracy, glassEnabled: model.glassHUD, nightDim: model.isNightThemeActive && !model.hudMirrorMode, isOverspeeding: model.isOverspeeding)
                             if model.enableSpeedSignRecognition {
-                                VStack(spacing: 2) {
-                                    SpeedLimitSignBadge(
-                                        limit: model.detectedSpeedLimit,
-                                        isOverspeeding: model.isOverspeeding,
-                                        onTap: { model.camera.trafficSignDetector.clearDetectedLimit() }
-                                    )
-                                    // Speed limit cleared micro-badge (DP.134 / DP.135)
-                                    if model.showSpeedLimitCleared {
-                                        Text(model.usesVietnamese ? "Hết hạn chế" : "Limit ended")
-                                            .font(.system(size: 10, weight: .bold, design: .rounded))
-                                            .foregroundColor(Color(red: 0.0, green: 0.902, blue: 0.463))  // Emerald
-                                            .padding(.horizontal, 6)
-                                            .padding(.vertical, 2)
-                                            .background(Color.black.opacity(0.6), in: Capsule())
-                                            .transition(.opacity.combined(with: .move(edge: .top)))
+                                HStack(spacing: 6) {
+                                    VStack(spacing: 2) {
+                                        SpeedLimitSignBadge(
+                                            limit: model.detectedSpeedLimit,
+                                            isOverspeeding: model.isOverspeeding,
+                                            onTap: { model.camera.trafficSignDetector.clearDetectedLimit() }
+                                        )
+                                        // Speed limit cleared micro-badge (DP.134 / DP.135)
+                                        if model.showSpeedLimitCleared {
+                                            Text(model.usesVietnamese ? "Hết hạn chế" : "Limit ended")
+                                                .font(.system(size: 10, weight: .bold, design: .rounded))
+                                                .foregroundColor(Color(red: 0.0, green: 0.902, blue: 0.463))  // Emerald
+                                                .padding(.horizontal, 6)
+                                                .padding(.vertical, 2)
+                                                .background(Color.black.opacity(0.6), in: Capsule())
+                                                .transition(.opacity.combined(with: .move(edge: .top)))
+                                        }
+                                    }
+                                    // DP.135 (End of All Restrictions) indicator
+                                    if model.showEndOfAllRestrictions {
+                                        VStack(spacing: 2) {
+                                            ZStack {
+                                                Circle()
+                                                    .fill(Color.white)
+                                                    .frame(width: 38, height: 38)
+                                                Circle()
+                                                    .stroke(Color.gray, lineWidth: 4)
+                                                    .frame(width: 38, height: 38)
+                                                Image(systemName: "slash.circle.fill")
+                                                    .font(.system(size: 18, weight: .bold))
+                                                    .foregroundColor(.gray)
+                                            }
+                                            .frame(width: 38, height: 38)
+                                            .shadow(color: Color.black.opacity(0.3), radius: 4)
+                                            Text(model.usesVietnamese ? "Hết tất cả" : "All ended")
+                                                .font(.system(size: 8, weight: .bold, design: .rounded))
+                                                .foregroundColor(.gray)
+                                                .padding(.horizontal, 4)
+                                                .padding(.vertical, 1)
+                                                .background(Color.black.opacity(0.5), in: Capsule())
+                                        }
+                                        .transition(.opacity.combined(with: .scale))
                                     }
                                 }
                             }
