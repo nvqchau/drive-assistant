@@ -130,10 +130,10 @@ final class AlertManager {
         utterance.rate = 0.48
         do {
             try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+            synthesizer.speak(utterance)
         } catch {
-            print("AlertManager: Failed to activate audio session for speech: \(error)")
+            print("AlertManager: Critical speech failed: \(error)")
         }
-        synthesizer.speak(utterance)
     }
 }
 
@@ -154,8 +154,10 @@ extension AlertManager {
             utterance.rate = 0.5
             do {
                 try AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
-            } catch { }
-            synthesizer.speak(utterance)
+                synthesizer.speak(utterance)
+            } catch {
+                print("AlertManager: Lane departure speech failed: \(error)")
+            }
         }
     }
 
@@ -173,8 +175,10 @@ extension AlertManager {
             utterance.rate = 0.48
             do {
                 try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
-            } catch { }
-            synthesizer.speak(utterance)
+                synthesizer.speak(utterance)
+            } catch {
+                print("AlertManager: Stop-and-go speech failed: \(error)")
+            }
         }
     }
 
@@ -248,8 +252,10 @@ extension AlertManager {
             utterance.rate = 0.48
             do {
                 try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
-            } catch { }
-            synthesizer.speak(utterance)
+                synthesizer.speak(utterance)
+            } catch {
+                print("AlertManager: Overspeed speech failed: \(error)")
+            }
         }
     }
 
@@ -299,8 +305,10 @@ extension AlertManager {
             utterance.rate = 0.48
             do {
                 try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
-            } catch { }
-            synthesizer.speak(utterance)
+                synthesizer.speak(utterance)
+            } catch {
+                print("AlertManager: Speed limit cleared speech failed: \(error)")
+            }
         }
     }
 
