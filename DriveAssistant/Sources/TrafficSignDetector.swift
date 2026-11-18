@@ -271,7 +271,7 @@ final class TrafficSignDetector: ObservableObject {
 
                     // Check for dark diagonal slash using FULL image
                     let darkDiagonalRatio = measureDarkDiagonalRatio(in: ciImage, normalizedBox: boundingBox, scale: 1.0)
-                    if darkDiagonalRatio >= 0.40 {
+                    if darkDiagonalRatio >= 0.50 {  // raised from 0.40 to avoid table/background false positives
                         foundEndOfAllRestrictions = true
                         break
                     }
