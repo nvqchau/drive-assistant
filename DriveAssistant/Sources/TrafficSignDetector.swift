@@ -236,7 +236,7 @@ final class TrafficSignDetector: ObservableObject {
                 for contour in contourObs.topLevelContours {
                     // VNContour has normalizedPoints - compute bounding box from points (crop-normalized)
                     let points = contour.normalizedPoints
-                    guard !points.isEmpty else { continue }
+                    guard !points.isEmpty, points.count >= 3 else { continue } // Need at least 3 points for a shape
                     var minX: Float = points[0].x
                     var maxX: Float = points[0].x
                     var minY: Float = points[0].y
@@ -248,6 +248,7 @@ final class TrafficSignDetector: ObservableObject {
                         maxY = Swift.max(maxY, pt.y)
                     }
                     let cropBox = CGRect(x: CGFloat(minX), y: CGFloat(minY), width: CGFloat(maxX - minX), height: CGFloat(maxY - minY))
+                    guard cropBox.width > 0, cropBox.height > 0 else { continue }
                     let aspectRatio = cropBox.width / cropBox.height
                     guard contourAspectRatioRange.contains(aspectRatio) else { continue }
                     guard cropBox.width >= 0.04 && cropBox.height >= 0.04 else { continue }
@@ -329,7 +330,7 @@ final class TrafficSignDetector: ObservableObject {
     /// Measure red ring strength using square-normalized bbox around digits.
     /// OCR bbox wraps tall/narrow digits (e.g., 0.065×0.100). We center a square of
     /// side = max(w,h) * expandedBoxScale (≈2.1) on the digit center — this encompasses
-    /// the full sign's red ring. Annulus sampled at normalized radius [0.36, 0.48].
+    /// the full sign's red ring. Annulus sampled at normalized radius [0.35, 0.75].
     private func measureRedRingRatio(in image: CIImage, normalizedBox: CGRect, scale: CGFloat) -> Float {
         return autoreleasepool {
             let extent = image.extent
@@ -340,6 +341,9 @@ final class TrafficSignDetector: ObservableObject {
                 width: normalizedBox.width * extent.width,
                 height: normalizedBox.height * extent.height
             )
+
+            // Guard against degenerate digit boxes
+            guard digitBox.width > 0, digitBox.height > 0 else { return 0 }
 
             // Square box centered on digits, sized to encompass sign's red ring
             let side = max(digitBox.width, digitBox.height) * scale
@@ -367,12 +371,15 @@ final class TrafficSignDetector: ObservableObject {
             let width = cgImage.width
             let height = cgImage.height
             let bytesPerRow = cgImage.bytesPerRow
-            guard bytesPerRow >= width * 4 else { return 0 }
+            guard width > 0, height > 0, bytesPerRow >= width * 4 else { return 0 }
+            // Ensure we have enough data bytes
+            let expectedBytes = height * bytesPerRow
+            guard CFDataGetLength(data) >= expectedBytes else { return 0 }
 
             var redStrongCount = 0
             var totalSampled = 0
 
-            // Sample pixels in circular annulus: center (0.5, 0.5), radius in [0.36, 0.48]
+            // Sample pixels in circular annulus: center (0.5, 0.5), radius in [0.35, 0.75]
             for y in 0..<height {
                 let v = Float(y) / Float(height)
                 let dy = v - 0.5
@@ -383,6 +390,8 @@ final class TrafficSignDetector: ObservableObject {
                     guard r >= redRingInnerRadius, r <= redRingOuterRadius else { continue }
 
                     let offset = y * bytesPerRow + x * 4
+                    // Bounds check
+                    guard offset + 2 < expectedBytes else { continue }
                     let rVal = bytes[offset]
                     let gVal = bytes[offset + 1]
                     let bVal = bytes[offset + 2]
@@ -412,6 +421,9 @@ final class TrafficSignDetector: ObservableObject {
                 height: normalizedBox.height * extent.height
             )
 
+            // Guard against degenerate digit boxes
+            guard digitBox.width > 0, digitBox.height > 0 else { return 0 }
+
             // Square box centered on digits, sized to encompass sign
             let side = max(digitBox.width, digitBox.height) * scale
             // Cap max square side to 200px (we scale down to 48px anyway) to limit memory
@@ -437,7 +449,9 @@ final class TrafficSignDetector: ObservableObject {
             let width = cgImage.width
             let height = cgImage.height
             let bytesPerRow = cgImage.bytesPerRow
-            guard bytesPerRow >= width * 4 else { return 0 }
+            guard width > 0, height > 0, bytesPerRow >= width * 4 else { return 0 }
+            let expectedBytes = height * bytesPerRow
+            guard CFDataGetLength(data) >= expectedBytes else { return 0 }
 
             var darkDiagonalCount = 0
             var totalSampled = 0
@@ -450,6 +464,8 @@ final class TrafficSignDetector: ObservableObject {
                     let antiDiagDist = abs((1.0 - u) - v)
                     if antiDiagDist < 0.14 {
                         let offset = y * bytesPerRow + x * 4
+                        // Bounds check
+                        guard offset + 2 < expectedBytes else { continue }
                         let r = Float(bytes[offset])
                         let g = Float(bytes[offset + 1])
                         let b = Float(bytes[offset + 2])

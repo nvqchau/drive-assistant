@@ -139,46 +139,46 @@ final class AlertManager {
 
 extension AlertManager {
     func playLaneDepartureAlert(speak: Bool) {
-        // Low-pitched double-pulse chime (220Hz A3) - clearly distinct from high-pitched collision beep (~880Hz)
-        playLowChime()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            self.playLowChime()
-        }
-
-        // Haptic feedback
-        hapticGenerator.notificationOccurred(.warning)
-
-        if speak {
-            let utterance = AVSpeechUtterance(string: "Cảnh báo lệch làn")
-            utterance.voice = AVSpeechSynthesisVoice(language: "vi-VN")
-            utterance.rate = 0.5
-            do {
-                try AVAudioSession.sharedInstance().setActive(true, options: .notifyOthersOnDeactivation)
-                synthesizer.speak(utterance)
-            } catch {
-                print("AlertManager: Lane departure speech failed: \(error)")
+        do {
+            // Low-pitched double-pulse chime (220Hz A3) - clearly distinct from high-pitched collision beep (~880Hz)
+            playLowChime()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                self.playLowChime()
             }
+
+            // Haptic feedback
+            hapticGenerator.notificationOccurred(.warning)
+
+            if speak {
+                let utterance = AVSpeechUtterance(string: "Cảnh báo lệch làn")
+                utterance.voice = AVSpeechSynthesisVoice(language: "vi-VN")
+                utterance.rate = 0.5
+                try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+                synthesizer.speak(utterance)
+            }
+        } catch {
+            print("AlertManager: Lane departure alert failed: \(error)")
         }
     }
 
     // MARK: - Stop-and-Go Alert (Lead Vehicle Departure)
     func playStopAndGoAlert(speak: Bool) {
-        // Ascending two-note chime: C5 (523.25 Hz) -> E5 (659.25 Hz), 0.15s apart
-        playAscendingChime(note1Freq: 523.25, note2Freq: 659.25, gap: 0.15)
+        do {
+            // Ascending two-note chime: C5 (523.25 Hz) -> E5 (659.25 Hz), 0.15s apart
+            playAscendingChime(note1Freq: 523.25, note2Freq: 659.25, gap: 0.15)
 
-        // Gentle success haptic
-        hapticGenerator.notificationOccurred(.success)
+            // Gentle success haptic
+            hapticGenerator.notificationOccurred(.success)
 
-        if speak {
-            let utterance = AVSpeechUtterance(string: "Xe phía trước đã di chuyển")
-            utterance.voice = AVSpeechSynthesisVoice(language: "vi-VN")
-            utterance.rate = 0.48
-            do {
+            if speak {
+                let utterance = AVSpeechUtterance(string: "Xe phía trước đã di chuyển")
+                utterance.voice = AVSpeechSynthesisVoice(language: "vi-VN")
+                utterance.rate = 0.48
                 try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
                 synthesizer.speak(utterance)
-            } catch {
-                print("AlertManager: Stop-and-go speech failed: \(error)")
             }
+        } catch {
+            print("AlertManager: Stop-and-go alert failed: \(error)")
         }
     }
 
@@ -237,25 +237,25 @@ extension AlertManager {
 // MARK: - Overspeed Alert (Speed Limit Sign Recognition)
 extension AlertManager {
     func playOverspeedAlert(limit: Int, speak: Bool) {
-        guard Date().timeIntervalSince(lastOverspeedAlert) >= overspeedAlertCooldown else { return }
-        lastOverspeedAlert = Date()
+        do {
+            guard Date().timeIntervalSince(lastOverspeedAlert) >= overspeedAlertCooldown else { return }
+            lastOverspeedAlert = Date()
 
-        // Sharp warning chime: high-pitched single beep (~880Hz A5) distinct from collision (~880Hz rapid)
-        playOverspeedChime()
+            // Sharp warning chime: high-pitched single beep (~880Hz A5) distinct from collision (~880Hz rapid)
+            playOverspeedChime()
 
-        // Error haptic for overspeed
-        hapticGenerator.notificationOccurred(.error)
+            // Error haptic for overspeed
+            hapticGenerator.notificationOccurred(.error)
 
-        if speak {
-            let utterance = AVSpeechUtterance(string: "Vượt quá tốc độ giới hạn \(limit) ki-lô-mét trên giờ")
-            utterance.voice = AVSpeechSynthesisVoice(language: "vi-VN")
-            utterance.rate = 0.48
-            do {
+            if speak {
+                let utterance = AVSpeechUtterance(string: "Vượt quá tốc độ giới hạn \(limit) ki-lô-mét trên giờ")
+                utterance.voice = AVSpeechSynthesisVoice(language: "vi-VN")
+                utterance.rate = 0.48
                 try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
                 synthesizer.speak(utterance)
-            } catch {
-                print("AlertManager: Overspeed speech failed: \(error)")
             }
+        } catch {
+            print("AlertManager: Overspeed alert failed: \(error)")
         }
     }
 
@@ -293,22 +293,22 @@ extension AlertManager {
 // MARK: - Speed Limit Cleared Alert (DP.134 / DP.135)
 extension AlertManager {
     func playSpeedLimitClearedAlert(speak: Bool) {
-        // Subtle neutral chime: descending two-note (E5 -> C5) softer than overspeed
-        playClearedChime()
+        do {
+            // Subtle neutral chime: descending two-note (E5 -> C5) softer than overspeed
+            playClearedChime()
 
-        // Light success haptic
-        hapticGenerator.notificationOccurred(.success)
+            // Light success haptic
+            hapticGenerator.notificationOccurred(.success)
 
-        if speak {
-            let utterance = AVSpeechUtterance(string: "Hết hạn chế tốc độ")
-            utterance.voice = AVSpeechSynthesisVoice(language: "vi-VN")
-            utterance.rate = 0.48
-            do {
+            if speak {
+                let utterance = AVSpeechUtterance(string: "Hết hạn chế tốc độ")
+                utterance.voice = AVSpeechSynthesisVoice(language: "vi-VN")
+                utterance.rate = 0.48
                 try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
                 synthesizer.speak(utterance)
-            } catch {
-                print("AlertManager: Speed limit cleared speech failed: \(error)")
             }
+        } catch {
+            print("AlertManager: Speed limit cleared alert failed: \(error)")
         }
     }
 
