@@ -360,9 +360,11 @@ final class TrafficSignDetector: ObservableObject {
         guard let cgImage = ciContext.createCGImage(scaledImage, from: scaledImage.extent, format: .RGBA8, colorSpace: colorSpace) else { return 0 }
         guard let data = cgImage.dataProvider?.data else { return 0 }
         let bytes = CFDataGetBytePtr(data)
+        guard let bytes = bytes else { return 0 }
         let width = cgImage.width
         let height = cgImage.height
         let bytesPerRow = cgImage.bytesPerRow
+        guard bytesPerRow >= width * 4 else { return 0 }
 
         var redStrongCount = 0
         var totalSampled = 0
@@ -378,9 +380,9 @@ final class TrafficSignDetector: ObservableObject {
                 guard r >= redRingInnerRadius, r <= redRingOuterRadius else { continue }
 
                 let offset = y * bytesPerRow + x * 4
-                let rVal = bytes?[offset] ?? 0
-                let gVal = bytes?[offset + 1] ?? 0
-                let bVal = bytes?[offset + 2] ?? 0
+                let rVal = bytes[offset]
+                let gVal = bytes[offset + 1]
+                let bVal = bytes[offset + 2]
                 if rVal >= redPixelThreshold,
                    Float(rVal) > Float(gVal) * redDominanceRatio,
                    Float(rVal) > Float(bVal) * redDominanceRatio {
@@ -424,9 +426,11 @@ final class TrafficSignDetector: ObservableObject {
         guard let cgImage = ciContext.createCGImage(scaledImage, from: scaledImage.extent, format: .RGBA8, colorSpace: colorSpace) else { return 0 }
         guard let data = cgImage.dataProvider?.data else { return 0 }
         let bytes = CFDataGetBytePtr(data)
+        guard let bytes = bytes else { return 0 }
         let width = cgImage.width
         let height = cgImage.height
         let bytesPerRow = cgImage.bytesPerRow
+        guard bytesPerRow >= width * 4 else { return 0 }
 
         var darkDiagonalCount = 0
         var totalSampled = 0
@@ -439,9 +443,9 @@ final class TrafficSignDetector: ObservableObject {
                 let antiDiagDist = abs((1.0 - u) - v)
                 if antiDiagDist < 0.14 {
                     let offset = y * bytesPerRow + x * 4
-                    let r = Float(bytes?[offset] ?? 0)
-                    let g = Float(bytes?[offset + 1] ?? 0)
-                    let b = Float(bytes?[offset + 2] ?? 0)
+                    let r = Float(bytes[offset])
+                    let g = Float(bytes[offset + 1])
+                    let b = Float(bytes[offset + 2])
                     let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
                     if luma < Float(darkLumaThreshold) {
                         darkDiagonalCount += 1
