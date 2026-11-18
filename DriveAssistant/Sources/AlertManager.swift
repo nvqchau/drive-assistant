@@ -13,12 +13,13 @@ final class AlertManager {
     private let audioSession = AVAudioSession.sharedInstance()
     private var interruptionObserver: NSObjectProtocol?
     private let hapticGenerator = UINotificationFeedbackGenerator()
-    
-    // AVAudioEngine for synthesized low-pitched chime (distinct from forward collision)
+
+    // AVAudioEngine for synthesized chimes
     private lazy var audioEngine = AVAudioEngine()
     private lazy var playerNode = AVAudioPlayerNode()
-    private let chimeFrequency: Double = 220.0  // A3 - low pitch (vs ~880Hz for collision)
+    private let chimeFrequency: Double = 220.0  // A3 - low pitch
     private let chimeDuration: Double = 0.18
+    private var engineStarted = false
 
     init() {
         configureAudioSession()
@@ -32,6 +33,7 @@ final class AlertManager {
             NotificationCenter.default.removeObserver(interruptionObserver)
         }
         audioEngine.stop()
+        engineStarted = false
     }
 
     private func configureAudioSession() {
@@ -40,6 +42,21 @@ final class AlertManager {
             try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
         } catch {
             print("AlertManager: Failed to configure audio session: \(error)")
+        }
+    }
+
+    private func ensureEngineRunning() -> Bool {
+        if engineStarted && audioEngine.isRunning {
+            return true
+        }
+        do {
+            try audioEngine.start()
+            engineStarted = true
+            return true
+        } catch {
+            print("AlertManager: Failed to start audio engine: \(error)")
+            engineStarted = false
+            return false
         }
     }
 
@@ -77,40 +94,36 @@ final class AlertManager {
     private func setupChimeEngine() {
         audioEngine.attach(playerNode)
         audioEngine.connect(playerNode, to: audioEngine.mainMixerNode, format: nil)
-        do {
-            try audioEngine.start()
-        } catch {
-            print("AlertManager: Failed to start audio engine: \(error)")
-        }
+        _ = ensureEngineRunning()
     }
 
     private func playLowChime() {
-        do {
-            let sampleRate = audioEngine.mainMixerNode.outputFormat(forBus: 0).sampleRate
-            guard sampleRate > 0 else { return }
-            let frameCount = AVAudioFrameCount(sampleRate * chimeDuration)
-            guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1),
-                  let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
+        guard ensureEngineRunning() else { return }
+        let sampleRate = audioEngine.mainMixerNode.outputFormat(forBus: 0).sampleRate
+        guard sampleRate > 0 else { return }
+        let frameCount = AVAudioFrameCount(sampleRate * chimeDuration)
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
 
-            buffer.frameLength = frameCount
-            let channelData = buffer.floatChannelData?[0]
-
-            // Generate low-pitched sine wave with quick decay envelope
-            for frame in 0..<Int(frameCount) {
-                let t = Double(frame) / sampleRate
-                let envelope = exp(-t * 8.0)  // Fast decay
-                let sample = sin(2.0 * .pi * chimeFrequency * t) * envelope * 0.3
-                channelData?[frame] = Float(sample)
-            }
-
-            playerNode.scheduleBuffer(buffer, at: nil, options: .interrupts, completionHandler: nil)
-            if !audioEngine.isRunning {
-                try audioEngine.start()
-            }
-            playerNode.play()
-        } catch {
-            print("AlertManager: Low chime failed: \(error)")
+        // Validate format matches player node output format
+        guard buffer.format.isEqual(playerNode.outputFormat(forBus: 0)) else {
+            print("AlertManager: Low chime buffer format mismatch")
+            return
         }
+
+        buffer.frameLength = frameCount
+        let channelData = buffer.floatChannelData?[0]
+
+        // Generate low-pitched sine wave with quick decay envelope
+        for frame in 0..<Int(frameCount) {
+            let t = Double(frame) / sampleRate
+            let envelope = exp(-t * 8.0)  // Fast decay
+            let sample = sin(2.0 * .pi * chimeFrequency * t) * envelope * 0.3
+            channelData?[frame] = Float(sample)
+        }
+
+        playerNode.scheduleBuffer(buffer, at: nil, options: .interrupts, completionHandler: nil)
+        playerNode.play()
     }
 
     func playWarningAlert() {
@@ -183,54 +196,52 @@ extension AlertManager {
     }
 
     private func playAscendingChime(note1Freq: Double, note2Freq: Double, gap: Double) {
-        do {
-            let sampleRate = audioEngine.mainMixerNode.outputFormat(forBus: 0).sampleRate
-            guard sampleRate > 0 else { return }
-            let noteDuration = 0.12
-            let frameCount = AVAudioFrameCount(sampleRate * noteDuration)
+        guard ensureEngineRunning() else { return }
+        let sampleRate = audioEngine.mainMixerNode.outputFormat(forBus: 0).sampleRate
+        guard sampleRate > 0 else { return }
+        let noteDuration = 0.12
+        let frameCount = AVAudioFrameCount(sampleRate * noteDuration)
 
-            guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1) else { return }
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1) else { return }
 
-            // Note 1
-            if let buffer1 = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) {
-                buffer1.frameLength = frameCount
-                let channelData = buffer1.floatChannelData?[0]
-                for frame in 0..<Int(frameCount) {
-                    let t = Double(frame) / sampleRate
-                    let envelope = exp(-t * 10.0)
-                    let sample = sin(2.0 * .pi * note1Freq * t) * envelope * 0.25
-                    channelData?[frame] = Float(sample)
-                }
-                playerNode.scheduleBuffer(buffer1, at: nil, options: .interrupts, completionHandler: nil)
-            }
-
-            // Note 2 (delayed)
-            DispatchQueue.main.asyncAfter(deadline: .now() + gap) { [weak self] in
-                guard let self,
-                      let buffer2 = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
-                buffer2.frameLength = frameCount
-                let channelData = buffer2.floatChannelData?[0]
-                for frame in 0..<Int(frameCount) {
-                    let t = Double(frame) / sampleRate
-                    let envelope = exp(-t * 10.0)
-                    let sample = sin(2.0 * .pi * note2Freq * t) * envelope * 0.25
-                    channelData?[frame] = Float(sample)
-                }
-                self.playerNode.scheduleBuffer(buffer2, at: nil, options: .interrupts, completionHandler: nil)
-                if !self.audioEngine.isRunning {
-                    try? self.audioEngine.start()
-                }
-                self.playerNode.play()
-            }
-
-            // Play first note immediately
-            if !audioEngine.isRunning {
-                try audioEngine.start()
-            }
-            playerNode.play()
-        } catch {
-            print("AlertManager: Ascending chime failed: \(error)")
+        // Validate format matches player node output format
+        guard format.isEqual(playerNode.outputFormat(forBus: 0)) else {
+            print("AlertManager: Ascending chime format mismatch")
+            return
         }
+
+        // Note 1
+        if let buffer1 = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) {
+            buffer1.frameLength = frameCount
+            let channelData = buffer1.floatChannelData?[0]
+            for frame in 0..<Int(frameCount) {
+                let t = Double(frame) / sampleRate
+                let envelope = exp(-t * 10.0)
+                let sample = sin(2.0 * .pi * note1Freq * t) * envelope * 0.25
+                channelData?[frame] = Float(sample)
+            }
+            playerNode.scheduleBuffer(buffer1, at: nil, options: .interrupts, completionHandler: nil)
+        }
+
+        // Note 2 (delayed)
+        DispatchQueue.main.asyncAfter(deadline: .now() + gap) { [weak self] in
+            guard let self,
+                  self.ensureEngineRunning(),
+                  let buffer2 = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
+            buffer2.frameLength = frameCount
+            let channelData = buffer2.floatChannelData?[0]
+            for frame in 0..<Int(frameCount) {
+                let t = Double(frame) / sampleRate
+                let envelope = exp(-t * 10.0)
+                let sample = sin(2.0 * .pi * note2Freq * t) * envelope * 0.25
+                channelData?[frame] = Float(sample)
+            }
+            self.playerNode.scheduleBuffer(buffer2, at: nil, options: .interrupts, completionHandler: nil)
+            self.playerNode.play()
+        }
+
+        // Play first note immediately
+        playerNode.play()
     }
 }
 
@@ -260,33 +271,33 @@ extension AlertManager {
     }
 
     private func playOverspeedChime() {
-        do {
-            let sampleRate = audioEngine.mainMixerNode.outputFormat(forBus: 0).sampleRate
-            guard sampleRate > 0 else { return }
-            let duration = 0.15
-            let frameCount = AVAudioFrameCount(sampleRate * duration)
-            let frequency = 880.0  // A5 - sharp warning pitch
+        guard ensureEngineRunning() else { return }
+        let sampleRate = audioEngine.mainMixerNode.outputFormat(forBus: 0).sampleRate
+        guard sampleRate > 0 else { return }
+        let duration = 0.15
+        let frameCount = AVAudioFrameCount(sampleRate * duration)
+        let frequency = 880.0  // A5 - sharp warning pitch
 
-            guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1),
-                  let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
 
-            buffer.frameLength = frameCount
-            let channelData = buffer.floatChannelData?[0]
-            for frame in 0..<Int(frameCount) {
-                let t = Double(frame) / sampleRate
-                let envelope = exp(-t * 12.0)  // Very fast decay for sharp beep
-                let sample = sin(2.0 * .pi * frequency * t) * envelope * 0.35
-                channelData?[frame] = Float(sample)
-            }
-
-            playerNode.scheduleBuffer(buffer, at: nil, options: .interrupts, completionHandler: nil)
-            if !audioEngine.isRunning {
-                try audioEngine.start()
-            }
-            playerNode.play()
-        } catch {
-            print("AlertManager: Overspeed chime failed: \(error)")
+        // Validate format matches player node output format
+        guard buffer.format.isEqual(playerNode.outputFormat(forBus: 0)) else {
+            print("AlertManager: Overspeed chime format mismatch")
+            return
         }
+
+        buffer.frameLength = frameCount
+        let channelData = buffer.floatChannelData?[0]
+        for frame in 0..<Int(frameCount) {
+            let t = Double(frame) / sampleRate
+            let envelope = exp(-t * 12.0)  // Very fast decay for sharp beep
+            let sample = sin(2.0 * .pi * frequency * t) * envelope * 0.35
+            channelData?[frame] = Float(sample)
+        }
+
+        playerNode.scheduleBuffer(buffer, at: nil, options: .interrupts, completionHandler: nil)
+        playerNode.play()
     }
 }
 
@@ -313,56 +324,51 @@ extension AlertManager {
     }
 
     private func playClearedChime() {
-        do {
-            let sampleRate = audioEngine.mainMixerNode.outputFormat(forBus: 0).sampleRate
-            guard sampleRate > 0 else { return }
-            let noteDuration = 0.10
-            let frameCount = AVAudioFrameCount(sampleRate * noteDuration)
+        guard ensureEngineRunning() else { return }
+        let sampleRate = audioEngine.mainMixerNode.outputFormat(forBus: 0).sampleRate
+        guard sampleRate > 0 else { return }
+        let noteDuration = 0.10
+        let frameCount = AVAudioFrameCount(sampleRate * noteDuration)
 
-            guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1) else { return }
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1) else { return }
 
-            // Note 1: E5 (659.25 Hz)
-            if let buffer1 = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) {
-                buffer1.frameLength = frameCount
-                let channelData = buffer1.floatChannelData?[0]
-                for frame in 0..<Int(frameCount) {
-                    let t = Double(frame) / sampleRate
-                    let envelope = exp(-t * 8.0)
-                    let sample = sin(2.0 * .pi * 659.25 * t) * envelope * 0.2
-                    channelData?[frame] = Float(sample)
-                }
-                playerNode.scheduleBuffer(buffer1, at: nil, options: .interrupts, completionHandler: nil)
-            }
-
-            // Note 2: C5 (523.25 Hz) - delayed 0.12s
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
-                guard let self else { return }
-                do {
-                    guard let buffer2 = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
-                    buffer2.frameLength = frameCount
-                    let channelData = buffer2.floatChannelData?[0]
-                    for frame in 0..<Int(frameCount) {
-                        let t = Double(frame) / sampleRate
-                        let envelope = exp(-t * 8.0)
-                        let sample = sin(2.0 * .pi * 523.25 * t) * envelope * 0.2
-                        channelData?[frame] = Float(sample)
-                    }
-                    self.playerNode.scheduleBuffer(buffer2, at: nil, options: .interrupts, completionHandler: nil)
-                    if !self.audioEngine.isRunning {
-                        try self.audioEngine.start()
-                    }
-                    self.playerNode.play()
-                } catch {
-                    print("AlertManager: Cleared chime note2 failed: \(error)")
-                }
-            }
-
-            if !audioEngine.isRunning {
-                try audioEngine.start()
-            }
-            playerNode.play()
-        } catch {
-            print("AlertManager: Cleared chime failed: \(error)")
+        // Validate format matches player node output format
+        guard format.isEqual(playerNode.outputFormat(forBus: 0)) else {
+            print("AlertManager: Cleared chime format mismatch")
+            return
         }
+
+        // Note 1: E5 (659.25 Hz)
+        if let buffer1 = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) {
+            buffer1.frameLength = frameCount
+            let channelData = buffer1.floatChannelData?[0]
+            for frame in 0..<Int(frameCount) {
+                let t = Double(frame) / sampleRate
+                let envelope = exp(-t * 8.0)
+                let sample = sin(2.0 * .pi * 659.25 * t) * envelope * 0.2
+                channelData?[frame] = Float(sample)
+            }
+            playerNode.scheduleBuffer(buffer1, at: nil, options: .interrupts, completionHandler: nil)
+        }
+
+        // Note 2: C5 (523.25 Hz) - delayed 0.12s
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+            guard let self,
+                  self.ensureEngineRunning(),
+                  let buffer2 = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
+            buffer2.frameLength = frameCount
+            let channelData = buffer2.floatChannelData?[0]
+            for frame in 0..<Int(frameCount) {
+                let t = Double(frame) / sampleRate
+                let envelope = exp(-t * 8.0)
+                let sample = sin(2.0 * .pi * 523.25 * t) * envelope * 0.2
+                channelData?[frame] = Float(sample)
+            }
+            self.playerNode.scheduleBuffer(buffer2, at: nil, options: .interrupts, completionHandler: nil)
+            self.playerNode.play()
+        }
+
+        // Play first note immediately
+        playerNode.play()
     }
 }
