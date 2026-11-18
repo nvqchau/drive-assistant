@@ -89,10 +89,19 @@ final class TrafficSignDetector: ObservableObject {
 
     /// Call from CameraManager.captureOutput for each frame.
     func processFrameIfNeeded(_ pixelBuffer: CVPixelBuffer) {
-        guard !isProcessing else { return }
+        guard !isProcessing else {
+            diagnostics?.record(type: "tsr_skip", details: "reason=processing")
+            return
+        }
         let now = CACurrentMediaTime()
-        guard now - lastProcessTime >= processInterval else { return }
-        guard thermalState != .critical else { return }
+        guard now - lastProcessTime >= processInterval else {
+            diagnostics?.record(type: "tsr_skip", details: "reason=interval")
+            return
+        }
+        guard thermalState != .critical else {
+            diagnostics?.record(type: "tsr_skip", details: "reason=thermal_critical")
+            return
+        }
 
         lastProcessTime = now
         isProcessing = true
@@ -117,6 +126,9 @@ final class TrafficSignDetector: ObservableObject {
             height: roiRect.height * extent.height
         )
         let croppedImage = ciImage.cropped(to: cropRect)
+
+        // ROI validation logging
+        diagnostics?.record(type: "tsr_roi", details: "cropRect=\(cropRect), extent=\(extent), roiRect=\(roiRect)")
 
         // Run Vision OCR for speed limit digits
         let ocrHandler = VNImageRequestHandler(ciImage: croppedImage, orientation: visionOrientation, options: [:])
@@ -246,7 +258,9 @@ final class TrafficSignDetector: ObservableObject {
 
                     // Check for dark diagonal slash inside this near-circular contour
                     let darkDiagonalRatio = measureDarkDiagonalRatio(in: croppedImage, normalizedBox: boundingBox, scale: 1.0)
-                    if darkDiagonalRatio >= 0.40 {
+                    let accepted = darkDiagonalRatio >= 0.40
+                    diagnostics?.record(type: "tsr_contour", details: "box=(\(String(format: "%.3f", boundingBox.minX)),\(String(format: "%.3f", boundingBox.minY)),\(String(format: "%.3f", boundingBox.width)),\(String(format: "%.3f", boundingBox.height))) ar=\(String(format: "%.2f", aspectRatio)) dd=\(String(format: "%.2f", darkDiagonalRatio)) accept=\(accepted)")
+                    if accepted {
                         foundEndOfAllRestrictions = true
                         break
                     }
@@ -267,18 +281,23 @@ final class TrafficSignDetector: ObservableObject {
                 lastMatchedLimit = limit
             }
 
+            diagnostics?.record(type: "tsr_state", details: "consecutiveMatchCount=\(consecutiveMatchCount) lastMatched=\(lastMatchedLimit?.description ?? "nil") newLimit=\(limit) action=P127_candidate")
+
             if consecutiveMatchCount >= requiredConsecutiveMatches {
                 DispatchQueue.main.async { [weak self] in
                     self?.detectedSpeedLimit = limit
                 }
+                diagnostics?.record(type: "tsr_state", details: "action=P127_confirmed limit=\(limit) consecutive=\(consecutiveMatchCount)")
             }
         }
         // Handle end-of-speed-limit detection (DP.134)
         else if foundEndOfSpeedLimit && detectedSpeedLimit != nil {
+            diagnostics?.record(type: "tsr_state", details: "action=DP134_candidate consecutive=\(endSignConsecutiveCount + 1)")
             handleEndSignDetection(.dp134)
         }
         // Handle end-of-all-restrictions detection (DP.135)
         else if foundEndOfAllRestrictions && detectedSpeedLimit != nil {
+            diagnostics?.record(type: "tsr_state", details: "action=DP135_candidate consecutive=\(endSignConsecutiveCount + 1)")
             handleEndSignDetection(.dp135)
         }
         // No relevant sign detected - reset end-sign counter
@@ -301,6 +320,7 @@ final class TrafficSignDetector: ObservableObject {
                 self?.detectedSpeedLimit = nil
                 self?.didClearSpeedLimitEvent = Date()
             }
+            diagnostics?.record(type: "tsr_state", details: "action=\(type)_confirmed cleared_limit=\(lastMatchedLimit?.description ?? "nil")")
             endSignConsecutiveCount = 0
             lastEndSignType = nil
             lastMatchedLimit = nil
@@ -332,8 +352,14 @@ final class TrafficSignDetector: ObservableObject {
 
         // Render with explicit RGBA8 format to guarantee R=bytes[0], G=bytes[1], B=bytes[2]
         let colorSpace = CGColorSpaceCreateDeviceRGB()
-        guard let cgImage = ciContext.createCGImage(scaledImage, from: scaledImage.extent, format: .RGBA8, colorSpace: colorSpace) else { return 0 }
-        guard let data = cgImage.dataProvider?.data else { return 0 }
+        guard let cgImage = ciContext.createCGImage(scaledImage, from: scaledImage.extent, format: .RGBA8, colorSpace: colorSpace) else {
+            diagnostics?.record(type: "tsr_render_fail", details: "type=redRing scaleFactor=\(scaleFactor) clampedBox=\(clampedBox)")
+            return 0
+        }
+        guard let data = cgImage.dataProvider?.data else {
+            diagnostics?.record(type: "tsr_render_fail", details: "type=redRing no_data_provider")
+            return 0
+        }
         let bytes = CFDataGetBytePtr(data)
         let width = cgImage.width
         let height = cgImage.height
@@ -366,7 +392,9 @@ final class TrafficSignDetector: ObservableObject {
         }
 
         guard totalSampled > 0 else { return 0 }
-        return Float(redStrongCount) / Float(totalSampled)
+        let ratio = Float(redStrongCount) / Float(totalSampled)
+        diagnostics?.record(type: "tsr_sampling", details: "type=redRing totalSampled=\(totalSampled) redStrong=\(redStrongCount) ratio=\(String(format: "%.3f", ratio))")
+        return ratio
     }
 
     /// Measure dark diagonal slash ratio (top-right to bottom-left anti-diagonal).
@@ -392,8 +420,14 @@ final class TrafficSignDetector: ObservableObject {
 
         // Render with explicit RGBA8 format to guarantee R=bytes[0], G=bytes[1], B=bytes[2]
         let colorSpace = CGColorSpaceCreateDeviceRGB()
-        guard let cgImage = ciContext.createCGImage(scaledImage, from: scaledImage.extent, format: .RGBA8, colorSpace: colorSpace) else { return 0 }
-        guard let data = cgImage.dataProvider?.data else { return 0 }
+        guard let cgImage = ciContext.createCGImage(scaledImage, from: scaledImage.extent, format: .RGBA8, colorSpace: colorSpace) else {
+            diagnostics?.record(type: "tsr_render_fail", details: "type=darkDiag scaleFactor=\(scaleFactor) clampedBox=\(clampedBox)")
+            return 0
+        }
+        guard let data = cgImage.dataProvider?.data else {
+            diagnostics?.record(type: "tsr_render_fail", details: "type=darkDiag no_data_provider")
+            return 0
+        }
         let bytes = CFDataGetBytePtr(data)
         let width = cgImage.width
         let height = cgImage.height
@@ -424,7 +458,9 @@ final class TrafficSignDetector: ObservableObject {
         }
 
         guard totalSampled > 0 else { return 0 }
-        return Float(darkDiagonalCount) / Float(totalSampled)
+        let ratio = Float(darkDiagonalCount) / Float(totalSampled)
+        diagnostics?.record(type: "tsr_sampling", details: "type=darkDiag totalSampled=\(totalSampled) darkCount=\(darkDiagonalCount) ratio=\(String(format: "%.3f", ratio))")
+        return ratio
     }
 
     /// Update thermal state (called from CameraManager)
