@@ -24,17 +24,17 @@ final class TrafficSignDetector: ObservableObject {
 
     // DP.134 / DP.135 detection thresholds
     private let endSignRequiredConsecutive = 2
-    private let expandedBoxScale: CGFloat = 3.2   // square-normalized: side = max(w,h) * 3.2 around digit bbox (encompasses full sign red ring)
-    private let redRingStrongThreshold: Float = 0.12  // relaxed further for screen/glare
+    private let expandedBoxScale: CGFloat = 4.0   // square-normalized: side = max(w,h) * 4.0 (encompasses full sign; red ring at ~1.5x digit height)
+    private let redRingStrongThreshold: Float = 0.10  // relaxed further for screen/glare
     private let darkDiagonalThreshold: Float = 0.35
     private let contourAspectRatioRange: ClosedRange<Double> = 0.75...1.30
     private let darkLumaThreshold: UInt8 = 90
 
     // Circular annulus sampling for red ring (normalized radius from center of square)
-    private let redRingInnerRadius: Float = 0.42
-    private let redRingOuterRadius: Float = 0.62
-    private let redPixelThreshold: UInt8 = 110
-    private let redDominanceRatio: Float = 1.10
+    private let redRingInnerRadius: Float = 0.35
+    private let redRingOuterRadius: Float = 0.75
+    private let redPixelThreshold: UInt8 = 100
+    private let redDominanceRatio: Float = 1.05
 
     // MARK: - State
     private var lastProcessTime: TimeInterval = 0
