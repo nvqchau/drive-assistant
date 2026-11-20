@@ -9,7 +9,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     private let manager = CLLocationManager()
     private let weatherService = WeatherService()
     private var stallTimer: Timer?
-    private let stallThreshold: TimeInterval = 5.0
+    private let stallThreshold: TimeInterval = 10.0  // increased from 5.0 to avoid urban GPS shading dropouts
 
     override init() {
         super.init()

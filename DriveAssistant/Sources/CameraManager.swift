@@ -642,19 +642,22 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
         // Get dynamic lane edges from LaneDetector (normalized 0...1, top-left origin)
         // Note: laneDetector processes frames at a lower rate, so check if it has recent data
         let dynamicLaneEdgesAvailable = laneDetector?.leftLaneConfidence ?? 0 > 0.5 && laneDetector?.rightLaneConfidence ?? 0 > 0.5
-        
+
         for observation in hoodFiltered {
             let box = observation.0
-            
+
             let bottomYFromTop = 1.0 - box.minY
             var isInLane = false
-            
+
+            let laneCenterX = 0.5 + laneOffset
+            let isLeftOfLaneCenter = box.midX < laneCenterX
+
             if dynamicLaneEdgesAvailable,
                let laneEdges = laneDetector?.getLaneEdgesAtY(bottomYFromTop, imageSize: cameraFrameSize) {
                 // Dynamic lane edges from detected road markings
                 let leftEdge = laneEdges.left
                 let rightEdge = laneEdges.right
-                
+
                 // Check if box center is within lane edges OR 40% bottom edge overlap
                 let centerInside = box.midX >= leftEdge && box.midX <= rightEdge
                 let boxLeft = box.minX
@@ -665,7 +668,12 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
                     let overlapRight = min(boxRight, rightEdge)
                     let overlapWidth = max(0, overlapRight - overlapLeft)
                     let edgeOverlap = overlapWidth / boxWidth >= 0.40
-                    isInLane = centerInside || edgeOverlap
+                    // Strict left-edge: if vehicle is left of lane center, require centerInside (no edgeOverlap)
+                    if isLeftOfLaneCenter {
+                        isInLane = centerInside
+                    } else {
+                        isInLane = centerInside || edgeOverlap
+                    }
                 }
             } else {
                 // Fallback to static trapezoid ROI
@@ -673,9 +681,14 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
                                                                       laneCenterOffsetX: laneOffset,
                                                                       truncateTopY: nil)
                 let bottomEdgeOverlap = Self.hasSufficientBottomEdgeOverlap(box: box, laneCenterOffsetX: laneOffset, bottomYFromTop: bottomYFromTop)
-                isInLane = bottomCenterInside || bottomEdgeOverlap
+                // Strict left-edge: if vehicle is left of lane center, require bottomCenterInside (no edgeOverlap)
+                if isLeftOfLaneCenter {
+                    isInLane = bottomCenterInside
+                } else {
+                    isInLane = bottomCenterInside || bottomEdgeOverlap
+                }
             }
-            
+
             if isInLane {
                 inROI.append(observation)
             } else {
@@ -750,11 +763,24 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
             pendingBox = nil
             pendingBoxFrames = 0
             diagnostics?.record(type: "target_switched", details: "newBox=\(candidate.0.debugDescription), confidence=\(candidate.1), label=\(candidate.2)")
+            // Oncoming lane suspect diagnostic
+            let laneOffset = currentLaneCenterOffsetX
+            if candidate.0.midX < (0.5 + laneOffset) - 0.035 {
+                diagnostics?.record(type: "oncoming_lane_suspect", details: "midX=\(String(format: "%.3f", candidate.0.midX)), box=\(candidate.0.debugDescription), laneOffset=\(String(format: "%.3f", laneOffset)), confidence=\(candidate.1), label=\(candidate.2)")
+            }
             return candidate
         }
         pendingBox = nil
         pendingBoxFrames = 0
-        return closestVehicle(in: observations)
+        let candidate = closestVehicle(in: observations)
+        // Oncoming lane suspect diagnostic for first selection
+        if let candidate {
+            let laneOffset = currentLaneCenterOffsetX
+            if candidate.0.midX < (0.5 + laneOffset) - 0.035 {
+                diagnostics?.record(type: "oncoming_lane_suspect", details: "midX=\(String(format: "%.3f", candidate.0.midX)), box=\(candidate.0.debugDescription), laneOffset=\(String(format: "%.3f", laneOffset)), confidence=\(candidate.1), label=\(candidate.2)")
+            }
+        }
+        return candidate
     }
 
     private func isPlausibleContinuation(from previous: CGRect, to candidate: CGRect) -> Bool {
@@ -847,8 +873,8 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
                                                 truncateTopY: CGFloat? = nil) -> Bool {
         let topY: CGFloat = 0.38
         let bottomY: CGFloat = 0.95
-        let topWidth: CGFloat = 0.22
-        let bottomWidth: CGFloat = 0.48
+        let topWidth: CGFloat = 0.16   // narrowed from 0.22 for narrow two-way streets
+        let bottomWidth: CGFloat = 0.42 // narrowed from 0.48
         
         guard yFromTop >= topY && yFromTop <= bottomY else { return false }
         
@@ -870,8 +896,8 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
     private static func hasSufficientBottomEdgeOverlap(box: CGRect, laneCenterOffsetX: Double, bottomYFromTop: CGFloat) -> Bool {
         let topY: CGFloat = 0.38
         let bottomY: CGFloat = 0.95
-        let topWidth: CGFloat = 0.22
-        let bottomWidth: CGFloat = 0.48
+        let topWidth: CGFloat = 0.16   // narrowed from 0.22
+        let bottomWidth: CGFloat = 0.42 // narrowed from 0.48
         
         let boxBottomY = box.minY
         let yFromTop = bottomYFromTop
