@@ -10,6 +10,8 @@ struct ContentView: View {
     @State private var screenshotFlash = false
     @State private var screenshotSaved = false
     @State private var isCapturingScreenshot = false
+    @State private var currentTimestamp = Date()
+    @State private var timestampTimer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
     private var activeStateColor: Color {
         switch model.alertState {
@@ -19,13 +21,15 @@ struct ContentView: View {
         }
     }
 
-    private func takeScreenshot() {
+    private func takeScreenshot(silent: Bool = false) {
         isCapturingScreenshot = true
 
-        // Flash screen
-        withAnimation(.easeInOut(duration: 0.08)) { screenshotFlash = true }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
-            withAnimation(.easeInOut(duration: 0.15)) { screenshotFlash = false }
+        if !silent {
+            // Flash screen
+            withAnimation(.easeInOut(duration: 0.08)) { screenshotFlash = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                withAnimation(.easeInOut(duration: 0.15)) { screenshotFlash = false }
+            }
         }
 
         // Allow SwiftUI to render CameraPreview hidden before capturing
@@ -66,7 +70,7 @@ struct ContentView: View {
                 PHPhotoLibrary.shared().performChanges({
                     PHAssetChangeRequest.creationRequestForAsset(from: composited)
                 }) { success, _ in
-                    if success {
+                    if success && !silent {
                         DispatchQueue.main.async { screenshotSaved = true }
                     }
                 }
@@ -90,7 +94,7 @@ struct ContentView: View {
                     HorizonOverlay(motion: model.motion)
                 }
 
-                LaneCarpet(cameraFrameSize: model.camera.cameraFrameSize, laneDetector: model.laneDetector, vehicleRect: screenBox, horizonY: model.motion.effectiveHorizonY, isLDWSEnabled: model.enableLaneDetection)
+                LaneCarpet(cameraFrameSize: model.camera.cameraFrameSize, laneDetector: model.laneDetector, vehicleRect: screenBox, horizonY: model.motion.effectiveHorizonY, laneCenterOffsetX: model.laneCenterOffsetX, isLDWSEnabled: model.enableLaneDetection)
 
                 if let screenBox {
                     VehicleTargetOverlay(screenRect: screenBox, distance: model.distance, color: activeStateColor)
@@ -157,7 +161,7 @@ struct ContentView: View {
     }
 
     private var hud: some View {
-        GeometryReader { _ in
+        GeometryReader { proxy in
             VStack {
                 HStack(alignment: .top) {
                     VStack(alignment: .leading, spacing: 8) {
@@ -220,6 +224,20 @@ struct ContentView: View {
 
                 Spacer()
 
+                // Live timestamp label (bottom-center, low-glare)
+                HStack {
+                    Spacer()
+                    Text(timestampString)
+                        .font(.system(size: 11, weight: .regular, design: .monospaced))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(Color.black.opacity(0.45), in: Capsule())
+                        .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
+                    Spacer()
+                }
+                .padding(.bottom, 8)
+
                 HStack(alignment: .bottom) {
                     DistanceCard(model: model, color: activeStateColor, nightDim: model.isNightThemeActive && !model.hudMirrorMode)
                     Spacer()
@@ -252,6 +270,18 @@ struct ContentView: View {
             }
         }
         .ignoresSafeArea(.all)
+        .onReceive(timestampTimer) { currentTimestamp = $0 }
+        .onChange(of: model.debugCaptureTrigger) { trigger in
+            if trigger != nil {
+                takeScreenshot(silent: true)
+            }
+        }
+    }
+
+    private var timestampString: String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "dd/MM/yyyy HH:mm:ss"
+        return formatter.string(from: currentTimestamp)
     }
 
 }
@@ -549,6 +579,7 @@ private struct LaneCarpet: View {
     @ObservedObject var laneDetector: LaneDetector
     let vehicleRect: CGRect?
     let horizonY: Double
+    let laneCenterOffsetX: Double
     let isLDWSEnabled: Bool
 
     var body: some View {
@@ -608,7 +639,7 @@ private struct LaneCarpet: View {
         .allowsHitTesting(false)
     }
     
-    private func buildLanePaths(canvasSize: CGSize, cameraFrameSize: CGSize) -> (left: Path, right: Path, fill: Path, leftColor: Color, rightColor: Color, showLeftAlert: Bool, showRightAlert: Bool) {
+        private func buildLanePaths(canvasSize: CGSize, cameraFrameSize: CGSize) -> (left: Path, right: Path, fill: Path, leftColor: Color, rightColor: Color, showLeftAlert: Bool, showRightAlert: Bool) {
         var leftPath = Path()
         var rightPath = Path()
         var fillPath = Path()
@@ -643,7 +674,11 @@ private struct LaneCarpet: View {
             showRightAlert = false
         }
         
-
+        // Clip lane carpet at lead vehicle's bottom edge (rear bumper)
+        let horizonTopY = canvasSize.height * horizonY
+        let bottomY = canvasSize.height
+        let effectiveTopY = vehicleRect.map { max(horizonTopY, min(bottomY, $0.maxY)) } ?? horizonTopY
+        
         if hasDynamicLanes {
             // Aspect-fill transform matching screenRect(forVisionBox:in:)
             let videoSize = cameraFrameSize
@@ -660,51 +695,129 @@ private struct LaneCarpet: View {
                 return CGPoint(x: rawX * scale + xOffset, y: rawY * scale + yOffset)
             }
 
-            let leftPoints = laneDetector.leftLanePoints.map(transformPoint)
-            let rightPoints = laneDetector.rightLanePoints.map(transformPoint)
+            var leftPoints = laneDetector.leftLanePoints.map(transformPoint)
+            var rightPoints = laneDetector.rightLanePoints.map(transformPoint)
 
-            leftPath.move(to: leftPoints[0])
-            for i in 1..<leftPoints.count {
-                leftPath.addLine(to: leftPoints[i])
+            // Clip dynamic curved rails to effectiveTopY (interpolate at boundary)
+            leftPoints = clipPointsToY(leftPoints, minY: effectiveTopY)
+            rightPoints = clipPointsToY(rightPoints, minY: effectiveTopY)
+
+            if !leftPoints.isEmpty && !rightPoints.isEmpty {
+                leftPath.move(to: leftPoints[0])
+                for i in 1..<leftPoints.count {
+                    leftPath.addLine(to: leftPoints[i])
+                }
+
+                rightPath.move(to: rightPoints[0])
+                for i in 1..<rightPoints.count {
+                    rightPath.addLine(to: rightPoints[i])
+                }
+
+                fillPath.move(to: leftPoints[0])
+                for point in leftPoints { fillPath.addLine(to: point) }
+                for point in rightPoints.reversed() { fillPath.addLine(to: point) }
+                fillPath.closeSubpath()
+
+                return (leftPath, rightPath, fillPath, leftColor, rightColor, showLeftAlert, showRightAlert)
             }
-
-            rightPath.move(to: rightPoints[0])
-            for i in 1..<rightPoints.count {
-                rightPath.addLine(to: rightPoints[i])
-            }
-
-            fillPath.move(to: leftPoints[0])
-            for point in leftPoints { fillPath.addLine(to: point) }
-            for point in rightPoints.reversed() { fillPath.addLine(to: point) }
-            fillPath.closeSubpath()
-
-        } else {
-
-            // Static fallback trapezoid
-            let topY = vehicleRect?.maxY ?? canvasSize.height * horizonY
-            let topWidth = vehicleRect?.width ?? canvasSize.width * 0.12
-            let topCenter = vehicleRect?.midX ?? canvasSize.width / 2
-            let bottomY = canvasSize.height
-            let bottomWidth = canvasSize.width * 0.36
-            let leftTop = CGPoint(x: topCenter - topWidth / 2, y: topY)
-            let rightTop = CGPoint(x: topCenter + topWidth / 2, y: topY)
-            let leftBottom = CGPoint(x: canvasSize.width / 2 - bottomWidth / 2, y: bottomY)
-            let rightBottom = CGPoint(x: canvasSize.width / 2 + bottomWidth / 2, y: bottomY)
-            
-            leftPath.move(to: leftBottom)
-            leftPath.addLine(to: leftTop)
-            
-            rightPath.move(to: rightTop)
-            rightPath.addLine(to: rightBottom)
-            
-            fillPath.move(to: leftTop)
-            fillPath.addLine(to: rightTop)
-            fillPath.addLine(to: rightBottom)
-            fillPath.addLine(to: leftBottom)
-            fillPath.closeSubpath()
+            // Fallback to static if clipping leaves nothing
         }
-        
+
+        // Static fallback trapezoid in NORMALIZED VIDEO SPACE (0..1, top-left origin)
+        // Matches CameraManager.isInsideForwardLaneROI static ROI and model.laneCenterOffsetX
+        let videoSize = cameraFrameSize
+        let scale = max(canvasSize.width / videoSize.width, canvasSize.height / videoSize.height)
+        let scaledVideoSize = CGSize(width: videoSize.width * scale, height: videoSize.height * scale)
+        let xOffset = (canvasSize.width - scaledVideoSize.width) / 2
+        let yOffset = (canvasSize.height - scaledVideoSize.height) / 2
+
+        func projectNorm(_ norm: CGPoint) -> CGPoint {
+            let rawX = norm.x * videoSize.width
+            let rawY = norm.y * videoSize.height
+            return CGPoint(x: rawX * scale + xOffset, y: rawY * scale + yOffset)
+        }
+
+        let centerXNorm = 0.5 + laneCenterOffsetX
+        let horizonTopYNorm = max(0.25, min(0.65, horizonY))
+        let bottomYNorm = 0.95
+        let topWidthNorm = 0.16
+        let bottomWidthNorm = 0.42
+
+        // Compute effectiveTopY in normalized video space (clip at lead vehicle bottom)
+        let effectiveTopYNorm: CGFloat
+        if let vRect = vehicleRect {
+            // Convert screen vehicleRect.maxY back to normalized video Y
+            let rawY = (vRect.maxY - yOffset) / scale
+            let normY = rawY / videoSize.height
+            effectiveTopYNorm = max(horizonTopYNorm, min(bottomYNorm, normY))
+        } else {
+            effectiveTopYNorm = horizonTopYNorm
+        }
+
+        // Interpolate top width at effectiveTopYNorm to preserve true perspective angle
+        let totalHeightNorm = bottomYNorm - horizonTopYNorm
+        let tNorm = totalHeightNorm > 0 ? (effectiveTopYNorm - horizonTopYNorm) / totalHeightNorm : 0
+        let clippedTopWidthNorm = topWidthNorm + (bottomWidthNorm - topWidthNorm) * tNorm
+
+        // Four corners in normalized video space
+        let leftTopNorm = CGPoint(x: centerXNorm - clippedTopWidthNorm / 2, y: effectiveTopYNorm)
+        let rightTopNorm = CGPoint(x: centerXNorm + clippedTopWidthNorm / 2, y: effectiveTopYNorm)
+        let leftBottomNorm = CGPoint(x: centerXNorm - bottomWidthNorm / 2, y: bottomYNorm)
+        let rightBottomNorm = CGPoint(x: centerXNorm + bottomWidthNorm / 2, y: bottomYNorm)
+
+        // Project all corners through aspect-fill transform
+        let leftTop = projectNorm(leftTopNorm)
+        let rightTop = projectNorm(rightTopNorm)
+        let leftBottom = projectNorm(leftBottomNorm)
+        let rightBottom = projectNorm(rightBottomNorm)
+
+        leftPath.move(to: leftBottom)
+        leftPath.addLine(to: leftTop)
+
+        rightPath.move(to: rightTop)
+        rightPath.addLine(to: rightBottom)
+
+        fillPath.move(to: leftTop)
+        fillPath.addLine(to: rightTop)
+        fillPath.addLine(to: rightBottom)
+        fillPath.addLine(to: leftBottom)
+        fillPath.closeSubpath()
+
         return (leftPath, rightPath, fillPath, leftColor, rightColor, showLeftAlert, showRightAlert)
+    }
+    
+    // Clip a point array to y >= minY, interpolating the exact crossing point
+    private func clipPointsToY(_ points: [CGPoint], minY: CGFloat) -> [CGPoint] {
+        guard points.count >= 2 else { return points }
+        var result: [CGPoint] = []
+        for i in 0..<points.count - 1 {
+            let p1 = points[i]
+            let p2 = points[i + 1]
+            let y1 = p1.y
+            let y2 = p2.y
+            
+            if y1 >= minY && y2 >= minY {
+                // Both below clip line — keep p1 (p2 will be handled next iteration or as last)
+                if i == 0 { result.append(p1) }
+            } else if y1 < minY && y2 >= minY {
+                // Crossing from above to below — add interpolated point at minY
+                let t = (minY - y1) / (y2 - y1)
+                let x = p1.x + (p2.x - p1.x) * t
+                result.append(CGPoint(x: x, y: minY))
+            } else if y1 >= minY && y2 < minY {
+                // Crossing from below to above — add p1 and interpolated point
+                if i == 0 { result.append(p1) }
+                let t = (minY - y1) / (y2 - y1)
+                let x = p1.x + (p2.x - p1.x) * t
+                result.append(CGPoint(x: x, y: minY))
+            }
+            // Both above — skip
+        }
+        // Ensure last point if it's below clip line
+        if let last = points.last, last.y >= minY, result.last?.x != last.x || result.last?.y != last.y {
+            result.append(last)
+        }
+        return result
     }
 }
 

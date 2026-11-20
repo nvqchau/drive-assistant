@@ -18,13 +18,13 @@ final class LaneDetector: ObservableObject {
     @Published private(set) var departureState: DepartureState = .none
     @Published private(set) var departureAlertActive = false
     @Published private(set) var isSpeedGated = false  // true when GPS speed < ldwsMinSpeedKmh
-    
+
     // MARK: - Departure State Machine
     enum DepartureState: Equatable {
         case none
         case driftingLeft
         case driftingRight
-        
+
         var color: Color {
             switch self {
             case .none: return .cyan
@@ -32,11 +32,15 @@ final class LaneDetector: ObservableObject {
             }
         }
     }
-    
+
     // MARK: - Private Properties
     private let queue = DispatchQueue(label: "drive-assistant.lane-detector", qos: .userInitiated)
     private let logger = Logger(subsystem: "vn.ai.driveassistant", category: "LaneDetector")
     private let ciContext = CIContext()
+    private weak var diagnostics: DiagnosticsLogStore?
+    private var lastDepartureAlertActive = false
+    private var lastDynamicMode = false
+    private var lastModeChangeTime: TimeInterval = 0
     
     // EMA smoothing for lane boundaries (α = 0.25 for steady rails over dashed lines)
     private var emaLeftLane: [CGPoint]?
@@ -57,11 +61,11 @@ final class LaneDetector: ObservableObject {
     private var minSpeedForDepartureAlert: Double = 50.0            // km/h (configurable, default 50)
     private let departureThresholdRatio: CGFloat = 0.08             // 8% of lane width
     
-    // ROI trapezoid params (matching CameraManager)
+    // ROI trapezoid params (matching CameraManager static ROI)
     private let roiTopY: CGFloat = 0.38
     private let roiBottomY: CGFloat = 0.95
-    private let roiTopWidth: CGFloat = 0.22
-    private let roiBottomWidth: CGFloat = 0.48
+    private let roiTopWidth: CGFloat = 0.16
+    private let roiBottomWidth: CGFloat = 0.42
     private var roiCenterOffsetX: CGFloat = -0.03
     
     // LDWS enabled flag
@@ -78,7 +82,11 @@ final class LaneDetector: ObservableObject {
     func setMinSpeedForDepartureAlert(_ speedKmh: Double) {
         minSpeedForDepartureAlert = speedKmh
     }
-    
+
+    func attachDiagnostics(_ diagnostics: DiagnosticsLogStore) {
+        self.diagnostics = diagnostics
+    }
+
     func processFrame(pixelBuffer: CVPixelBuffer, speedKMPH: Double) {
         queue.async { [weak self] in
             self?.detectLanes(pixelBuffer: pixelBuffer, speedKMPH: speedKMPH)
@@ -117,10 +125,22 @@ final class LaneDetector: ObservableObject {
             self.leftLaneConfidence = leftConf
             self.rightLaneConfidence = rightConf
             self.isLaneDetectionActive = leftConf > 0.5 || rightConf > 0.5
-            
+
             // Update speed gating status for HUD
             self.isSpeedGated = speedKMPH < self.minSpeedForDepartureAlert
-            
+
+            // Lane-mode transition logging (throttled to 5s)
+            let dynamicMode = leftConf > 0.5 && rightConf > 0.5
+            if dynamicMode != self.lastDynamicMode {
+                let now = CACurrentMediaTime()
+                if now - self.lastModeChangeTime >= 5.0 {
+                    self.lastModeChangeTime = now
+                    self.diagnostics?.record(type: "ldws_mode_changed",
+                        details: "dynamic=\(dynamicMode), leftConf=\(String(format: "%.2f", leftConf)), rightConf=\(String(format: "%.2f", rightConf)), speedKMPH=\(String(format: "%.1f", speedKMPH))")
+                }
+                self.lastDynamicMode = dynamicMode
+            }
+
             // Check lane departure with anti-false-positive logic
             self.checkLaneDeparture(speedKMPH: speedKMPH, vehicleCenterX: 0.5 + Double(self.roiCenterOffsetX))
         }
@@ -413,16 +433,17 @@ final class LaneDetector: ObservableObject {
     // MARK: - Lane Departure Detection (Anti-False-Positive)
     private func checkLaneDeparture(speedKMPH: Double, vehicleCenterX: Double) {
         let now = CACurrentMediaTime()
-        
+
         // Reset if LDWS disabled or speed gated
         if !isLDWSEnabled || speedKMPH < minSpeedForDepartureAlert {
             leftDepartureStartTime = nil
             rightDepartureStartTime = nil
             departureState = .none
             departureAlertActive = false
+            lastDepartureAlertActive = false
             return
         }
-        
+
         // Require both lanes with good confidence
         guard leftLaneConfidence > 0.5, rightLaneConfidence > 0.5,
               !leftLanePoints.isEmpty, !rightLanePoints.isEmpty else {
@@ -431,28 +452,28 @@ final class LaneDetector: ObservableObject {
             departureState = .none
             return
         }
-        
+
         // Get lane edges at bottom of ROI (normalized coordinates)
         let bottomLeftX = leftLanePoints.last?.x ?? 0
         let bottomRightX = rightLanePoints.last?.x ?? 1.0
         let laneWidth = bottomRightX - bottomLeftX
         let thresholdRatio = departureThresholdRatio  // 8% of lane width
-        
+
         // LEFT departure: vehicle within 8% of left edge OR crossing it
         let leftDistance = vehicleCenterX - bottomLeftX
         let isNearLeftEdge = leftDistance < thresholdRatio && leftDistance >= 0
         let hasCrossedLeft = leftDistance < 0
-        
+
         if hasCrossedLeft || isNearLeftEdge {
             if leftDepartureStartTime == nil { leftDepartureStartTime = now }
             let duration = now - leftDepartureStartTime!
-            
+
             if hasCrossedLeft {
                 departureState = .driftingLeft
             } else if duration >= departurePersistenceThreshold {
                 departureState = .driftingLeft
             }
-            
+
             // Trigger alert only on actual crossing with persistence + cooldown
             if hasCrossedLeft && duration >= departurePersistenceThreshold && now - lastDepartureAlertTime >= departureCooldown {
                 departureAlertActive = true
@@ -462,22 +483,22 @@ final class LaneDetector: ObservableObject {
             leftDepartureStartTime = nil
             if departureState == .driftingLeft { departureState = .none }
         }
-        
+
         // RIGHT departure: vehicle within 8% of right edge OR crossing it
         let rightDistance = bottomRightX - vehicleCenterX
         let isNearRightEdge = rightDistance < thresholdRatio && rightDistance >= 0
         let hasCrossedRight = rightDistance < 0
-        
+
         if hasCrossedRight || isNearRightEdge {
             if rightDepartureStartTime == nil { rightDepartureStartTime = now }
             let duration = now - rightDepartureStartTime!
-            
+
             if hasCrossedRight {
                 departureState = .driftingRight
             } else if duration >= departurePersistenceThreshold {
                 departureState = .driftingRight
             }
-            
+
             if hasCrossedRight && duration >= departurePersistenceThreshold && now - lastDepartureAlertTime >= departureCooldown {
                 departureAlertActive = true
                 lastDepartureAlertTime = now
@@ -486,11 +507,18 @@ final class LaneDetector: ObservableObject {
             rightDepartureStartTime = nil
             if departureState == .driftingRight { departureState = .none }
         }
-        
+
         // Clear alert after cooldown
         if departureAlertActive && now - lastDepartureAlertTime >= departureCooldown {
             departureAlertActive = false
         }
+
+        // Log departure alert on rising edge
+        if departureAlertActive && !lastDepartureAlertActive {
+            diagnostics?.record(type: "ldws_departure_alert",
+                details: "departureState=\(String(describing: departureState)), speedKMPH=\(String(format: "%.1f", speedKMPH)), leftConf=\(String(format: "%.2f", leftLaneConfidence)), rightConf=\(String(format: "%.2f", rightLaneConfidence))")
+        }
+        lastDepartureAlertActive = departureAlertActive
     }
     
     /// Get dynamic ROI polygon that snaps to detected lanes (for vehicle filtering)

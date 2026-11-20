@@ -87,6 +87,9 @@ final class DriveAssistantModel: ObservableObject {
     @Published var stopAndGoAlertEnabled: Bool = true {
         didSet { UserDefaults.standard.set(stopAndGoAlertEnabled, forKey: "stopAndGoAlertEnabled") }
     }
+    @Published var autoDebugScreenshotEnabled: Bool = true {
+        didSet { UserDefaults.standard.set(autoDebugScreenshotEnabled, forKey: "autoDebugScreenshotEnabled") }
+    }
 
     // Traffic Sign Recognition (TSR)
     @Published var enableSpeedSignRecognition: Bool = true {
@@ -102,6 +105,7 @@ final class DriveAssistantModel: ObservableObject {
     @Published private(set) var isOverspeeding: Bool = false
     @Published private(set) var showSpeedLimitCleared: Bool = false
     @Published private(set) var showEndOfAllRestrictions: Bool = false  // DP.135 indicator
+    @Published private(set) var debugCaptureTrigger: Date? = nil  // triggers silent auto-screenshot
 
     // Display Theme & Mirror Mode
     @Published var displayThemeMode: DisplayThemeMode = .auto {
@@ -155,6 +159,7 @@ final class DriveAssistantModel: ObservableObject {
     
     // For dynamic horizon calibration
     private var lastTrackedBox: CGRect?
+    private var previousLeadBoxForSwitch: CGRect?  // separate tracker for target-switch detection
     private var lastTrackedConfidence: Float = 0
     private var horizonCalibrationFrames = 0
 
@@ -214,6 +219,7 @@ final class DriveAssistantModel: ObservableObject {
         overspeedToleranceKmh = defaults.object(forKey: "overspeedToleranceKmh") as? Double ?? 3.0
         displayThemeMode = DisplayThemeMode(rawValue: defaults.string(forKey: "displayThemeMode") ?? "") ?? .auto
         hudMirrorMode = defaults.bool(forKey: "hudMirrorMode")
+        autoDebugScreenshotEnabled = defaults.object(forKey: "autoDebugScreenshotEnabled") as? Bool ?? true
         if hudMirrorMode {
             savedBrightness = UIScreen.main.brightness
             UIScreen.main.brightness = 1.0
@@ -226,6 +232,7 @@ final class DriveAssistantModel: ObservableObject {
         camera.enableSpeedSignRecognition = enableSpeedSignRecognition
         laneDetector.setROIOffset(laneCenterOffsetX)
         laneDetector.setMinSpeedForDepartureAlert(ldwsMinSpeedKmh)
+        laneDetector.attachDiagnostics(diagnostics)
 
         // Forward camera, location & motion changes to trigger reactive theme & calibration updates
         camera.objectWillChange
@@ -316,6 +323,25 @@ final class DriveAssistantModel: ObservableObject {
             }
             .store(in: &cancellables)
 
+        // Detect lead vehicle target switch (IoU < 0.15) — clear distance history to prevent fake closing speed
+        camera.$leadVehicleBox
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] box in
+                guard let self, let box = box else { return }
+                if let lastBox = self.previousLeadBoxForSwitch {
+                    let iou = self.intersectionOverUnion(lastBox, box)
+                    if iou < 0.15 {
+                        // Target switched (e.g., far car -> passing motorcycle) — reset history
+                        self.distanceHistory.removeAll(keepingCapacity: true)
+                        self.closingSpeedMPS = 0
+                        self.timeToCollision = nil
+                        self.diagnostics.record(type: "target_switched_iou", details: "iou=\(String(format: "%.2f", iou)) cleared_history")
+                    }
+                }
+                self.previousLeadBoxForSwitch = box
+            }
+            .store(in: &cancellables)
+
         // Lane departure alerts
         laneDetector.$departureAlertActive
             .receive(on: DispatchQueue.main)
@@ -340,18 +366,14 @@ final class DriveAssistantModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] eventDate in
                 guard let self, eventDate != nil else { return }
-                do {
-                    self.detectedSpeedLimit = nil
-                    self.isOverspeeding = false
-                    self.showSpeedLimitCleared = true
-                    self.alerts.playSpeedLimitClearedAlert(speak: self.voiceAlertsEnabled)
+                self.detectedSpeedLimit = nil
+                self.isOverspeeding = false
+                self.showSpeedLimitCleared = true
+                self.alerts.playSpeedLimitClearedAlert(speak: self.voiceAlertsEnabled)
 
-                    // Auto-hide micro-badge after 2.5s
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
-                        self?.showSpeedLimitCleared = false
-                    }
-                } catch {
-                    print("DriveAssistantModel: Speed limit cleared handling failed: \(error)")
+                // Auto-hide micro-badge after 2.5s
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+                    self?.showSpeedLimitCleared = false
                 }
             }
             .store(in: &cancellables)
@@ -369,10 +391,21 @@ final class DriveAssistantModel: ObservableObject {
             .combineLatest($overspeedToleranceKmh)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _, _ in
-                do {
-                    self?.updateOverspeedState()
-                } catch {
-                    print("DriveAssistantModel: updateOverspeedState failed: \(error)")
+                self?.updateOverspeedState()
+            }
+            .store(in: &cancellables)
+
+        // Auto-debug screenshot on suspected false detections + critical alerts (5s cooldown)
+        var lastDebugCaptureTime: TimeInterval = 0
+        diagnostics.eventPublisher
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] event in
+                guard let self, self.autoDebugScreenshotEnabled else { return }
+                let now = CACurrentMediaTime()
+                guard now - lastDebugCaptureTime >= 5.0 else { return }
+                if event.type == "oncoming_lane_suspect" || event.type == "oncoming_closing_speed_spike" || (event.type == "alert_state_changed" && (event.details?.contains("state=critical") ?? false)) {
+                    lastDebugCaptureTime = now
+                    self.debugCaptureTrigger = Date()
                 }
             }
             .store(in: &cancellables)
@@ -462,6 +495,13 @@ final class DriveAssistantModel: ObservableObject {
         let closingSpeed = max(0, (oldest.distance - distance) / elapsed)
         closingSpeedMPS = min(closingSpeed, maxClosingSpeedMPS)
         timeToCollision = closingSpeedMPS > 0.5 ? distance / closingSpeedMPS : nil
+
+        // Oncoming closing speed spike diagnostic: closing speed exceeds ego speed by >8 m/s
+        // while speed >= 15 km/h (indicates likely oncoming traffic false positive)
+        if speedKMPH >= 15 && closingSpeedMPS > (speedKMPH / 3.6) + 8.0 {
+            diagnostics.record(type: "oncoming_closing_speed_spike",
+                details: "speedKMPH=\(String(format: "%.1f", speedKMPH)), closingSpeedMPS=\(String(format: "%.1f", closingSpeedMPS)), distanceM=\(String(format: "%.1f", distance)), leadBox=\(camera.leadVehicleBox?.debugDescription ?? "nil")")
+        }
     }
 
     private func updateAlertState() {
@@ -471,14 +511,12 @@ final class DriveAssistantModel: ObservableObject {
             return
         }
 
-        let speedMPS = speedKMPH / 3.6
         let alertsSuppressed = distanceRuleMode == .vnLaw && speedKMPH < 10
         let isLowSpeedWarning = distanceRuleMode == .timeHeadway && speedKMPH < 10 && distance < 4
         let isWarning = !alertsSuppressed && speedKMPH >= 10 && distance < activeMinimumDistance
-        let isCriticalCandidate = speedKMPH >= 10 && (
-            (timeToCollision.map { $0 < 1.8 } ?? false) ||
-            distance < max(activeMinimumDistance, max(5.0, speedMPS * 1.0))
-        )
+        // TTC-based critical only above 25 km/h; below 25 km/h use absolute distance < 3.5m
+        let isCriticalCandidate = (speedKMPH >= 25.0 && (timeToCollision.map { $0 < 1.8 } ?? false)) ||
+            (speedKMPH < 25.0 && distance < 3.5)
 
         if isCriticalCandidate {
             criticalFrameCount += 1
@@ -614,6 +652,7 @@ final class DriveAssistantModel: ObservableObject {
             isOverspeeding = newOverspeeding
             if isOverspeeding {
                 alerts.playOverspeedAlert(limit: limit, speak: voiceAlertsEnabled)
+                diagnostics.record(type: "overspeed_alert", details: "speedKMPH=\(String(format: "%.1f", speedKMPH)), limit=\(limit), toleranceKmh=\(String(format: "%.1f", overspeedToleranceKmh))")
             }
         }
     }
