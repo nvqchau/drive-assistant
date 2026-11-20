@@ -16,8 +16,8 @@ final class TrafficSignDetector: ObservableObject {
 
     // MARK: - Configuration
     private let validSpeedLimits: Set<Int> = [30, 40, 50, 60, 70, 80, 90, 100, 120]
-    private let roiRect = CGRect(x: 0.45, y: 0.04, width: 0.53, height: 0.62)  // expanded for large roadside DP.134 signs
-    private let minimumTextHeight: Float = 0.018  // 1.8% of crop height for distant/medium signs
+    private let roiRect = CGRect(x: 0.45, y: 0.03, width: 0.55, height: 0.52)  // trim bottom to skip storefront signs (KFC, HOTEL, MASSAGE)
+    private let minimumTextHeight: Float = 0.024  // raised from 0.018 to skip low roadside banners
     private let processInterval: TimeInterval = 0.5  // 2 Hz
     private let requiredConsecutiveMatches = 2
     private let aspectRatioRange: ClosedRange<Double> = 0.45...2.0  // widened for tall/narrow digits (e.g., "60" ar≈0.62)
@@ -29,7 +29,7 @@ final class TrafficSignDetector: ObservableObject {
     private let redRingStrongThreshold: Float = 0.14  // genuine red ring discrimination
     private let darkDiagonalThreshold: Float = 0.28  // diagonal slash threshold for DP.134
     private let contourAspectRatioRange: ClosedRange<Double> = 0.75...1.30
-    private let darkLumaThreshold: UInt8 = 90
+    private let darkLumaThreshold: UInt8 = 115  // raised for screen-glare resilience
 
     // Circular annulus sampling for red ring (normalized radius from center of square)
     private let redRingInnerRadius: Float = 0.34
@@ -84,7 +84,7 @@ final class TrafficSignDetector: ObservableObject {
 
     private func configureContourRequest() {
         contourRequest.contrastAdjustment = 1.2
-        contourRequest.detectDarkOnLight = true
+        contourRequest.detectDarkOnLight = false  // detect bright white sign faces against sky/foliage
         contourRequest.maximumImageDimension = 512
     }
 
@@ -259,6 +259,8 @@ final class TrafficSignDetector: ObservableObject {
                     }
                     let cropBox = CGRect(x: CGFloat(minX), y: CGFloat(minY), width: CGFloat(maxX - minX), height: CGFloat(maxY - minY))
                     guard cropBox.width > 0, cropBox.height > 0 else { continue }
+                    // Ignore full-crop border contours (likely frame edges)
+                    guard cropBox.width < 0.85 && cropBox.height < 0.85 else { continue }
                     let aspectRatio = cropBox.width / cropBox.height
                     guard contourAspectRatioRange.contains(aspectRatio) else { continue }
                     guard cropBox.width >= 0.04 && cropBox.height >= 0.04 else { continue }
@@ -275,12 +277,12 @@ final class TrafficSignDetector: ObservableObject {
 
                     // Check for dark diagonal slash using FULL image
                     let darkDiagonalRatio = measureDarkDiagonalRatio(in: ciImage, normalizedBox: boundingBox, scale: 1.0)
-                    if darkDiagonalRatio >= 0.50 {  // raised from 0.40 to avoid table/background false positives
+                    if darkDiagonalRatio >= 0.32 {  // lowered from 0.50 for roadside sign detection at right margin
                         foundEndOfAllRestrictions = true
                         break
                     }
                     // Fallback: active speed limit + circular contour + diagonal but no OCR digits -> DP.134
-                    if detectedSpeedLimit != nil, !foundEndOfSpeedLimit, darkDiagonalRatio >= 0.25 {
+                    if detectedSpeedLimit != nil, !foundEndOfSpeedLimit, darkDiagonalRatio >= 0.22 {
                         foundEndOfSpeedLimitViaContour = true
                     }
                 }
@@ -432,7 +434,8 @@ final class TrafficSignDetector: ObservableObject {
     }
 
     /// Measure dark diagonal slash ratio using square-normalized bbox around digits.
-    /// Same square expansion as red ring. Samples anti-diagonal band |(1-u)-v| < 0.14.
+    /// Same square expansion as red ring. Samples anti-diagonal band |(1-u)-v| < 0.22 (widened).
+    /// Also verifies overall sign interior has >= 25% bright white pixels (luma > 150) to reject shadows/trees.
     private func measureDarkDiagonalRatio(in image: CIImage, normalizedBox: CGRect, scale: CGFloat) -> Float {
         return autoreleasepool {
             let extent = image.extent
@@ -476,32 +479,50 @@ final class TrafficSignDetector: ObservableObject {
             guard CFDataGetLength(data) >= expectedBytes else { return 0 }
 
             var darkDiagonalCount = 0
-            var totalSampled = 0
+            var totalDiagonalSampled = 0
+            var brightPixelCount = 0
+            var totalPixels = 0
 
-            // Sample pixels along anti-diagonal band: |(1 - u) - v| < 0.14
+            // Single pass: sample diagonal band + overall brightness
             for y in 0..<height {
                 let v = Float(y) / Float(height)
                 for x in 0..<width {
                     let u = Float(x) / Float(width)
+                    let offset = y * bytesPerRow + x * 4
+                    guard offset + 2 < expectedBytes else { continue }
+                    let r = Float(bytes[offset])
+                    let g = Float(bytes[offset + 1])
+                    let b = Float(bytes[offset + 2])
+                    let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+                    // Overall bright pixel check (sign face should be white)
+                    if luma > 150 {
+                        brightPixelCount += 1
+                    }
+                    totalPixels += 1
+
+                    // Anti-diagonal band: |(1 - u) - v| < 0.22 (widened from 0.14)
                     let antiDiagDist = abs((1.0 - u) - v)
-                    if antiDiagDist < 0.14 {
-                        let offset = y * bytesPerRow + x * 4
-                        // Bounds check
-                        guard offset + 2 < expectedBytes else { continue }
-                        let r = Float(bytes[offset])
-                        let g = Float(bytes[offset + 1])
-                        let b = Float(bytes[offset + 2])
-                        let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
-                        if luma < Float(darkLumaThreshold) {
+                    if antiDiagDist < 0.22 {
+                        if luma < Float(darkLumaThreshold) {  // darkLumaThreshold = 115
                             darkDiagonalCount += 1
                         }
-                        totalSampled += 1
+                        totalDiagonalSampled += 1
                     }
                 }
             }
 
-            guard totalSampled > 0 else { return 0 }
-            return Float(darkDiagonalCount) / Float(totalSampled)
+            guard totalDiagonalSampled > 0 else { return 0 }
+            let diagonalRatio = Float(darkDiagonalCount) / Float(totalDiagonalSampled)
+
+            // Require >= 25% bright white background (rejects dark trees/shadows)
+            guard totalPixels > 0 else { return 0 }
+            let brightRatio = Float(brightPixelCount) / Float(totalPixels)
+            if brightRatio < 0.25 {
+                return 0
+            }
+
+            return diagonalRatio
         }
     }
 

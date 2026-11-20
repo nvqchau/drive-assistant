@@ -146,6 +146,10 @@ struct SettingsView: View {
                     Toggle(model.usesVietnamese ? "Hiển thị xe ngoài làn" : "Show Out-of-Lane Vehicles", isOn: $model.showOutOfROIVehicles)
                 }
                 Section(model.usesVietnamese ? "Chẩn đoán" : "Diagnostics") {
+                    Toggle(model.usesVietnamese ? "Tự động chụp ảnh khi nghi ngờ lỗi" : "Auto-Capture Debug Snapshots", isOn: $model.autoDebugScreenshotEnabled)
+                    Text(model.usesVietnamese ? "Chụp ảnh tự động khi phát hiện xe ngược chiều hoặc tốc độ đóng cửa bất thường (có thời gian chờ 5s)." : "Auto-capture when oncoming vehicle or abnormal closing speed detected (5s cooldown).")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                     Button {
                         exportURL = model.exportDiagnostics()
                         isShareSheetPresented = true
