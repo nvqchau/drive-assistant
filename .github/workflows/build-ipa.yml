@@ -1,0 +1,42 @@
+name: Build DriveAssistant IPA
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch: # Cho phép bấm nút chạy thủ công bất cứ lúc nào
+
+jobs:
+  build-unsigned-ipa:
+    runs-on: macos-14 # Máy ảo Apple Silicon tốc độ cao
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Select latest Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Build Release App (Unsigned)
+        run: |
+          xcodebuild -project DriveAssistant.xcodeproj \
+            -scheme DriveAssistant \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            clean build
+
+      - name: Package into .ipa
+        run: |
+          mkdir -p Payload
+          cp -r build/Build/Products/Release-iphoneos/DriveAssistant.app Payload/
+          zip -r DriveAssistant-Release.ipa Payload
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DriveAssistant-Release-IPA
+          path: DriveAssistant-Release.ipa
+          retention-days: 7
