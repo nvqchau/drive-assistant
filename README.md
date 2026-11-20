@@ -1,6 +1,6 @@
 # DriveAssistant
 
-**DriveAssistant** is an experimental native iOS ADAS prototype built with **Swift**, **SwiftUI**, **AVFoundation**, **Vision**, **CoreML**, **CoreImage**, and **CoreMotion**. It uses the rear camera and GPS speed to estimate the distance to the closest detected vehicle ahead, visualize a dynamic forward-lane carpet with lane-departure warnings, warn when the gap falls below the configured threshold, and now recognizes Vietnam speed limit signs (P.127 / DP.134 / DP.135) to alert on overspeed and auto-clear stale limits.
+**DriveAssistant** is an experimental native iOS ADAS prototype built with **Swift**, **SwiftUI**, **AVFoundation**, **Vision**, **CoreML**, **CoreImage**, and **CoreMotion**. It uses the rear camera and GPS speed to estimate the distance to the closest detected vehicle ahead, visualize a dynamic forward-lane carpet with lane-departure warnings, warn when the gap falls below the configured threshold, and recognizes Vietnam speed limit signs (P.127 / DP.134 / DP.135) to alert on overspeed and auto-clear stale limits.
 
 > **Important:** This is not a certified or production-ready safety system. Monocular distance estimates can be wrong in low light, curves, hills, camera movement, occlusion, and when vehicle size changes. Use it only as a supplemental prototype while parked or during carefully supervised testing.
 
@@ -12,17 +12,24 @@
 - Runs the quantized **YOLOv8n** CoreML model (`yolov8n.mlpackage`) completely on device through Vision/CoreML; no camera frames leave the phone.
 - Keeps `car`, `truck`, `bus`, and `motorbike` observations with confidence ≥ `0.5` and minimum normalized box dimensions of `0.06`.
 - Merges overlapping detections (`IoU > 0.30`), tracks a lead target across frames, and requires three consecutive plausible frames before switching to a new target.
-- Filters detections to a fixed forward-road trapezoid spanning normalized `x = 0.38–0.62` at the top and `x = 0.20–0.80` near the bottom.
-- **Dynamic ROI override:** When lane detection is confident, the vehicle filter polygon snaps to the detected lane edges for tighter relevance.
-- Estimates distance from class-specific assumed physical widths (`car`: `1.8 m`, `truck`/`bus`: `2.5 m`, `motorbike`: `0.75 m`) divided by the smoothed bounding-box width, then applies the user calibration factor and hood offset.
-- Smooths distance with an EMA (`α = 0.3`) and derives closing speed/TTC from a `0.5 s` rolling distance history.
+- **Target switch protection:** Separate IoU tracker (`IoU < 0.15`) clears distance history on target swap (e.g., far car → passing motorcycle) to prevent fake closing-speed spikes.
+- Filters detections to a narrowed static forward-road trapezoid: top `x = 0.42–0.58` (width `0.16`), bottom `x = 0.29–0.71` (width `0.42`) in normalized video space.
+- **Strict left-edge filter:** For boxes with `midX < 0.5 + laneOffset`, only center/bottom-center inside ROI is accepted (edge overlap disabled) to reject oncoming/storefront detections; emits `oncoming_lane_suspect` diagnostic with midX, confidence, laneOffset.
+- **Dynamic ROI override:** When lane detection is confident, the vehicle filter polygon snaps to detected lane edges for tighter relevance.
+- Estimates distance from class-specific assumed physical widths (`car`: `1.8 m`, `truck`/`bus`: `2.5 m`, `motorbike`: `0.75 m`) divided by smoothed bounding-box width, then applies user calibration factor and hood offset.
+- Smooths distance with EMA (`α = 0.3`), derives closing speed/TTC from `0.5 s` rolling history.
+- **TTC critical threshold:** Critical alerts only fire when GPS speed ≥ `25 km/h` (prevents false criticals at standstill); below `25 km/h` uses distance `< 3.5 m` gate instead.
 
 ### Lane detection & LDWS (Lane Departure Warning System)
 - **CoreImage + Vision contours** pipeline (no second CoreML model): enhances white/yellow lane markings in the lower road ROI, detects contours, classifies left/right by ROI center, fits quadratic curves, and applies EMA smoothing (`α = 0.25`) with a 15-frame grace window.
+- **ROI geometry:** Static trapezoid in normalized video space (top `0.38`, bottom `0.95`, top width `0.16`, bottom width `0.42`, center offset `laneCenterOffsetX`) — shared by CameraManager static ROI, LaneDetector, and ContentView static fallback.
 - **Departure state machine:** `none` → `driftingLeft`/`driftingRight` (orange) when vehicle center is within 8% of a lane edge for `≥ 0.4 s`, or crosses it. Alert fires only on actual crossing with persistence + 3 s cooldown.
 - **Speed gating:** LDWS only arms when GPS speed ≥ configurable threshold (default `50 km/h`, range `40–70 km/h`).
 - **HUD visualization:** Dynamic curved lane carpet fading toward horizon; color shifts cyan → orange → red on drift/alert with pulsing dashed red on departure.
+- **Lane carpet clipping:** Static fallback trapezoid clipped at lead vehicle rear bumper (`vehicleRect.maxY`) with perspective-preserving linear interpolation of top width. Dynamic curved rails clipped at same boundary via exact Y-interpolation.
+- **Static fallback projection:** When dynamic lanes unavailable, static trapezoid defined in normalized video coordinates (`0...1` top-left origin) and projected through exact same `aspectFill` transform (`scale`, `xOffset`, `yOffset` using `cameraFrameSize`) as dynamic lanes — pixel-perfect alignment with CameraManager's lane filter boundaries on 19.5:9 screen.
 - **Out-of-ROI vehicles:** Subtle gray boxes for vehicles detected outside the lane polygon (no alerts).
+- **Diagnostics:** Emits `ldws_departure_alert` (on rising edge) and `ldws_mode_changed` (dynamic↔static, throttled to 5 s) events.
 
 ### Traffic Sign Recognition (TSR) — Vietnam P.127 / DP.134 / DP.135
 - **Lightweight OCR + pixel analysis** at 2 Hz on upper-right ROI (`x: 0.48–0.98`, `y: 0.05–0.55`), no second CoreML model.
@@ -78,11 +85,14 @@
 - **HUD Mirror Mode:** Vertically flips the view for windshield reflection; sets screen brightness to maximum, restores on exit.
 - **Eco Black HUD:** Replaces live video with black background to reduce power and heat.
 - **Glass effect:** Ultra-thin material cards/pills with night-dim variant.
-- **Screenshot capture:** Flash animation + composites live camera frame + HUD overlay into Photos library.
+- **Screenshot capture:** Flash animation + composites live camera frame + HUD overlay into Photos library. **Silent auto-capture** (no flash/alert) on critical alerts and anomaly events via `debugCaptureTrigger`.
+- **Live timestamp:** Bottom-center HUD label `dd/MM/yyyy HH:mm:ss` (11 pt monospaced), updates via 1 s timer.
 - Settings expose: Distance rule, calibration factor, hood offset, lane center offset, time headway, road condition, language (VI/EN), voice alerts, LDWS enable + speed threshold, display theme, mirror mode, Eco HUD, glass effect, horizon guide, out-of-lane vehicles, mount calibration save/reset.
 - **TSR Settings:** "Nhận diện biển báo tốc độ" toggle (default on) + "Dung sai vượt giới hạn" slider `0–10 km/h`.
 - **Stop-and-Go Settings:** "Nhắc xe trước di chuyển" toggle (default on).
-- Diagnostics records session, alert, orientation, camera-performance, inference, thermal, target-switch, lane-detection, and anonymized detection-box events to an in-memory JSON export. The temporary export file is not persisted automatically and can be cleared from Settings.
+- **Diagnostics Settings:** "Tự động chụp ảnh khi nghi ngờ lỗi" toggle (default on, persisted) — auto-captures silent screenshots on `oncoming_lane_suspect`, `oncoming_closing_speed_spike`, and critical alerts (shared 5 s cooldown).
+- **DiagnosticsLogStore:** Persistent daily JSONL logging to `Documents/DriveAssistantLogs/DriveAssistant-yyyy-MM-dd.jsonl` (async append on serial background queue). In-memory ring buffer (5000 events) + `eventPublisher` PassthroughSubject for real-time observers. Export reads today's daily log if in-memory empty. `clear()` deletes all `.jsonl` files.
+- **Anomaly event types:** `target_switched_iou`, `oncoming_lane_suspect`, `oncoming_closing_speed_spike`, `ldws_departure_alert`, `ldws_mode_changed`, `overspeed_alert`, `stop_and_go_alert`, `mount_shifted`, `alert_state_changed` (with `state=warning/critical/clear` + `reason=ttc|distance_below_3.5m`).
 
 ---
 
@@ -105,10 +115,10 @@ DriveAssistant/
         ├── LocationManager.swift      # When-in-use GPS speed/accuracy, astronomical night, weather trigger
         ├── WeatherService.swift       # Rate-limited Open-Meteo dry/wet lookup
         ├── AlertManager.swift         # Cooldowns, system sounds, Vietnamese speech, synthesized chimes (AVAudioEngine)
-        ├── DiagnosticsLogStore.swift  # In-memory diagnostics and JSON export
-        ├── LaneDetector.swift         # CoreImage/Vision contour lane detection, EMA, LDWS state machine
-        ├── MotionManager.swift        # CMMotionManager gravity-vector attitude, mount profile, horizon calibration
-        └── TrafficSignDetector.swift  # Vision OCR + red-ring/diagonal pixel analysis for P.127/DP.134/DP.135 (2 Hz)
+        ├── DiagnosticsLogStore.swift  # Persistent daily JSONL logging + in-memory ring buffer (5000), eventPublisher, export/clear
+        ├── LaneDetector.swift         # CoreImage/Vision contour lane detection, EMA, LDWS state machine, departure/mode diagnostics
+        ├── MotionManager.swift        # CMMotionManager gravity-vector attitude, mount profile, horizon calibration, mount-shift (2 s @ 3.5°)
+        └── TrafficSignDetector.swift  # Vision OCR + red-ring/diagonal pixel analysis for P.127/DP.134/DP.135 (2 Hz), contour DP.135
 ```
 
 The app intentionally avoids a separate distance manager: `CameraManager` owns Vision and tracking outputs, `LaneDetector` owns lane geometry, `MotionManager` owns horizon alignment, `TrafficSignDetector` owns TSR, while `DriveAssistantModel` combines those outputs with GPS, road condition, settings, and alert state.
@@ -145,6 +155,11 @@ The CoreML model (`yolov8n.mlpackage`) is included in the repository and configu
    ```
 5. Install with Xcode devices, Apple Configurator, `ideviceinstaller`, or another sideloading tool.
 
+### CI / GitHub Actions
+- **Workflow:** `.github/workflows/build-ipa.yml` builds unsigned Release IPA on `macos-14` on every push to `main` and via `workflow_dispatch`.
+- **Artifact:** `DriveAssistant-Release.ipa` uploaded with 7-day retention.
+- **Build flags:** `CODE_SIGNING_ALLOWED=NO`, `CODE_SIGNING_REQUIRED=NO`, `CODE_SIGN_IDENTITY=""`.
+
 ---
 
 ## Calibration
@@ -177,8 +192,9 @@ The CoreML model (`yolov8n.mlpackage`) is included in the repository and configu
 - The dynamic ROI for vehicle filtering snaps to detected lanes but falls back to the fixed trapezoid when confidence is low.
 - TSR runs on upper-right ROI only; signs on left, center gantry, or partially occluded may be missed. Red-ring verification needs daylight-level illumination.
 - DP.134/DP.135 detection relies on clear diagonal slash contrast; faded or non-standard signs may not trigger.
-- There is no persistent log rotation. Diagnostics are cleared on app restart and held in memory until exported.
+- Diagnostics persist daily as JSONL (`DriveAssistant-yyyy-MM-dd.jsonl`) in `Documents/DriveAssistantLogs/`; export reads today's log if in-memory buffer empty. No automatic log rotation (manual clear from Settings).
 - Weather-based wet mode depends on network availability and uses coarse Open-Meteo conditions rather than direct road-surface sensing.
+- **GPS stall detection:** If GPS speed < `1 km/h` for `> 10 s` while moving previously, `isSpeedStalled` flags true (prevents stale speed from triggering false alerts).
 - Thermal throttling reduces inference FPS; prolonged use in direct sun may pause detection entirely.
 - HUD Mirror Mode requires a reflective windshield surface; brightness is set to maximum and restored on exit.
 - Avoid public-road use until tracking, calibration, permissions, thermal behavior, and alert timing have been validated on a closed course.
