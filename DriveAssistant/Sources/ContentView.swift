@@ -121,14 +121,26 @@ struct ContentView: View {
 
             let bounds = window.bounds
 
+            // Save original backgrounds to restore after HUD capture
+            let originalWindowBg = window.backgroundColor
+            let originalRootViewBg = window.rootViewController?.view.backgroundColor
+
+            // Force transparent backgrounds so HUD layer captures without black window background
+            window.backgroundColor = .clear
+            window.rootViewController?.view.backgroundColor = .clear
+
             // Capture HUD layer into transparent UIImage (opaque=false)
             let hudFormat = UIGraphicsImageRendererFormat()
             hudFormat.opaque = false
             hudFormat.scale = UIScreen.main.scale
             let hudRenderer = UIGraphicsImageRenderer(bounds: bounds, format: hudFormat)
-            let hudImage = hudRenderer.image { _ in
-                window.layer.render(in: UIGraphicsGetCurrentContext()!)
+            let hudImage = hudRenderer.image { ctx in
+                window.layer.render(in: ctx.cgContext)
             }
+
+            // Restore original backgrounds immediately
+            window.backgroundColor = originalWindowBg
+            window.rootViewController?.view.backgroundColor = originalRootViewBg
 
             // Composite camera + HUD into final opaque image
             let renderer = UIGraphicsImageRenderer(bounds: bounds)

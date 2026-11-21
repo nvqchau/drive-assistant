@@ -41,17 +41,21 @@ final class LaneDetector: ObservableObject {
     private var lastDepartureAlertActive = false
     private var lastDynamicMode = false
     private var lastModeChangeTime: TimeInterval = 0
-    
+
+    // Thread-safety lock for config accessed from main thread (setROIOffset, setLDWSEnabled, setMinSpeedForDepartureAlert)
+    // and background queue (detectLanes, checkLaneDeparture)
+    private let configLock = NSLock()
+
     // EMA smoothing for lane boundaries (α = 0.25 for steady rails over dashed lines)
     private var emaLeftLane: [CGPoint]?
     private var emaRightLane: [CGPoint]?
     private let emaAlpha: CGFloat = 0.25
-    
+
     // Grace window: hold last confident fit for 0.5s (~15 frames at 30fps) before fading
     private var framesSinceConfidentLeft = 0
     private var framesSinceConfidentRight = 0
     private let graceFrames = 15
-    
+
     // Lane departure state machine
     private var leftDepartureStartTime: TimeInterval?
     private var rightDepartureStartTime: TimeInterval?
@@ -60,27 +64,33 @@ final class LaneDetector: ObservableObject {
     private let departureCooldown: TimeInterval = 3.0               // 3s cooldown
     private var minSpeedForDepartureAlert: Double = 50.0            // km/h (configurable, default 50)
     private let departureThresholdRatio: CGFloat = 0.08             // 8% of lane width
-    
+
     // ROI trapezoid params (matching CameraManager static ROI)
     private let roiTopY: CGFloat = 0.38
     private let roiBottomY: CGFloat = 0.95
     private let roiTopWidth: CGFloat = 0.16
     private let roiBottomWidth: CGFloat = 0.54  // widened from 0.42 to match real road markings
     private var roiCenterOffsetX: CGFloat = -0.03
-    
+
     // LDWS enabled flag
     private var isLDWSEnabled = true
     
     func setROIOffset(_ offset: Double) {
+        configLock.lock()
         roiCenterOffsetX = CGFloat(offset)
+        configLock.unlock()
     }
-    
+
     func setLDWSEnabled(_ enabled: Bool) {
+        configLock.lock()
         isLDWSEnabled = enabled
+        configLock.unlock()
     }
-    
+
     func setMinSpeedForDepartureAlert(_ speedKmh: Double) {
+        configLock.lock()
         minSpeedForDepartureAlert = speedKmh
+        configLock.unlock()
     }
 
     func attachDiagnostics(_ diagnostics: DiagnosticsLogStore) {
@@ -127,7 +137,11 @@ final class LaneDetector: ObservableObject {
             self.isLaneDetectionActive = leftConf > 0.5 || rightConf > 0.5
 
             // Update speed gating status for HUD
-            self.isSpeedGated = speedKMPH < self.minSpeedForDepartureAlert
+            self.configLock.lock()
+            let minSpeed = self.minSpeedForDepartureAlert
+            let roiOffset = self.roiCenterOffsetX
+            self.configLock.unlock()
+            self.isSpeedGated = speedKMPH < minSpeed
 
             // Lane-mode transition logging (throttled to 5s)
             let dynamicMode = leftConf > 0.5 && rightConf > 0.5
@@ -142,7 +156,7 @@ final class LaneDetector: ObservableObject {
             }
 
             // Check lane departure with anti-false-positive logic
-            self.checkLaneDeparture(speedKMPH: speedKMPH, vehicleCenterX: 0.5 + Double(self.roiCenterOffsetX))
+            self.checkLaneDeparture(speedKMPH: speedKMPH, vehicleCenterX: 0.5 + Double(roiOffset))
         }
     }
     
@@ -209,7 +223,9 @@ final class LaneDetector: ObservableObject {
         var leftLines: [VNContour] = []
         var rightLines: [VNContour] = []
 
+        configLock.lock()
         let normalizedRoiCenterX = 0.5 + roiCenterOffsetX
+        configLock.unlock()
 
         for contour in contours {
             let points = contour.normalizedPoints
@@ -278,6 +294,7 @@ final class LaneDetector: ObservableObject {
     /// Fit linear perspective line x = slope * y + intercept using least-squares.
     /// Validate realistic perspective slope: left lane converges right (-1.8 <= m <= -0.15),
     /// right lane converges left (0.15 <= m <= 1.8). Requires >= 4 points.
+    /// Also prevent left/right crossover: top X at roiTopY must stay on correct side of centerX.
     private func fitLinear(points: [CGPoint], imageSize: CGSize, isLeft: Bool) -> [CGPoint]? {
         guard points.count >= 4 else { return nil }
 
@@ -322,11 +339,23 @@ final class LaneDetector: ObservableObject {
             fittedPoints.append(CGPoint(x: clampedX, y: y))
         }
 
+        // Read config under lock
+        configLock.lock()
         let centerX = 0.5 + roiCenterOffsetX
+        configLock.unlock()
+
         let avgX = fittedPoints.map { $0.x }.reduce(0, +) / Double(fittedPoints.count)
 
         if isLeft && avgX > centerX { return nil }
         if !isLeft && avgX < centerX { return nil }
+
+        // Prevent crossover: verify top X (at roiTopY) stays on correct side with margin
+        let topX = slope * roiTopY + intercept
+        if isLeft {
+            guard topX < centerX - 0.02 else { return nil }
+        } else {
+            guard topX > centerX + 0.02 else { return nil }
+        }
 
         return fittedPoints
     }
@@ -402,7 +431,12 @@ final class LaneDetector: ObservableObject {
         let now = CACurrentMediaTime()
 
         // Reset if LDWS disabled or speed gated
-        if !isLDWSEnabled || speedKMPH < minSpeedForDepartureAlert {
+        configLock.lock()
+        let ldwsEnabled = isLDWSEnabled
+        let minSpeed = minSpeedForDepartureAlert
+        configLock.unlock()
+
+        if !ldwsEnabled || speedKMPH < minSpeed {
             leftDepartureStartTime = nil
             rightDepartureStartTime = nil
             departureState = .none

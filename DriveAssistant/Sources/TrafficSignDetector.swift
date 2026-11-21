@@ -88,7 +88,8 @@ final class TrafficSignDetector: ObservableObject {
         var advisoryKey: String? { if case .advisory(let k) = self { return k } else { return nil } }
     }
 
-    // MARK: - State
+    // MARK: - State (protected by stateLock for thread-safety between main thread and background queue)
+    private let stateLock = NSLock()
     private var lastProcessTime: TimeInterval = 0
     private var consecutiveMatchCount = 0
     private var lastMatchedLimit: Int?
@@ -212,9 +213,6 @@ final class TrafficSignDetector: ObservableObject {
             let bestConfidence = bestSpeed.1
             let bestBBox = bestSpeed.2
             let bestLabel = bestSpeed.3
-            endSignConsecutiveCount = 0
-            lastEndSignType = nil
-            missedMatchFrames = 0  // reset miss tolerance on detection
 
             // Run OCR on the best speed sign detection for number verification
             var finalSpeedValue = yoloSpeedValue
@@ -229,6 +227,11 @@ final class TrafficSignDetector: ObservableObject {
             // High-confidence immediate confirmation (>= 0.45) OR OCR verified bypasses 2-frame requirement
             let shouldConfirmImmediately = bestConfidence >= 0.45 || ocrVerified
 
+            stateLock.lock()
+            endSignConsecutiveCount = 0
+            lastEndSignType = nil
+            missedMatchFrames = 0  // reset miss tolerance on detection
+
             if finalSpeedValue == lastMatchedLimit {
                 consecutiveMatchCount += 1
             } else {
@@ -236,7 +239,11 @@ final class TrafficSignDetector: ObservableObject {
                 lastMatchedLimit = finalSpeedValue
             }
 
-            if shouldConfirmImmediately || consecutiveMatchCount >= requiredConsecutiveMatches {
+            let shouldConfirm = shouldConfirmImmediately || consecutiveMatchCount >= requiredConsecutiveMatches
+            let currentConsecutive = consecutiveMatchCount
+            stateLock.unlock()
+
+            if shouldConfirm {
                 DispatchQueue.main.async { [weak self] in
                     self?.detectedSpeedLimit = finalSpeedValue
                     self?.detectedEndOfAllRestrictions = false
@@ -251,10 +258,11 @@ final class TrafficSignDetector: ObservableObject {
                         }
                     }
                 }
-                diagnostics?.record(type: "tsr_state", details: "action=P127_confirmed limit=\(finalSpeedValue) yoloLimit=\(yoloSpeedValue) ocrVerified=\(ocrVerified) conf=\(String(format: "%.2f", bestConfidence)) immediate=\(shouldConfirmImmediately) consecutive=\(consecutiveMatchCount) residential50=\(residential50Detected)")
+                diagnostics?.record(type: "tsr_state", details: "action=P127_confirmed limit=\(finalSpeedValue) yoloLimit=\(yoloSpeedValue) ocrVerified=\(ocrVerified) conf=\(String(format: "%.2f", bestConfidence)) immediate=\(shouldConfirmImmediately) consecutive=\(currentConsecutive) residential50=\(residential50Detected)")
             }
         } else {
             // Tolerate transient missed frames before resetting confirmation
+            stateLock.lock()
             if lastMatchedLimit != nil {
                 missedMatchFrames += 1
                 if missedMatchFrames > maxMissedMatchFrames {
@@ -263,20 +271,25 @@ final class TrafficSignDetector: ObservableObject {
                     missedMatchFrames = 0
                 }
             }
+            stateLock.unlock()
         }
 
         // Handle clear limit detection (DP.134 / DP.135)
         if !clearLimitDetections.isEmpty && detectedSpeedLimit != nil {
             handleEndSignDetection(.dp134)
         } else {
+            stateLock.lock()
             endSignConsecutiveCount = 0
             lastEndSignType = nil
+            stateLock.unlock()
         }
 
         // Handle advisory sign detection
         if let bestAdvisory = advisoryDetections.max(by: { $0.1 < $1.1 }) {
             let advisoryKey = bestAdvisory.0
             let advisoryConfidence = bestAdvisory.1
+
+            stateLock.lock()
             if advisoryKey == lastAdvisoryText {
                 advisoryConsecutiveCount += 1
             } else {
@@ -287,7 +300,10 @@ final class TrafficSignDetector: ObservableObject {
             // High-confidence immediate confirmation (>= 0.45) bypasses 2-frame requirement
             let shouldConfirmImmediately = advisoryConfidence >= 0.45
 
-            if shouldConfirmImmediately || advisoryConsecutiveCount >= requiredConsecutiveMatches {
+            let shouldConfirm = shouldConfirmImmediately || advisoryConsecutiveCount >= requiredConsecutiveMatches
+            stateLock.unlock()
+
+            if shouldConfirm {
                 DispatchQueue.main.async { [weak self] in
                     self?.activeAdvisorySignText = advisoryKey
                     // Auto-clear after 5.0s for transient prohibitory signs
@@ -300,28 +316,42 @@ final class TrafficSignDetector: ObservableObject {
                 diagnostics?.record(type: "tsr_state", details: "action=advisory_confirmed key=\(advisoryKey) conf=\(String(format: "%.2f", advisoryConfidence)) immediate=\(shouldConfirmImmediately)")
             }
         } else {
+            stateLock.lock()
             advisoryConsecutiveCount = 0
             lastAdvisoryText = nil
+            stateLock.unlock()
         }
 
         // Handle end of residential area detection (R.421 "117" or DP.135 "190") — require 2 consecutive matches
         if endResidentialAreaDetected {
+            stateLock.lock()
             endResidentialConsecutiveCount += 1
-            if endResidentialConsecutiveCount >= requiredConsecutiveMatches {
+            let shouldConfirm = endResidentialConsecutiveCount >= requiredConsecutiveMatches
+            stateLock.unlock()
+
+            if shouldConfirm {
                 let now = CACurrentMediaTime()
+                stateLock.lock()
                 if now - lastEndResidentialTriggerTime >= 6.0 {
                     lastEndResidentialTriggerTime = now
+                    stateLock.unlock()
                     DispatchQueue.main.async { [weak self] in
                         self?.detectedSpeedLimit = nil
                         self?.didClearSpeedLimitEvent = Date()
                         self?.isInResidentialArea = false
                     }
                     diagnostics?.record(type: "tsr_state", details: "action=end_residential_area_confirmed cleared_limit")
+                } else {
+                    stateLock.unlock()
                 }
+                stateLock.lock()
                 endResidentialConsecutiveCount = 0
+                stateLock.unlock()
             }
         } else {
+            stateLock.lock()
             endResidentialConsecutiveCount = 0
+            stateLock.unlock()
         }
 
         // Handle dual carriageway detection (class "142")
@@ -399,6 +429,7 @@ final class TrafficSignDetector: ObservableObject {
     }
 
     private func handleEndSignDetection(_ type: EndSignType) {
+        stateLock.lock()
         if type == lastEndSignType {
             endSignConsecutiveCount += 1
         } else {
@@ -406,17 +437,23 @@ final class TrafficSignDetector: ObservableObject {
             lastEndSignType = type
         }
 
-        if endSignConsecutiveCount >= requiredConsecutiveMatches {
+        let shouldConfirm = endSignConsecutiveCount >= requiredConsecutiveMatches
+        let clearedLimit = lastMatchedLimit
+        stateLock.unlock()
+
+        if shouldConfirm {
             DispatchQueue.main.async { [weak self] in
                 self?.detectedSpeedLimit = nil
                 self?.didClearSpeedLimitEvent = Date()
                 self?.detectedEndOfAllRestrictions = true
             }
-            diagnostics?.record(type: "tsr_state", details: "action=\(type)_confirmed cleared_limit=\(lastMatchedLimit?.description ?? "nil")")
+            diagnostics?.record(type: "tsr_state", details: "action=\(type)_confirmed cleared_limit=\(clearedLimit?.description ?? "nil")")
+            stateLock.lock()
             endSignConsecutiveCount = 0
             lastEndSignType = nil
             lastMatchedLimit = nil
             consecutiveMatchCount = 0
+            stateLock.unlock()
         }
     }
 
@@ -427,6 +464,7 @@ final class TrafficSignDetector: ObservableObject {
 
     /// Manual clear — tap action on HUD badge
     func clearDetectedLimit() {
+        stateLock.lock()
         detectedSpeedLimit = nil
         lastMatchedLimit = nil
         consecutiveMatchCount = 0
@@ -440,5 +478,6 @@ final class TrafficSignDetector: ObservableObject {
         isInResidentialArea = nil
         isDividedRoadFromSign = false
         endResidentialConsecutiveCount = 0
+        stateLock.unlock()
     }
 }
