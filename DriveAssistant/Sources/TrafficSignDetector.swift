@@ -1,68 +1,111 @@
 import AVFoundation
 import CoreImage
+import CoreML
 import Foundation
 import SwiftUI
 import Vision
 
-/// Lightweight Vietnam speed limit sign recognition using Vision OCR + red-ring color verification.
-/// Also detects DP.134 (End of Speed Limit) and DP.135 (End of All Restrictions) signs
-/// via pixel/contour analysis — no second CoreML model, runs at 2 Hz.
+/// Vietnam traffic sign recognition using custom CoreML model (vn_signs_ios16.mlpackage).
+/// Runs VNCoreMLRequest at 2 Hz on Neural Engine, maps class indices to Vietnamese sign labels.
 final class TrafficSignDetector: ObservableObject {
     // MARK: - Published
     @Published private(set) var detectedSpeedLimit: Int?
     @Published private(set) var isProcessing = false
-    @Published private(set) var didClearSpeedLimitEvent: Date?  // fires when DP.134/DP.135 clears limit
-    @Published private(set) var detectedEndOfAllRestrictions: Bool = false  // DP.135 detected (persistent)
+    @Published private(set) var didClearSpeedLimitEvent: Date?
+    @Published private(set) var detectedEndOfAllRestrictions: Bool = false
+    @Published private(set) var activeAdvisorySignText: String?  // e.g., "Cấm vượt", "Cấm ô tô", "Khu dân cư"
 
     // MARK: - Configuration
-    private let validSpeedLimits: Set<Int> = [30, 40, 50, 60, 70, 80, 90, 100, 120]
-    private let roiRect = CGRect(x: 0.45, y: 0.03, width: 0.55, height: 0.52)  // trim bottom to skip storefront signs (KFC, HOTEL, MASSAGE)
-    private let minimumTextHeight: Float = 0.024  // raised from 0.018 to skip low roadside banners
     private let processInterval: TimeInterval = 0.5  // 2 Hz
     private let requiredConsecutiveMatches = 2
-    private let aspectRatioRange: ClosedRange<Double> = 0.45...2.0  // widened for tall/narrow digits (e.g., "60" ar≈0.62)
-    private let redBorderThreshold: Float = 0.35  // R channel dominance ratio
+    private let confidenceThreshold: Float = 0.48
+    private let minBoxWidth: CGFloat = 0.018
 
-    // DP.134 / DP.135 detection thresholds
-    private let endSignRequiredConsecutive = 2
-    private let expandedBoxScale: CGFloat = 2.3   // targets actual border ring (was 4.0 — encompassed foliage)
-    private let redRingStrongThreshold: Float = 0.14  // genuine red ring discrimination
-    private let darkDiagonalThreshold: Float = 0.28  // diagonal slash threshold for DP.134
-    private let contourAspectRatioRange: ClosedRange<Double> = 0.75...1.30
-    private let darkLumaThreshold: UInt8 = 115  // raised for screen-glare resilience
+    // MARK: - Class index to label mapping (from classid.csv Count strings)
+    // Speed limits: 57/"124"->10, 61/"114"->20, 62->30, 2/"360"->40, 39/"402"->50,
+    // 12/"750"->60, 40/"105"->70, 41/"441"->80, 63/"102"->90, 58/"103"->100, 59/"101"->110, 60->120
+    // Advisory: 79/"164"->50 Residential Area; 48/"190", 78/"141", 80/"117"->Clear Limit
+    // Prohibitory: 0/"572"->No Entry, 6/"279"->No Cars, 45/"123"->No Overtaking
+    private let classIndexToSign: [Int: SignInfo] = [
+        // Speed limits
+        57: .speedLimit(10), 61: .speedLimit(20), 62: .speedLimit(30), 2: .speedLimit(40),
+        39: .speedLimit(50), 12: .speedLimit(60), 40: .speedLimit(70), 41: .speedLimit(80),
+        63: .speedLimit(90), 58: .speedLimit(100), 59: .speedLimit(110), 60: .speedLimit(120),
+        // Advisory / informational
+        79: .advisory("Khu dân cư"),        // 50 Residential Area
+        48: .clearLimit, 78: .clearLimit, 80: .clearLimit,  // End of restriction
+        // Prohibitory
+        0: .advisory("Cấm ngược chiều"),    // No Entry
+        6: .advisory("Cấm ô tô"),           // No Cars
+        45: .advisory("Cấm vượt"),          // No Overtaking
+    ]
 
-    // Circular annulus sampling for red ring (normalized radius from center of square)
-    private let redRingInnerRadius: Float = 0.34
-    private let redRingOuterRadius: Float = 0.50
-    private let redPixelThreshold: UInt8 = 115  // genuine red pixel minimum
-    private let redDominanceRatio: Float = 1.18  // R > 1.18*G and R > 1.18*B
+    private enum SignInfo: Equatable {
+        case speedLimit(Int)
+        case clearLimit
+        case advisory(String)
+
+        var isSpeedLimit: Bool { if case .speedLimit = self { return true } else { return false } }
+        var isClearLimit: Bool { if case .clearLimit = self { return true } else { return false } }
+        var isAdvisory: Bool { if case .advisory = self { return true } else { return false } }
+        var speedValue: Int? { if case .speedLimit(let v) = self { return v } else { return nil } }
+        var advisoryText: String? { if case .advisory(let t) = self { return t } else { return nil } }
+    }
 
     // MARK: - State
     private var lastProcessTime: TimeInterval = 0
     private var consecutiveMatchCount = 0
     private var lastMatchedLimit: Int?
     private var thermalState: ProcessInfo.ThermalState = .nominal
-    private let ciContext = CIContext(options: [.useSoftwareRenderer: false])
-    private let textRequest = VNRecognizeTextRequest()
-    private let contourRequest = VNDetectContoursRequest()
+    private var visionOrientation: CGImagePropertyOrientation = .up
+    private var coreMLModel: VNCoreMLModel?
+    private var modelLoaded = false
+    private var loadTask: Task<Void, Never>?
+
+    // Confirmation state
+    private var endSignConsecutiveCount = 0
+    private var lastEndSignType: EndSignType?
+    private var advisoryConsecutiveCount = 0
+    private var lastAdvisoryText: String?
+
+    private enum EndSignType { case dp134, dp135 }
 
     // Diagnostics
     private weak var diagnostics: DiagnosticsLogStore?
-    private var visionOrientation: CGImagePropertyOrientation = .up
     private var lastTSRLogTime: TimeInterval = 0
 
-    // End-sign consecutive detection state
-    private var endSignConsecutiveCount = 0
-    private var lastEndSignType: EndSignType?
-
-    enum EndSignType {
-        case dp134  // End of Speed Limit (has digits + diagonal slash)
-        case dp135  // End of All Restrictions (no digits, circular with diagonal)
+    init() {
+        loadCoreMLModelAsync()
     }
 
-    init() {
-        configureTextRequest()
-        configureContourRequest()
+    deinit {
+        loadTask?.cancel()
+    }
+
+    private func loadCoreMLModelAsync() {
+        loadTask = Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self else { return }
+            do {
+                let modelURL = Bundle.main.url(forResource: "vn_signs_ios16", withExtension: "mlpackage")
+                guard let modelURL else {
+                    print("TrafficSignDetector: vn_signs_ios16.mlpackage not found in bundle")
+                    return
+                }
+                let mlModel = try MLModel(contentsOf: modelURL, configuration: {
+                    let config = MLModelConfiguration()
+                    config.computeUnits = .cpuAndNeuralEngine
+                    return config
+                }())
+                let vnModel = try VNCoreMLModel(for: mlModel)
+                await MainActor.run {
+                    self.coreMLModel = vnModel
+                    self.modelLoaded = true
+                    print("TrafficSignDetector: CoreML model loaded successfully")
+                }
+            } catch {
+                print("TrafficSignDetector: Failed to load CoreML model: \(error)")
+            }
+        }
     }
 
     /// Attach diagnostics store for TSR event logging
@@ -75,25 +118,13 @@ final class TrafficSignDetector: ObservableObject {
         visionOrientation = orientation
     }
 
-    private func configureTextRequest() {
-        textRequest.recognitionLevel = .fast
-        textRequest.usesLanguageCorrection = false
-        textRequest.minimumTextHeight = minimumTextHeight
-        textRequest.recognitionLanguages = ["vi-VN", "en-US"]
-    }
-
-    private func configureContourRequest() {
-        contourRequest.contrastAdjustment = 1.2
-        contourRequest.detectDarkOnLight = false  // detect bright white sign faces against sky/foliage
-        contourRequest.maximumImageDimension = 512
-    }
-
     /// Call from CameraManager.captureOutput for each frame.
     func processFrameIfNeeded(_ pixelBuffer: CVPixelBuffer) {
         guard !isProcessing else { return }
         let now = CACurrentMediaTime()
         guard now - lastProcessTime >= processInterval else { return }
         guard thermalState != .critical else { return }
+        guard modelLoaded, coreMLModel != nil else { return }
 
         lastProcessTime = now
         isProcessing = true
@@ -106,227 +137,118 @@ final class TrafficSignDetector: ObservableObject {
     private func processFrame(_ pixelBuffer: CVPixelBuffer) {
         defer { isProcessing = false }
 
-        let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
-        let extent = ciImage.extent
+        guard let request = makeCoreMLRequest() else { return }
 
-        // Crop ROI: roiRect uses top-left origin (0,0 = top-left), CIImage uses bottom-left origin
-        // Convert: CIImage y = (1 - topLeftY - height) * extent.height
-        let cropRect = CGRect(
-            x: roiRect.minX * extent.width,
-            y: (1.0 - roiRect.maxY) * extent.height,
-            width: roiRect.width * extent.width,
-            height: roiRect.height * extent.height
-        )
-        let croppedImage = ciImage.cropped(to: cropRect)
-
-        // Run Vision OCR for speed limit digits
-        let ocrHandler = VNImageRequestHandler(ciImage: croppedImage, orientation: visionOrientation, options: [:])
-        var textObservations: [VNRecognizedTextObservation] = []
+        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: visionOrientation, options: [:])
         do {
-            try ocrHandler.perform([textRequest])
-            textObservations = textRequest.results as? [VNRecognizedTextObservation] ?? []
+            try handler.perform([request])
         } catch {
-            print("TrafficSignDetector: OCR error: \(error)")
+            print("TrafficSignDetector: VNCoreMLRequest error: \(error)")
+            return
         }
 
-        var foundActiveSpeedLimit: Int?
-        var foundEndOfSpeedLimit = false
+        guard let results = request.results as? [VNRecognizedObjectObservation] else { return }
 
-        // For diagnostics: collect all candidate details
-        struct TSRCandidate {
-            let rawText: String
-            let speedValue: Int?
-            let boundingBox: CGRect
-            let aspectRatio: Double
-            let redRingRatio: Float
-            let darkDiagonalRatio: Float
-            let accepted: Bool
-            let reason: String
-        }
-        var candidates: [TSRCandidate] = []
+        // Filter detections
+        var speedLimitDetections: [(Int, Float, CGRect)] = []  // (speedValue, confidence, bbox)
+        var clearLimitDetections: [(Float, CGRect)] = []        // (confidence, bbox)
+        var advisoryDetections: [(String, Float, CGRect)] = []  // (text, confidence, bbox)
 
-        // Process OCR results for speed limit signs (P.127) and end-of-speed-limit (DP.134)
-        for observation in textObservations {
-            guard let topCandidate = observation.topCandidates(1).first else { continue }
-            let text = topCandidate.string.trimmingCharacters(in: .whitespacesAndNewlines)
+        for obs in results {
+            guard obs.confidence >= confidenceThreshold else { continue }
+            guard obs.boundingBox.width >= minBoxWidth else { continue }
 
-            // Extract numeric tokens from text (handles "P.127 60", "60 km/h", etc.)
-            let tokens = text.components(separatedBy: CharacterSet.decimalDigits.inverted)
-                .compactMap { Int($0) }
-                .filter { validSpeedLimits.contains($0) }
-            let speedValue = tokens.first
+            // Get the top label
+            guard let topLabel = obs.labels.first else { continue }
+            let classIndex = topLabel.identifier
+            guard let classIdx = Int(classIndex) else { continue }
+            guard let signInfo = classIndexToSign[classIdx] else { continue }
 
-            let cropBox = observation.boundingBox  // normalized to cropped image (origin bottom-left)
+            let bbox = obs.boundingBox  // normalized, bottom-left origin
 
-            // Convert crop-normalized bbox to full-image normalized bbox
-            // roiRect uses top-left origin; Vision/CIImage use bottom-left.
-            // Crop starts at bottom-left y = (1 - roiRect.maxY)
-            let cropOriginY = 1.0 - roiRect.maxY
-            let boundingBox = CGRect(
-                x: roiRect.minX + cropBox.minX * roiRect.width,
-                y: cropOriginY + cropBox.minY * roiRect.height,
-                width: cropBox.width * roiRect.width,
-                height: cropBox.height * roiRect.height
-            )
-
-            // Verify near-square aspect ratio (use crop box for aspect since sign is upright in crop)
-            let aspectRatio = cropBox.width / cropBox.height
-            let aspectOK = aspectRatioRange.contains(aspectRatio)
-
-            // Classify: check red ring strength on expanded box using FULL image (avoids crop-edge clamping)
-            // DP.134 priority: diagonal slash present + weak red ring -> DP.134 (not P.127)
-            // Use scale 2.0 for diagonal to cover sign interior where slash sits
-            let redRingRatio = measureRedRingRatio(in: ciImage, normalizedBox: boundingBox, scale: expandedBoxScale)
-            let darkDiagonalRatio = measureDarkDiagonalRatio(in: ciImage, normalizedBox: boundingBox, scale: 2.0)
-
-            var accepted = false
-            var reason = ""
-
-            if speedValue != nil && aspectOK {
-                // DP.134 takes priority over P.127 when diagonal slash is clear and red ring is weak
-                if darkDiagonalRatio >= darkDiagonalThreshold && redRingRatio < redRingStrongThreshold {
-                    accepted = true
-                    reason = "DP134_end"
-                } else if redRingRatio >= redRingStrongThreshold {
-                    accepted = true
-                    reason = "P127_active"
-                } else {
-                    reason = "aspectOK_redRing=\(String(format: "%.2f", redRingRatio))_darkDiag=\(String(format: "%.2f", darkDiagonalRatio))"
-                }
-            } else if speedValue == nil {
-                reason = "no_valid_speed_token"
-            } else {
-                reason = "aspect_fail=\(String(format: "%.2f", aspectRatio))"
+            if signInfo.isSpeedLimit, let speed = signInfo.speedValue {
+                speedLimitDetections.append((speed, obs.confidence, bbox))
+            } else if signInfo.isClearLimit {
+                clearLimitDetections.append((obs.confidence, bbox))
+            } else if signInfo.isAdvisory, let text = signInfo.advisoryText {
+                advisoryDetections.append((text, obs.confidence, bbox))
             }
-
-            if let sv = speedValue, accepted {
-                if reason == "P127_active" {
-                    foundActiveSpeedLimit = sv
-                } else if reason == "DP134_end" {
-                    foundEndOfSpeedLimit = true
-                }
-            }
-
-            candidates.append(TSRCandidate(
-                rawText: text,
-                speedValue: speedValue,
-                boundingBox: boundingBox,
-                aspectRatio: aspectRatio,
-                redRingRatio: redRingRatio,
-                darkDiagonalRatio: darkDiagonalRatio,
-                accepted: accepted && speedValue != nil,
-                reason: reason
-            ))
         }
 
-        // Diagnostic logging: every 1.0s record all raw OCR candidates with analysis
+        // Diagnostic logging: every 1.0s
         let now = CACurrentMediaTime()
         if now - lastTSRLogTime >= 1.0 {
             lastTSRLogTime = now
-            let details = candidates.map { c in
-                "txt=\(c.rawText) spd=\(c.speedValue?.description ?? "nil") box=(\(String(format: "%.3f", c.boundingBox.minX)),\(String(format: "%.3f", c.boundingBox.minY)),\(String(format: "%.3f", c.boundingBox.width)),\(String(format: "%.3f", c.boundingBox.height))) ar=\(String(format: "%.2f", c.aspectRatio)) rr=\(String(format: "%.2f", c.redRingRatio)) dd=\(String(format: "%.2f", c.darkDiagonalRatio)) acc=\(c.accepted) reason=\(c.reason)"
-            }.joined(separator: "; ")
-            diagnostics?.record(type: "tsr_scan", details: details.isEmpty ? "no_candidates" : details)
+            let details = "speedDetections=\(speedLimitDetections.map { "(\($0.0),\(String(format: "%.2f", $0.1)),\(String(format: "%.3f", $0.2.minX)))\($0.2.width)" }.joined(separator: ";")) clearDetections=\(clearLimitDetections.count) advisoryDetections=\(advisoryDetections.map { "(\($0.0),\(String(format: "%.2f", $0.1)))" }.joined(separator: ";"))"
+            diagnostics?.record(type: "tsr_yolo_detect", details: details)
         }
 
-        // Also run contour detection for DP.135 (End of All Restrictions - no digits)
-        // Fallback: if active speed limit exists and contour finds circular+diagonal but OCR got no digits,
-        // treat as DP.134 (end of specific speed limit) rather than DP.135 (end of all restrictions).
-        let contourHandler = VNImageRequestHandler(ciImage: croppedImage, orientation: visionOrientation, options: [:])
-        do {
-            try contourHandler.perform([contourRequest])
-        } catch {
-            print("TrafficSignDetector: Contour error: \(error)")
-        }
-
-        var foundEndOfAllRestrictions = false
-        var foundEndOfSpeedLimitViaContour = false  // DP.134 fallback via contour
-        if let contours = contourRequest.results as? [VNContoursObservation] {
-            for contourObs in contours {
-                for contour in contourObs.topLevelContours {
-                    // VNContour has normalizedPoints - compute bounding box from points (crop-normalized)
-                    let points = contour.normalizedPoints
-                    guard !points.isEmpty, points.count >= 3 else { continue } // Need at least 3 points for a shape
-                    var minX: Float = points[0].x
-                    var maxX: Float = points[0].x
-                    var minY: Float = points[0].y
-                    var maxY: Float = points[0].y
-                    for pt in points {
-                        minX = Swift.min(minX, pt.x)
-                        maxX = Swift.max(maxX, pt.x)
-                        minY = Swift.min(minY, pt.y)
-                        maxY = Swift.max(maxY, pt.y)
-                    }
-                    let cropBox = CGRect(x: CGFloat(minX), y: CGFloat(minY), width: CGFloat(maxX - minX), height: CGFloat(maxY - minY))
-                    guard cropBox.width > 0, cropBox.height > 0 else { continue }
-                    // Ignore full-crop border contours (likely frame edges)
-                    guard cropBox.width < 0.85 && cropBox.height < 0.85 else { continue }
-                    let aspectRatio = cropBox.width / cropBox.height
-                    guard contourAspectRatioRange.contains(aspectRatio) else { continue }
-                    guard cropBox.width >= 0.04 && cropBox.height >= 0.04 else { continue }
-
-                    // Convert crop-normalized bbox to full-image normalized bbox
-                    // roiRect uses top-left origin; Vision/CIImage use bottom-left.
-                    let cropOriginY = 1.0 - roiRect.maxY
-                    let boundingBox = CGRect(
-                        x: roiRect.minX + cropBox.minX * roiRect.width,
-                        y: cropOriginY + cropBox.minY * roiRect.height,
-                        width: cropBox.width * roiRect.width,
-                        height: cropBox.height * roiRect.height
-                    )
-
-                    // Check for dark diagonal slash using FULL image
-                    let darkDiagonalRatio = measureDarkDiagonalRatio(in: ciImage, normalizedBox: boundingBox, scale: 1.0)
-                    if darkDiagonalRatio >= 0.32 {  // lowered from 0.50 for roadside sign detection at right margin
-                        foundEndOfAllRestrictions = true
-                        break
-                    }
-                    // Fallback: active speed limit + circular contour + diagonal but no OCR digits -> DP.134
-                    if detectedSpeedLimit != nil, !foundEndOfSpeedLimit, darkDiagonalRatio >= 0.22 {
-                        foundEndOfSpeedLimitViaContour = true
-                    }
-                }
-                if foundEndOfAllRestrictions { break }
-            }
-        }
-
-        // Handle active speed limit detection (P.127)
-        if let limit = foundActiveSpeedLimit {
+        // Handle speed limit detection
+        if let bestSpeed = speedLimitDetections.max(by: { $0.1 < $1.1 }) {
+            let speedValue = bestSpeed.0
             endSignConsecutiveCount = 0
             lastEndSignType = nil
 
-            if limit == lastMatchedLimit {
+            if speedValue == lastMatchedLimit {
                 consecutiveMatchCount += 1
             } else {
                 consecutiveMatchCount = 1
-                lastMatchedLimit = limit
+                lastMatchedLimit = speedValue
             }
 
             if consecutiveMatchCount >= requiredConsecutiveMatches {
                 DispatchQueue.main.async { [weak self] in
-                    self?.detectedSpeedLimit = limit
-                    self?.detectedEndOfAllRestrictions = false  // Clear DP.135 when new speed limit found
+                    self?.detectedSpeedLimit = speedValue
+                    self?.detectedEndOfAllRestrictions = false
                 }
-                diagnostics?.record(type: "tsr_state", details: "action=P127_confirmed limit=\(limit) consecutive=\(consecutiveMatchCount)")
+                diagnostics?.record(type: "tsr_state", details: "action=P127_confirmed limit=\(speedValue) consecutive=\(consecutiveMatchCount)")
             }
+        } else {
+            consecutiveMatchCount = 0
+            lastMatchedLimit = nil
         }
-        // Handle end-of-speed-limit detection (DP.134) — OCR digits + diagonal
-        else if foundEndOfSpeedLimit && detectedSpeedLimit != nil {
+
+        // Handle clear limit detection (DP.134 / DP.135)
+        if !clearLimitDetections.isEmpty && detectedSpeedLimit != nil {
             handleEndSignDetection(.dp134)
-        }
-        // Fallback: contour detected circular+diagonal but OCR got no digits -> treat as DP.134
-        else if foundEndOfSpeedLimitViaContour && detectedSpeedLimit != nil {
-            handleEndSignDetection(.dp134)
-        }
-        // Handle end-of-all-restrictions detection (DP.135)
-        else if foundEndOfAllRestrictions && detectedSpeedLimit != nil {
-            handleEndSignDetection(.dp135)
-        }
-        // No relevant sign detected - reset end-sign counter
-        else {
+        } else {
             endSignConsecutiveCount = 0
             lastEndSignType = nil
         }
+
+        // Handle advisory sign detection
+        if let bestAdvisory = advisoryDetections.max(by: { $0.1 < $1.1 }) {
+            let advisoryText = bestAdvisory.0
+            if advisoryText == lastAdvisoryText {
+                advisoryConsecutiveCount += 1
+            } else {
+                advisoryConsecutiveCount = 1
+                lastAdvisoryText = advisoryText
+            }
+
+            if advisoryConsecutiveCount >= requiredConsecutiveMatches {
+                DispatchQueue.main.async { [weak self] in
+                    self?.activeAdvisorySignText = advisoryText
+                    // Auto-clear after 3.5s
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) { [weak self] in
+                        if self?.activeAdvisorySignText == advisoryText {
+                            self?.activeAdvisorySignText = nil
+                        }
+                    }
+                }
+                diagnostics?.record(type: "tsr_state", details: "action=advisory_confirmed text=\(advisoryText)")
+            }
+        } else {
+            advisoryConsecutiveCount = 0
+            lastAdvisoryText = nil
+        }
+    }
+
+    private func makeCoreMLRequest() -> VNCoreMLRequest? {
+        guard let model = coreMLModel else { return nil }
+        let request = VNCoreMLRequest(model: model)
+        request.imageCropAndScaleOption = .scaleFill
+        return request
     }
 
     private func handleEndSignDetection(_ type: EndSignType) {
@@ -337,192 +259,17 @@ final class TrafficSignDetector: ObservableObject {
             lastEndSignType = type
         }
 
-        if endSignConsecutiveCount >= endSignRequiredConsecutive {
+        if endSignConsecutiveCount >= requiredConsecutiveMatches {
             DispatchQueue.main.async { [weak self] in
                 self?.detectedSpeedLimit = nil
                 self?.didClearSpeedLimitEvent = Date()
-                self?.detectedEndOfAllRestrictions = true  // Show for both DP.134 and DP.135 (testing placeholder)
+                self?.detectedEndOfAllRestrictions = true
             }
             diagnostics?.record(type: "tsr_state", details: "action=\(type)_confirmed cleared_limit=\(lastMatchedLimit?.description ?? "nil")")
             endSignConsecutiveCount = 0
             lastEndSignType = nil
             lastMatchedLimit = nil
             consecutiveMatchCount = 0
-        }
-    }
-
-    /// Measure red ring strength using square-normalized bbox around digits.
-    /// OCR bbox wraps tall/narrow digits (e.g., 0.065×0.100). We center a square of
-    /// side = max(w,h) * expandedBoxScale (≈2.1) on the digit center — this encompasses
-    /// the full sign's red ring. Annulus sampled at normalized radius [0.35, 0.75].
-    private func measureRedRingRatio(in image: CIImage, normalizedBox: CGRect, scale: CGFloat) -> Float {
-        return autoreleasepool {
-            let extent = image.extent
-            // Vision boundingBox uses bottom-left origin, matching CIImage
-            let digitBox = CGRect(
-                x: normalizedBox.minX * extent.width,
-                y: normalizedBox.minY * extent.height,
-                width: normalizedBox.width * extent.width,
-                height: normalizedBox.height * extent.height
-            )
-
-            // Guard against degenerate digit boxes
-            guard digitBox.width > 0, digitBox.height > 0 else { return 0 }
-
-            // Square box centered on digits, sized to encompass sign's red ring
-            let side = max(digitBox.width, digitBox.height) * scale
-            // Cap max square side to 200px (we scale down to 48px anyway) to limit memory
-            let cappedSide = min(side, 200.0)
-            let squareBox = CGRect(
-                x: digitBox.midX - cappedSide / 2.0,
-                y: digitBox.midY - cappedSide / 2.0,
-                width: cappedSide,
-                height: cappedSide
-            )
-            let clampedBox = squareBox.intersection(extent)
-            guard !clampedBox.isEmpty, clampedBox.width > 4, clampedBox.height > 4 else { return 0 }
-
-            let ringRegion = image.cropped(to: clampedBox)
-            let scaleFactor = min(48.0 / clampedBox.width, 48.0 / clampedBox.height, 1.0)
-            let scaledImage = ringRegion.transformed(by: CGAffineTransform(scaleX: scaleFactor, y: scaleFactor))
-
-            // Render with explicit RGBA8 format to guarantee R=bytes[0], G=bytes[1], B=bytes[2]
-            let colorSpace = CGColorSpaceCreateDeviceRGB()
-            guard let cgImage = ciContext.createCGImage(scaledImage, from: scaledImage.extent, format: .RGBA8, colorSpace: colorSpace) else { return 0 }
-            guard let data = cgImage.dataProvider?.data else { return 0 }
-            let bytes = CFDataGetBytePtr(data)
-            guard let bytes = bytes else { return 0 }
-            let width = cgImage.width
-            let height = cgImage.height
-            let bytesPerRow = cgImage.bytesPerRow
-            guard width > 0, height > 0, bytesPerRow >= width * 4 else { return 0 }
-            // Ensure we have enough data bytes
-            let expectedBytes = height * bytesPerRow
-            guard CFDataGetLength(data) >= expectedBytes else { return 0 }
-
-            var redStrongCount = 0
-            var totalSampled = 0
-
-            // Sample pixels in circular annulus: center (0.5, 0.5), radius in [0.35, 0.75]
-            for y in 0..<height {
-                let v = Float(y) / Float(height)
-                let dy = v - 0.5
-                for x in 0..<width {
-                    let u = Float(x) / Float(width)
-                    let dx = u - 0.5
-                    let r = hypotf(dx, dy)
-                    guard r >= redRingInnerRadius, r <= redRingOuterRadius else { continue }
-
-                    let offset = y * bytesPerRow + x * 4
-                    // Bounds check
-                    guard offset + 2 < expectedBytes else { continue }
-                    let rVal = bytes[offset]
-                    let gVal = bytes[offset + 1]
-                    let bVal = bytes[offset + 2]
-                    if rVal >= redPixelThreshold,
-                       Float(rVal) > Float(gVal) * redDominanceRatio,
-                       Float(rVal) > Float(bVal) * redDominanceRatio {
-                        redStrongCount += 1
-                    }
-                    totalSampled += 1
-                }
-            }
-
-            guard totalSampled > 0 else { return 0 }
-            return Float(redStrongCount) / Float(totalSampled)
-        }
-    }
-
-    /// Measure dark diagonal slash ratio using square-normalized bbox around digits.
-    /// Same square expansion as red ring. Samples anti-diagonal band |(1-u)-v| < 0.22 (widened).
-    /// Also verifies overall sign interior has >= 25% bright white pixels (luma > 150) to reject shadows/trees.
-    private func measureDarkDiagonalRatio(in image: CIImage, normalizedBox: CGRect, scale: CGFloat) -> Float {
-        return autoreleasepool {
-            let extent = image.extent
-            let digitBox = CGRect(
-                x: normalizedBox.minX * extent.width,
-                y: normalizedBox.minY * extent.height,
-                width: normalizedBox.width * extent.width,
-                height: normalizedBox.height * extent.height
-            )
-
-            // Guard against degenerate digit boxes
-            guard digitBox.width > 0, digitBox.height > 0 else { return 0 }
-
-            // Square box centered on digits, sized to encompass sign
-            let side = max(digitBox.width, digitBox.height) * scale
-            // Cap max square side to 200px (we scale down to 48px anyway) to limit memory
-            let cappedSide = min(side, 200.0)
-            let squareBox = CGRect(
-                x: digitBox.midX - cappedSide / 2.0,
-                y: digitBox.midY - cappedSide / 2.0,
-                width: cappedSide,
-                height: cappedSide
-            )
-            let clampedBox = squareBox.intersection(extent)
-            guard !clampedBox.isEmpty, clampedBox.width > 4, clampedBox.height > 4 else { return 0 }
-
-            let ringRegion = image.cropped(to: clampedBox)
-            let scaleFactor = min(48.0 / clampedBox.width, 48.0 / clampedBox.height, 1.0)
-            let scaledImage = ringRegion.transformed(by: CGAffineTransform(scaleX: scaleFactor, y: scaleFactor))
-
-            let colorSpace = CGColorSpaceCreateDeviceRGB()
-            guard let cgImage = ciContext.createCGImage(scaledImage, from: scaledImage.extent, format: .RGBA8, colorSpace: colorSpace) else { return 0 }
-            guard let data = cgImage.dataProvider?.data else { return 0 }
-            let bytes = CFDataGetBytePtr(data)
-            guard let bytes = bytes else { return 0 }
-            let width = cgImage.width
-            let height = cgImage.height
-            let bytesPerRow = cgImage.bytesPerRow
-            guard width > 0, height > 0, bytesPerRow >= width * 4 else { return 0 }
-            let expectedBytes = height * bytesPerRow
-            guard CFDataGetLength(data) >= expectedBytes else { return 0 }
-
-            var darkDiagonalCount = 0
-            var totalDiagonalSampled = 0
-            var brightPixelCount = 0
-            var totalPixels = 0
-
-            // Single pass: sample diagonal band + overall brightness
-            for y in 0..<height {
-                let v = Float(y) / Float(height)
-                for x in 0..<width {
-                    let u = Float(x) / Float(width)
-                    let offset = y * bytesPerRow + x * 4
-                    guard offset + 2 < expectedBytes else { continue }
-                    let r = Float(bytes[offset])
-                    let g = Float(bytes[offset + 1])
-                    let b = Float(bytes[offset + 2])
-                    let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
-
-                    // Overall bright pixel check (sign face should be white)
-                    if luma > 150 {
-                        brightPixelCount += 1
-                    }
-                    totalPixels += 1
-
-                    // Anti-diagonal band: |(1 - u) - v| < 0.22 (widened from 0.14)
-                    let antiDiagDist = abs((1.0 - u) - v)
-                    if antiDiagDist < 0.22 {
-                        if luma < Float(darkLumaThreshold) {  // darkLumaThreshold = 115
-                            darkDiagonalCount += 1
-                        }
-                        totalDiagonalSampled += 1
-                    }
-                }
-            }
-
-            guard totalDiagonalSampled > 0 else { return 0 }
-            let diagonalRatio = Float(darkDiagonalCount) / Float(totalDiagonalSampled)
-
-            // Require >= 25% bright white background (rejects dark trees/shadows)
-            guard totalPixels > 0 else { return 0 }
-            let brightRatio = Float(brightPixelCount) / Float(totalPixels)
-            if brightRatio < 0.25 {
-                return 0
-            }
-
-            return diagonalRatio
         }
     }
 
@@ -538,7 +285,10 @@ final class TrafficSignDetector: ObservableObject {
         consecutiveMatchCount = 0
         endSignConsecutiveCount = 0
         lastEndSignType = nil
+        advisoryConsecutiveCount = 0
+        lastAdvisoryText = nil
         didClearSpeedLimitEvent = nil
         detectedEndOfAllRestrictions = false
+        activeAdvisorySignText = nil
     }
 }

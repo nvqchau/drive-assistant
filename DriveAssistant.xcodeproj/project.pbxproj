@@ -20,6 +20,7 @@
 		00000000000000000000002A /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000029 /* Assets.xcassets */; };
 		00000000000000000000002C /* MotionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000002B /* MotionManager.swift */; };
 		000000000000000000000038 /* yolov8n.mlpackage in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000037 /* yolov8n.mlpackage */; };
+		00000000000000000000004B /* vn_signs_ios16.mlpackage in Resources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000004A /* vn_signs_ios16.mlpackage */; };
 		00000000000000000000003A /* LaneDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000039 /* LaneDetector.swift */; };
 		5F5E8E7F6FDA2B0BB2974CF7 /* TrafficSignDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF21CE15F0E014781C9BBA0F /* TrafficSignDetector.swift */; };
 /* End PBXBuildFile section */
@@ -40,6 +41,7 @@
 		000000000000000000000029 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = DriveAssistant/Assets.xcassets; sourceTree = SOURCE_ROOT; };
 		00000000000000000000002B /* MotionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistant/Sources/MotionManager.swift; sourceTree = SOURCE_ROOT; };
 		000000000000000000000037 /* yolov8n.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = wrapper.coreml; path = yolov8n.mlpackage; sourceTree = SOURCE_ROOT; };
+		00000000000000000000004A /* vn_signs_ios16.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = wrapper.coreml; path = vn_signs_ios16.mlpackage; sourceTree = SOURCE_ROOT; };
 		000000000000000000000039 /* LaneDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistant/Sources/LaneDetector.swift; sourceTree = SOURCE_ROOT; };
 		AF21CE15F0E014781C9BBA0F /* TrafficSignDetector.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = TrafficSignDetector.swift; path = ../DriveAssistant/Sources/TrafficSignDetector.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -89,6 +91,7 @@
 			isa = PBXGroup;
 			children = (
 				000000000000000000000037 /* yolov8n.mlpackage */,
+				00000000000000000000004A /* vn_signs_ios16.mlpackage */,
 			);
 			path = Resources;
 			sourceTree = SOURCE_ROOT;
@@ -154,6 +157,7 @@
 			files = (
 				00000000000000000000002A /* Assets.xcassets in Resources */,
 				000000000000000000000038 /* yolov8n.mlpackage in Resources */,
+				00000000000000000000004B /* vn_signs_ios16.mlpackage in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

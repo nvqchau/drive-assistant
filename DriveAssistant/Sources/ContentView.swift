@@ -211,6 +211,31 @@ struct ContentView: View {
                                         }
                                         .transition(.opacity.combined(with: .scale))
                                     }
+                                    // Secondary advisory sign (e.g., "Cấm vượt", "Khu dân cư")
+                                    if let advisoryText = model.activeAdvisorySignText {
+                                        VStack(spacing: 2) {
+                                            ZStack {
+                                                RoundedRectangle(cornerRadius: 6)
+                                                    .fill(Color.blue.opacity(0.15))
+                                                    .frame(width: 38, height: 38)
+                                                RoundedRectangle(cornerRadius: 6)
+                                                    .stroke(Color.blue, lineWidth: 3)
+                                                    .frame(width: 38, height: 38)
+                                                Image(systemName: "exclamationmark.triangle.fill")
+                                                    .font(.system(size: 16, weight: .bold))
+                                                    .foregroundColor(.blue)
+                                            }
+                                            .frame(width: 38, height: 38)
+                                            .shadow(color: Color.black.opacity(0.3), radius: 4)
+                                            Text(advisoryText)
+                                                .font(.system(size: 8, weight: .bold, design: .rounded))
+                                                .foregroundColor(.blue)
+                                                .padding(.horizontal, 4)
+                                                .padding(.vertical, 1)
+                                                .background(Color.black.opacity(0.5), in: Capsule())
+                                        }
+                                        .transition(.opacity.combined(with: .scale))
+                                    }
                                 }
                             }
                         }
