@@ -105,6 +105,7 @@ final class DriveAssistantModel: ObservableObject {
     @Published private(set) var isOverspeeding: Bool = false
     @Published private(set) var showSpeedLimitCleared: Bool = false
     @Published private(set) var showEndOfAllRestrictions: Bool = false  // DP.135 indicator
+    @Published private(set) var activeAdvisorySignText: String?  // e.g., "Cấm vượt", "Cấm ô tô", "Khu dân cư"
     @Published private(set) var debugCaptureTrigger: Date? = nil  // triggers silent auto-screenshot
 
     // Display Theme & Mirror Mode
@@ -383,6 +384,14 @@ final class DriveAssistantModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] detected in
                 self?.showEndOfAllRestrictions = detected
+            }
+            .store(in: &cancellables)
+
+        // Secondary advisory sign (e.g., "Cấm vượt", "Khu dân cư")
+        camera.trafficSignDetector.$activeAdvisorySignText
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] text in
+                self?.activeAdvisorySignText = text
             }
             .store(in: &cancellables)
 
