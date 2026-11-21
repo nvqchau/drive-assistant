@@ -232,7 +232,8 @@ struct ContentView: View {
                                         .transition(.opacity.combined(with: .scale))
                                     }
                                     // Secondary advisory sign (localized from canonical keys) — red for prohibitory, blue for informational
-                                    if let advisoryKey = model.activeAdvisorySignText {
+                                    // Residential area badge ("Khu dân cư") stays visible while isInResidentialArea==true; others auto-hide after 3.5s
+                                    if let advisoryKey = model.activeAdvisorySignText ?? (model.isInResidentialArea == true ? "residential_area" : nil) {
                                         let isProhibitory = advisoryKey == "no_entry" || advisoryKey == "no_cars" || advisoryKey == "no_overtaking"
                                         let badgeColor: Color = isProhibitory ? .red : .blue
                                         let badgeIcon: String = isProhibitory ? "xmark.octagon.fill" : "house.fill"
