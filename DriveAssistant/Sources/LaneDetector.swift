@@ -65,7 +65,7 @@ final class LaneDetector: ObservableObject {
     private let roiTopY: CGFloat = 0.38
     private let roiBottomY: CGFloat = 0.95
     private let roiTopWidth: CGFloat = 0.16
-    private let roiBottomWidth: CGFloat = 0.42
+    private let roiBottomWidth: CGFloat = 0.54  // widened from 0.42 to match real road markings
     private var roiCenterOffsetX: CGFloat = -0.03
     
     // LDWS enabled flag
@@ -155,12 +155,12 @@ final class LaneDetector: ObservableObject {
     private func enhanceLaneMarkings(_ image: CIImage) -> CIImage {
         let gray = image.applyingFilter("CIColorControls", parameters: [
             kCIInputSaturationKey: 0,
-            kCIInputContrastKey: 1.5,
+            kCIInputContrastKey: 1.8,
             kCIInputBrightnessKey: 0.1
         ])
-        
+
         let whiteMask = gray.applyingFilter("CIColorThreshold", parameters: [
-            "inputThreshold": 0.7
+            "inputThreshold": 0.62
         ])
         
         let yellowMask = image.applyingFilter("CIColorControls", parameters: [
@@ -232,8 +232,8 @@ final class LaneDetector: ObservableObject {
             let width = maxX - minX
             let height = maxY - minY
             let aspectRatio = width / max(height, 1)
-            
-            guard aspectRatio > 3.0 || (1/aspectRatio) > 3.0 else { continue }
+
+            guard aspectRatio > 1.8 || (1/aspectRatio) > 1.8 else { continue }
             
             let area = width * height
             guard area > 0.0001 && area < 0.15 else { continue }
@@ -276,7 +276,7 @@ final class LaneDetector: ObservableObject {
     }
     
     private func fitQuadratic(points: [CGPoint], imageSize: CGSize, isLeft: Bool) -> [CGPoint]? {
-        guard points.count >= 10 else { return nil }
+        guard points.count >= 6 else { return nil }
         
         var sumY = 0.0, sumY2 = 0.0, sumY3 = 0.0, sumY4 = 0.0
         var sumX = 0.0, sumXY = 0.0, sumXY2 = 0.0

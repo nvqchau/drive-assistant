@@ -867,7 +867,7 @@ private struct LaneCarpet: View {
         let horizonTopYNorm = max(0.25, min(0.65, horizonY))
         let bottomYNorm = 0.95
         let topWidthNorm = 0.16
-        let bottomWidthNorm = 0.42
+        let bottomWidthNorm = 0.54  // widened from 0.42 to match real road markings
 
         // Compute effectiveTopY in normalized video space (clip at lead vehicle bottom)
         let effectiveTopYNorm: CGFloat
