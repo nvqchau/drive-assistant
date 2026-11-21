@@ -211,8 +211,22 @@ struct ContentView: View {
                                         }
                                         .transition(.opacity.combined(with: .scale))
                                     }
-                                    // Secondary advisory sign (e.g., "Cấm vượt", "Khu dân cư")
-                                    if let advisoryText = model.activeAdvisorySignText {
+                                    // Secondary advisory sign (localized from canonical keys)
+                                    if let advisoryKey = model.activeAdvisorySignText {
+                                        let advisoryText: String = {
+                                            switch advisoryKey {
+                                            case "no_entry":
+                                                return model.usesVietnamese ? "Cấm ngược chiều" : "No Entry"
+                                            case "no_cars":
+                                                return model.usesVietnamese ? "Cấm ô tô" : "No Cars"
+                                            case "no_overtaking":
+                                                return model.usesVietnamese ? "Cấm vượt" : "No Overtaking"
+                                            case "residential_area":
+                                                return model.usesVietnamese ? "Khu dân cư" : "Residential Area"
+                                            default:
+                                                return advisoryKey
+                                            }
+                                        }()
                                         VStack(spacing: 2) {
                                             ZStack {
                                                 RoundedRectangle(cornerRadius: 6)

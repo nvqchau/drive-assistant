@@ -26,7 +26,7 @@ final class TrafficSignDetector: ObservableObject {
     // "750"/"12"->60, "105"/"40"->70, "441"/"41"->80, "102"/"63"->90, "103"/"58"->100, "101"/"59"->110, "60"->120
     // Residential area (sets 50 km/h + advisory): "164"/"79"->.residential50
     // Clear speed limit (DP.134/DP.135): "190"/"48", "141"/"78", "117"/"80"->.clearLimit
-    // Prohibitory advisory: "572"/"0"->"No Entry", "279"/"6"->"No Cars", "123"/"45"->"No Overtaking"
+    // Prohibitory advisory: "572"/"0"->no_entry, "279"/"6"->no_cars, "123"/"45"->no_overtaking
     private let labelToSign: [String: SignInfo] = [
         // Speed limits (Count string / class index -> speed value)
         "124": .speedLimit(10), "57": .speedLimit(10),
@@ -41,30 +41,30 @@ final class TrafficSignDetector: ObservableObject {
         "103": .speedLimit(100), "58": .speedLimit(100),
         "101": .speedLimit(110), "59": .speedLimit(110),
         "60": .speedLimit(120),
-        // Residential area (sets 50 km/h speed limit + advisory text)
+        // Residential area (sets 50 km/h speed limit + advisory key)
         "164": .residential50, "79": .residential50,
         // Clear speed limit (DP.134 / DP.135)
         "190": .clearLimit, "48": .clearLimit,
         "141": .clearLimit, "78": .clearLimit,
         "117": .clearLimit, "80": .clearLimit,
-        // Prohibitory advisory
-        "572": .advisory("No Entry"), "0": .advisory("No Entry"),
-        "279": .advisory("No Cars"), "6": .advisory("No Cars"),
-        "123": .advisory("No Overtaking"), "45": .advisory("No Overtaking"),
+        // Prohibitory advisory (canonical keys for localization)
+        "572": .advisory("no_entry"), "0": .advisory("no_entry"),
+        "279": .advisory("no_cars"), "6": .advisory("no_cars"),
+        "123": .advisory("no_overtaking"), "45": .advisory("no_overtaking"),
     ]
 
     private enum SignInfo: Equatable {
         case speedLimit(Int)
-        case residential50  // sets detectedSpeedLimit = 50 AND activeAdvisorySignText = "Residential Area"
+        case residential50  // sets detectedSpeedLimit = 50 AND activeAdvisorySignText = "residential_area"
         case clearLimit
-        case advisory(String)
+        case advisory(String)  // canonical key: "no_entry", "no_cars", "no_overtaking"
 
         var isSpeedLimit: Bool { if case .speedLimit = self { return true } else { return false } }
         var isResidential50: Bool { if case .residential50 = self { return true } else { return false } }
         var isClearLimit: Bool { if case .clearLimit = self { return true } else { return false } }
         var isAdvisory: Bool { if case .advisory = self { return true } else { return false } }
         var speedValue: Int? { if case .speedLimit(let v) = self { return v } else { return nil } }
-        var advisoryText: String? { if case .advisory(let t) = self { return t } else { return nil } }
+        var advisoryKey: String? { if case .advisory(let k) = self { return k } else { return nil } }
     }
 
     // MARK: - State
@@ -189,8 +189,8 @@ final class TrafficSignDetector: ObservableObject {
                 speedLimitDetections.append((50, obs.confidence, bbox))
             } else if signInfo.isClearLimit {
                 clearLimitDetections.append((obs.confidence, bbox))
-            } else if signInfo.isAdvisory, let text = signInfo.advisoryText {
-                advisoryDetections.append((text, obs.confidence, bbox))
+            } else if signInfo.isAdvisory, let key = signInfo.advisoryKey {
+                advisoryDetections.append((key, obs.confidence, bbox))
             }
         }
 
@@ -221,9 +221,9 @@ final class TrafficSignDetector: ObservableObject {
                     self?.detectedEndOfAllRestrictions = false
                     // If residential50 was detected, also set advisory
                     if residential50Detected {
-                        self?.activeAdvisorySignText = "Residential Area"
+                        self?.activeAdvisorySignText = "residential_area"
                         DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) { [weak self] in
-                            if self?.activeAdvisorySignText == "Residential Area" {
+                            if self?.activeAdvisorySignText == "residential_area" {
                                 self?.activeAdvisorySignText = nil
                             }
                         }
@@ -246,25 +246,25 @@ final class TrafficSignDetector: ObservableObject {
 
         // Handle advisory sign detection
         if let bestAdvisory = advisoryDetections.max(by: { $0.1 < $1.1 }) {
-            let advisoryText = bestAdvisory.0
-            if advisoryText == lastAdvisoryText {
+            let advisoryKey = bestAdvisory.0
+            if advisoryKey == lastAdvisoryText {
                 advisoryConsecutiveCount += 1
             } else {
                 advisoryConsecutiveCount = 1
-                lastAdvisoryText = advisoryText
+                lastAdvisoryText = advisoryKey
             }
 
             if advisoryConsecutiveCount >= requiredConsecutiveMatches {
                 DispatchQueue.main.async { [weak self] in
-                    self?.activeAdvisorySignText = advisoryText
+                    self?.activeAdvisorySignText = advisoryKey
                     // Auto-clear after 3.5s
                     DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) { [weak self] in
-                        if self?.activeAdvisorySignText == advisoryText {
+                        if self?.activeAdvisorySignText == advisoryKey {
                             self?.activeAdvisorySignText = nil
                         }
                     }
                 }
-                diagnostics?.record(type: "tsr_state", details: "action=advisory_confirmed text=\(advisoryText)")
+                diagnostics?.record(type: "tsr_state", details: "action=advisory_confirmed key=\(advisoryKey)")
             }
         } else {
             advisoryConsecutiveCount = 0
