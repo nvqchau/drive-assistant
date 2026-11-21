@@ -2047,32 +2047,25 @@ struct ContentView: View {
                                                 .background(Color.black.opacity(0.6), in: Capsule())
                                                 .transition(.opacity.combined(with: .move(edge: .top)))
                                         }
-                                        // TT38 Statutory Road-Type Pill (shown when statutory limit is active)
+                                        // TT38 Statutory Road-Type Pill (shown when residential area state is known and a limit is displayed)
                                         if let inResidential = model.isInResidentialArea,
                                            model.detectedSpeedLimit != nil,
                                            !model.showSpeedLimitCleared,
                                            !model.showEndOfAllRestrictions {
-                                            // Only show when statutory limit applies (no explicit P.127 sign override)
-                                            // We infer statutory by checking if the current limit matches TT38 values
-                                            let isStatutory: Bool = {
-                                                guard let limit = model.detectedSpeedLimit else { return false }
-                                                let expected = inResidential ? (model.isDividedRoad ? 60 : 50) : (model.isDividedRoad ? 90 : 80)
-                                                return limit == expected && model.enableDefaultOutsideResidentialLimit
-                                            }()
-                                            if isStatutory {
-                                                Button(action: { model.location.roadMetadata.toggleDividedRoad() }) {
-                                                    Text(model.usesVietnamese
-                                                        ? (model.isDividedRoad ? "Đôi • 60/90" : "2 chiều • 50/80")
-                                                        : (model.isDividedRoad ? "Divided • 60/90" : "2-Way • 50/80"))
-                                                        .font(.system(size: 9, weight: .bold, design: .rounded))
-                                                        .foregroundColor(.white)
-                                                        .padding(.horizontal, 8)
-                                                        .padding(.vertical, 2)
-                                                        .background(Color.blue.opacity(0.7), in: Capsule())
-                                                }
-                                                .buttonStyle(.plain)
-                                                .transition(.opacity.combined(with: .scale))
+                                            // Show pill whenever we're in/out of residential area with a limit displayed
+                                            // The limit may be statutory (TT38) or explicit P.127; pill reflects current divided state
+                                            Button(action: { model.location.roadMetadata.toggleDividedRoad() }) {
+                                                Text(model.usesVietnamese
+                                                    ? (model.isDividedRoad ? "Đôi • 60/90" : "2 chiều • 50/80")
+                                                    : (model.isDividedRoad ? "Divided • 60/90" : "2-Way • 50/80"))
+                                                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                                                    .foregroundColor(.white)
+                                                    .padding(.horizontal, 8)
+                                                    .padding(.vertical, 2)
+                                                    .background(Color.blue.opacity(0.7), in: Capsule())
                                             }
+                                            .buttonStyle(.plain)
+                                            .transition(.opacity.combined(with: .scale))
                                         }
                                     }
                                     // DP.135 (End of All Restrictions) indicator
@@ -3374,6 +3367,7 @@ final class DriveAssistantModel: ObservableObject {
     }
     @Published private(set) var isInResidentialArea: Bool? = nil  // nil=unknown, true=inside, false=outside
     @Published private(set) var isDividedRoad: Bool = false  // from OSM or dual carriageway sign
+    private var isCurrentLimitStatutory = false  // true if detectedSpeedLimit came from TT38, false if from P.127 sign
 
     // Display Theme & Mirror Mode
     @Published var displayThemeMode: DisplayThemeMode = .auto {
@@ -3626,6 +3620,8 @@ final class DriveAssistantModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] limit in
                 self?.detectedSpeedLimit = limit
+                // Explicit P.127 sign from camera overrides statutory — mark as non-statutory
+                if limit != nil { self?.isCurrentLimitStatutory = false }
                 self?.updateOverspeedState()
             }
             .store(in: &cancellables)
@@ -3986,16 +3982,14 @@ final class DriveAssistantModel: ObservableObject {
 
     /// Apply Vietnam TT38 statutory speed limits based on residential area + divided road status.
     /// Called when isInResidentialArea or isDividedRoad changes, or when explicit P.127 sign clears.
-    /// - If explicit P.127 sign is active (detectedSpeedLimit set by camera), do nothing.
-    /// - If no explicit sign:
+    /// - If explicit P.127 sign is active (isCurrentLimitStatutory == false), do nothing.
+    /// - If statutory limit is active (isCurrentLimitStatutory == true) or no limit set, update to new TT38 value.
     ///     * isInResidentialArea == true:  50 km/h (2-way) or 60 km/h (divided)
     ///     * isInResidentialArea == false: 80 km/h (2-way) or 90 km/h (divided)  [if enableDefaultOutsideResidentialLimit]
     ///     * isInResidentialArea == nil:   do nothing (unknown)
     private func applyTT38StatutoryLimit() {
         // If an explicit P.127 speed sign was confirmed by camera, respect it and don't override
-        // We detect this by checking if the current limit matches a known P.127 value and was recently set
-        // For simplicity: only apply statutory limits when detectedSpeedLimit is nil (no camera sign active)
-        guard detectedSpeedLimit == nil else { return }
+        guard !isCurrentLimitStatutory || detectedSpeedLimit == nil else { return }
         guard let inResidential = isInResidentialArea else { return }  // unknown state
         guard enableDefaultOutsideResidentialLimit || inResidential else { return }  // outside residential but feature disabled
 
@@ -4006,9 +4000,13 @@ final class DriveAssistantModel: ObservableObject {
             newLimit = isDividedRoad ? 90 : 80
         }
 
-        detectedSpeedLimit = newLimit
-        diagnostics.record(type: "tsr_tt38_statutory", details: "limit=\(newLimit) inResidential=\(inResidential) divided=\(isDividedRoad) source=\(isDividedRoad ? (camera.trafficSignDetector.isDividedRoadFromSign ? "sign" : "osm") : "osm")")
-        updateOverspeedState()
+        // Only update if limit actually changed (or was nil)
+        if detectedSpeedLimit != newLimit {
+            detectedSpeedLimit = newLimit
+            isCurrentLimitStatutory = true
+            diagnostics.record(type: "tsr_tt38_statutory", details: "limit=\(newLimit) inResidential=\(inResidential) divided=\(isDividedRoad) source=\(isDividedRoad ? (camera.trafficSignDetector.isDividedRoadFromSign ? "sign" : "osm") : "osm")")
+            updateOverspeedState()
+        }
     }
 
     /// Dynamic in-drive horizon auto-calibration with progress tracking
@@ -5481,6 +5479,7 @@ final class TrafficSignDetector: ObservableObject {
     private var lastEndSignType: EndSignType?
     private var advisoryConsecutiveCount = 0
     private var lastAdvisoryText: String?
+    private var endResidentialConsecutiveCount = 0  // for R.421/DP.135 exit confirmation
 
     private enum EndSignType { case dp134, dp135 }
 
@@ -5696,12 +5695,20 @@ final class TrafficSignDetector: ObservableObject {
             lastAdvisoryText = nil
         }
 
-        // Handle end of residential area detection (R.421 "117" or DP.135 "190")
+        // Handle end of residential area detection (R.421 "117" or DP.135 "190") — require 2 consecutive matches
         if endResidentialAreaDetected {
-            DispatchQueue.main.async { [weak self] in
-                self?.isInResidentialArea = false
+            endResidentialConsecutiveCount += 1
+            if endResidentialConsecutiveCount >= requiredConsecutiveMatches {
+                DispatchQueue.main.async { [weak self] in
+                    self?.detectedSpeedLimit = nil
+                    self?.didClearSpeedLimitEvent = Date()
+                    self?.isInResidentialArea = false
+                }
+                diagnostics?.record(type: "tsr_state", details: "action=end_residential_area_confirmed cleared_limit")
+                endResidentialConsecutiveCount = 0
             }
-            diagnostics?.record(type: "tsr_state", details: "action=end_residential_area confirmed")
+        } else {
+            endResidentialConsecutiveCount = 0
         }
 
         // Handle dual carriageway detection (class "142")
@@ -5759,6 +5766,9 @@ final class TrafficSignDetector: ObservableObject {
         didClearSpeedLimitEvent = nil
         detectedEndOfAllRestrictions = false
         activeAdvisorySignText = nil
+        isInResidentialArea = nil
+        isDividedRoadFromSign = false
+        endResidentialConsecutiveCount = 0
     }
 }
 ==> ./DriveAssistant/Sources/WeatherService.swift <==

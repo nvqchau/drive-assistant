@@ -372,7 +372,16 @@ final class DriveAssistantModel: ObservableObject {
             .sink { [weak self] limit in
                 self?.detectedSpeedLimit = limit
                 // Explicit P.127 sign from camera overrides statutory — mark as non-statutory
-                if limit != nil { self?.isCurrentLimitStatutory = false }
+                // But allow R.420 residential entry (limit=50) to stay statutory so divided road upgrades 50->60
+                if limit != nil {
+                    let inResidential = self?.camera.trafficSignDetector.isInResidentialArea ?? false
+                    if !(inResidential && limit == 50) {
+                        self?.isCurrentLimitStatutory = false
+                    }
+                } else {
+                    // Manual clear (tap on badge) resets statutory tracking
+                    self?.isCurrentLimitStatutory = false
+                }
                 self?.updateOverspeedState()
             }
             .store(in: &cancellables)
@@ -425,6 +434,8 @@ final class DriveAssistantModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] inResidential in
                 self?.isInResidentialArea = inResidential
+                // Entering/exiting residential area triggers statutory limit — enable tracking
+                if inResidential != nil { self?.isCurrentLimitStatutory = true }
                 self?.applyTT38StatutoryLimit()
             }
             .store(in: &cancellables)
