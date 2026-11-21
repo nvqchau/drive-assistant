@@ -211,8 +211,11 @@ struct ContentView: View {
                                         }
                                         .transition(.opacity.combined(with: .scale))
                                     }
-                                    // Secondary advisory sign (localized from canonical keys)
+                                    // Secondary advisory sign (localized from canonical keys) — red for prohibitory, blue for informational
                                     if let advisoryKey = model.activeAdvisorySignText {
+                                        let isProhibitory = advisoryKey == "no_entry" || advisoryKey == "no_cars" || advisoryKey == "no_overtaking"
+                                        let badgeColor: Color = isProhibitory ? .red : .blue
+                                        let badgeIcon: String = isProhibitory ? "xmark.octagon.fill" : "house.fill"
                                         let advisoryText: String = {
                                             switch advisoryKey {
                                             case "no_entry":
@@ -230,20 +233,20 @@ struct ContentView: View {
                                         VStack(spacing: 2) {
                                             ZStack {
                                                 RoundedRectangle(cornerRadius: 6)
-                                                    .fill(Color.blue.opacity(0.15))
+                                                    .fill(badgeColor.opacity(0.15))
                                                     .frame(width: 38, height: 38)
                                                 RoundedRectangle(cornerRadius: 6)
-                                                    .stroke(Color.blue, lineWidth: 3)
+                                                    .stroke(badgeColor, lineWidth: 3)
                                                     .frame(width: 38, height: 38)
-                                                Image(systemName: "exclamationmark.triangle.fill")
+                                                Image(systemName: badgeIcon)
                                                     .font(.system(size: 16, weight: .bold))
-                                                    .foregroundColor(.blue)
+                                                    .foregroundColor(badgeColor)
                                             }
                                             .frame(width: 38, height: 38)
                                             .shadow(color: Color.black.opacity(0.3), radius: 4)
                                             Text(advisoryText)
                                                 .font(.system(size: 8, weight: .bold, design: .rounded))
-                                                .foregroundColor(.blue)
+                                                .foregroundColor(badgeColor)
                                                 .padding(.horizontal, 4)
                                                 .padding(.vertical, 1)
                                                 .background(Color.black.opacity(0.5), in: Capsule())

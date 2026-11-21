@@ -14,6 +14,10 @@ final class AlertManager {
     private var interruptionObserver: NSObjectProtocol?
     private let hapticGenerator = UINotificationFeedbackGenerator()
 
+    // Advisory sign alert cooldowns (per key, 8s)
+    private var lastAdvisoryAlert: [String: Date] = [:]
+    private let advisoryAlertCooldown: TimeInterval = 8.0
+
     // AVAudioEngine for synthesized chimes
     private lazy var audioEngine = AVAudioEngine()
     private lazy var playerNode = AVAudioPlayerNode()
@@ -362,6 +366,108 @@ extension AlertManager {
                 let t = Double(frame) / sampleRate
                 let envelope = exp(-t * 8.0)
                 let sample = sin(2.0 * .pi * 523.25 * t) * envelope * 0.2
+                channelData?[frame] = Float(sample)
+            }
+            self.playerNode.scheduleBuffer(buffer2, at: nil, options: .interrupts, completionHandler: nil)
+            self.playerNode.play()
+        }
+
+        // Play first note immediately
+        playerNode.play()
+    }
+}
+
+// MARK: - Traffic Sign Advisory Alert (Prohibitory / Informational)
+extension AlertManager {
+    /// Play advisory traffic sign alert with distinct chime and Vietnamese voice.
+    /// - Parameters:
+    ///   - key: Canonical advisory key ("no_entry", "no_cars", "no_overtaking", "residential_area")
+    ///   - speak: Whether to speak the Vietnamese prompt
+    func playTrafficSignAdvisoryAlert(key: String, speak: Bool) {
+        do {
+            // Cooldown per sign key (8s)
+            let now = Date()
+            if let last = lastAdvisoryAlert[key], now.timeIntervalSince(last) < advisoryAlertCooldown {
+                return
+            }
+            lastAdvisoryAlert[key] = now
+
+            // Distinct two-tone descending chime: G5 (784.0 Hz) -> D5 (587.33 Hz)
+            playAdvisoryChime()
+
+            // Warning haptic
+            hapticGenerator.notificationOccurred(.warning)
+
+            // Vietnamese voice prompt
+            if speak {
+                let vietnameseText: String
+                switch key {
+                case "no_entry":
+                    vietnameseText = "Chú ý, biển cấm đi ngược chiều"
+                case "no_cars":
+                    vietnameseText = "Chú ý, đường cấm ô tô"
+                case "no_overtaking":
+                    vietnameseText = "Chú ý, đoạn đường cấm vượt"
+                case "residential_area":
+                    vietnameseText = "Vào khu đông dân cư, giới hạn năm mươi ki-lô-mét trên giờ"
+                default:
+                    vietnameseText = key
+                }
+                let utterance = AVSpeechUtterance(string: vietnameseText)
+                utterance.voice = AVSpeechSynthesisVoice(language: "vi-VN")
+                utterance.rate = 0.48
+                try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+                synthesizer.speak(utterance)
+            }
+        } catch {
+            print("AlertManager: Traffic sign advisory alert failed: \(error)")
+        }
+    }
+
+    /// Play distinct descending two-tone chime: G5 (784.0 Hz) -> D5 (587.33 Hz), 0.12s each, 0.14s gap
+    private func playAdvisoryChime() {
+        guard ensureEngineRunning() else { return }
+        let sampleRate = audioEngine.mainMixerNode.outputFormat(forBus: 0).sampleRate
+        guard sampleRate > 0 else { return }
+        let noteDuration = 0.12
+        let gap = 0.14
+        let frameCount = AVAudioFrameCount(sampleRate * noteDuration)
+
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1) else { return }
+
+        // Validate format matches player node output format
+        guard format.isEqual(playerNode.outputFormat(forBus: 0)) else {
+            print("AlertManager: Advisory chime format mismatch")
+            return
+        }
+
+        let note1Freq = 784.0   // G5
+        let note2Freq = 587.33  // D5
+
+        // Note 1: G5
+        if let buffer1 = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) {
+            buffer1.frameLength = frameCount
+            let channelData = buffer1.floatChannelData?[0]
+            for frame in 0..<Int(frameCount) {
+                let t = Double(frame) / sampleRate
+                let envelope = exp(-t * 10.0)
+                let sample = sin(2.0 * .pi * note1Freq * t) * envelope * 0.25
+                channelData?[frame] = Float(sample)
+            }
+            playerNode.scheduleBuffer(buffer1, at: nil, options: .interrupts, completionHandler: nil)
+        }
+
+        // Note 2: D5 (delayed by noteDuration + gap = 0.26s)
+        DispatchQueue.main.asyncAfter(deadline: .now() + noteDuration + gap) { [weak self] in
+            guard let self,
+                  self.ensureEngineRunning(),
+                  let buffer2 = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
+            buffer2.frameLength = frameCount
+            let channelData = buffer2.floatChannelData?[0]
+            for frame in 0..<Int(frameCount) {
+                let t = Double(frame) / sampleRate
+                let envelope = exp(-t * 10.0)
+                let sample = sin(2.0 * .pi * note2Freq * t) * envelope * 0.25
                 channelData?[frame] = Float(sample)
             }
             self.playerNode.scheduleBuffer(buffer2, at: nil, options: .interrupts, completionHandler: nil)

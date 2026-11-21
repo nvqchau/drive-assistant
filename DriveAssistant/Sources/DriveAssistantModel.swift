@@ -90,6 +90,9 @@ final class DriveAssistantModel: ObservableObject {
     @Published var autoDebugScreenshotEnabled: Bool = true {
         didSet { UserDefaults.standard.set(autoDebugScreenshotEnabled, forKey: "autoDebugScreenshotEnabled") }
     }
+    // Track last advisory alert key for cooldown
+    private var lastAdvisoryAlertKey: String? = nil
+    private var lastAdvisoryAlertTime: TimeInterval = 0
 
     // Traffic Sign Recognition (TSR)
     @Published var enableSpeedSignRecognition: Bool = true {
@@ -387,11 +390,21 @@ final class DriveAssistantModel: ObservableObject {
             }
             .store(in: &cancellables)
 
-        // Secondary advisory sign (e.g., "Cấm vượt", "Khu dân cư")
+        // Secondary advisory sign (e.g., "Cấm vượt", "Khu dân cư") — trigger audio alert + diagnostics
         camera.trafficSignDetector.$activeAdvisorySignText
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] text in
-                self?.activeAdvisorySignText = text
+            .sink { [weak self] key in
+                self?.activeAdvisorySignText = key
+                guard let self, let key else { return }
+                // Per-key 8s cooldown (separate from AlertManager's internal cooldown)
+                let now = CACurrentMediaTime()
+                if self.lastAdvisoryAlertKey == key, now - self.lastAdvisoryAlertTime < 8.0 {
+                    return
+                }
+                self.lastAdvisoryAlertKey = key
+                self.lastAdvisoryAlertTime = now
+                self.alerts.playTrafficSignAdvisoryAlert(key: key, speak: self.voiceAlertsEnabled)
+                self.diagnostics.record(type: "tsr_advisory_alert", details: "key=\(key) speedKMPH=\(String(format: "%.1f", self.speedKMPH))")
             }
             .store(in: &cancellables)
 
