@@ -83,7 +83,6 @@ private struct VietnamAdvisorySign: View {
 struct ContentView: View {
     @ObservedObject var model: DriveAssistantModel
     @State private var screenshotFlash = false
-    @State private var screenshotSaved = false
     @State private var isCapturingScreenshot = false
     @State private var currentTimestamp = Date()
     @State private var timestampTimer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
@@ -109,6 +108,8 @@ struct ContentView: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
                 withAnimation(.easeInOut(duration: 0.15)) { screenshotFlash = false }
             }
+            // Subtle haptic on manual capture — no modal alert
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
         }
 
         // 3. Wait 0.06s for SwiftUI to flush transparent background before compositing
@@ -166,11 +167,7 @@ struct ContentView: View {
                 guard status == .authorized else { return }
                 PHPhotoLibrary.shared().performChanges({
                     PHAssetChangeRequest.creationRequestForAsset(from: composited)
-                }) { success, _ in
-                    if success && !silent {
-                        DispatchQueue.main.async { screenshotSaved = true }
-                    }
-                }
+                }) { _, _ in }
             }
         }
     }
@@ -213,7 +210,7 @@ struct ContentView: View {
                 hud
             }
         }
-        .background(Color.black)
+        .background(isCapturingScreenshot ? Color.clear : Color.black)
         .ignoresSafeArea(.all)
         .scaleEffect(x: 1, y: model.hudMirrorMode ? -1 : 1)
         .sheet(isPresented: $model.isSettingsPresented) { SettingsView(model: model) }
@@ -231,9 +228,6 @@ struct ContentView: View {
                     .ignoresSafeArea()
                     .transition(.opacity)
             }
-        }
-        .alert("Screenshot saved", isPresented: $screenshotSaved) {
-            Button("OK", role: .cancel) {}
         }
     }
 
