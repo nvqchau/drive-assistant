@@ -118,6 +118,7 @@ final class DriveAssistantModel: ObservableObject {
     }
     @Published private(set) var isInResidentialArea: Bool? = nil  // nil=unknown, true=inside, false=outside
     @Published private(set) var isDividedRoad: Bool = false  // from OSM or dual carriageway sign
+    private var isCurrentLimitStatutory = false  // true if detectedSpeedLimit came from TT38, false if from P.127 sign
 
     // Display Theme & Mirror Mode
     @Published var displayThemeMode: DisplayThemeMode = .auto {
@@ -370,6 +371,8 @@ final class DriveAssistantModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] limit in
                 self?.detectedSpeedLimit = limit
+                // Explicit P.127 sign from camera overrides statutory — mark as non-statutory
+                if limit != nil { self?.isCurrentLimitStatutory = false }
                 self?.updateOverspeedState()
             }
             .store(in: &cancellables)
@@ -730,16 +733,14 @@ final class DriveAssistantModel: ObservableObject {
 
     /// Apply Vietnam TT38 statutory speed limits based on residential area + divided road status.
     /// Called when isInResidentialArea or isDividedRoad changes, or when explicit P.127 sign clears.
-    /// - If explicit P.127 sign is active (detectedSpeedLimit set by camera), do nothing.
-    /// - If no explicit sign:
+    /// - If explicit P.127 sign is active (isCurrentLimitStatutory == false), do nothing.
+    /// - If statutory limit is active (isCurrentLimitStatutory == true) or no limit set, update to new TT38 value.
     ///     * isInResidentialArea == true:  50 km/h (2-way) or 60 km/h (divided)
     ///     * isInResidentialArea == false: 80 km/h (2-way) or 90 km/h (divided)  [if enableDefaultOutsideResidentialLimit]
     ///     * isInResidentialArea == nil:   do nothing (unknown)
     private func applyTT38StatutoryLimit() {
         // If an explicit P.127 speed sign was confirmed by camera, respect it and don't override
-        // We detect this by checking if the current limit matches a known P.127 value and was recently set
-        // For simplicity: only apply statutory limits when detectedSpeedLimit is nil (no camera sign active)
-        guard detectedSpeedLimit == nil else { return }
+        guard !isCurrentLimitStatutory || detectedSpeedLimit == nil else { return }
         guard let inResidential = isInResidentialArea else { return }  // unknown state
         guard enableDefaultOutsideResidentialLimit || inResidential else { return }  // outside residential but feature disabled
 
@@ -750,9 +751,13 @@ final class DriveAssistantModel: ObservableObject {
             newLimit = isDividedRoad ? 90 : 80
         }
 
-        detectedSpeedLimit = newLimit
-        diagnostics.record(type: "tsr_tt38_statutory", details: "limit=\(newLimit) inResidential=\(inResidential) divided=\(isDividedRoad) source=\(isDividedRoad ? (camera.trafficSignDetector.isDividedRoadFromSign ? "sign" : "osm") : "osm")")
-        updateOverspeedState()
+        // Only update if limit actually changed (or was nil)
+        if detectedSpeedLimit != newLimit {
+            detectedSpeedLimit = newLimit
+            isCurrentLimitStatutory = true
+            diagnostics.record(type: "tsr_tt38_statutory", details: "limit=\(newLimit) inResidential=\(inResidential) divided=\(isDividedRoad) source=\(isDividedRoad ? (camera.trafficSignDetector.isDividedRoadFromSign ? "sign" : "osm") : "osm")")
+            updateOverspeedState()
+        }
     }
 
     /// Dynamic in-drive horizon auto-calibration with progress tracking
