@@ -388,15 +388,16 @@ final class TrafficSignDetector: ObservableObject {
         // Expand bbox by 1.15x in normalized coordinates (bottom-left origin from YOLO)
         let expandedBBox = expandBoundingBox(bbox, factor: ocrExpansionFactor)
 
-        // Convert normalized bbox (bottom-left origin) to CIImage crop rect (top-left origin)
+        // Convert normalized bbox (bottom-left origin) to CIImage crop rect (bottom-left origin)
+        // CIImage.extent uses bottom-left origin, matching VNRecognizedObjectObservation.boundingBox
         let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
         let imageWidth = ciImage.extent.width
         let imageHeight = ciImage.extent.height
 
         // YOLO bbox: origin bottom-left, normalized
-        // CIImage crop: origin top-left, pixel coordinates
+        // CIImage crop: origin bottom-left, pixel coordinates (same coordinate system)
         let cropX = expandedBBox.minX * imageWidth
-        let cropY = (1.0 - expandedBBox.maxY) * imageHeight  // flip Y
+        let cropY = expandedBBox.minY * imageHeight  // bottom-left origin, no Y flip needed
         let cropWidth = expandedBBox.width * imageWidth
         let cropHeight = expandedBBox.height * imageHeight
 
@@ -407,11 +408,10 @@ final class TrafficSignDetector: ObservableObject {
 
         let croppedImage = ciImage.cropped(to: cropRect)
 
-        // Apply orientation correction for OCR
-        let orientedImage = croppedImage.oriented(orientation)
-
+        // Pass orientation directly to VNImageRequestHandler (not croppedImage.oriented)
+        // so coordinates stay aligned for landscapeRight / down orientations
         var recognizedText: String?
-        let handler = VNImageRequestHandler(ciImage: orientedImage, options: [:])
+        let handler = VNImageRequestHandler(ciImage: croppedImage, orientation: orientation, options: [:])
         do {
             try handler.perform([ocrRequest])
             recognizedText = ocrRequest.results?.first?.topCandidates(1).first?.string
@@ -422,14 +422,16 @@ final class TrafficSignDetector: ObservableObject {
 
         guard let text = recognizedText else { return nil }
 
-        // Parse text for speed number (extract digits)
-        let digits = text.filter { $0.isNumber }
-        guard let speed = Int(digits), validSpeedTokens.contains(speed) else {
-            diagnostics?.record(type: "tsr_ocr_invalid", details: "rawText=\(text), parsedDigits=\(digits)")
-            return nil
+        // Parse text for speed number: split by non-digits, pick first token in validSpeedTokens
+        // Handles "P.127 60" -> ["", "127", "", "60"] -> picks 60 (127 not in validSpeedTokens)
+        let tokens = text.components(separatedBy: CharacterSet.decimalDigits.inverted)
+        for token in tokens {
+            if let speed = Int(token), validSpeedTokens.contains(speed) {
+                return speed
+            }
         }
-
-        return speed
+        diagnostics?.record(type: "tsr_ocr_invalid", details: "rawText=\(text), tokens=\(tokens)")
+        return nil
     }
 
     private func expandBoundingBox(_ bbox: CGRect, factor: CGFloat) -> CGRect {

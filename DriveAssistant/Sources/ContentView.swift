@@ -97,7 +97,11 @@ struct ContentView: View {
     }
 
     private func takeScreenshot(silent: Bool = false) {
-        isCapturingScreenshot = true
+        // 1. Fetch camera image FIRST (may be nil if session not running)
+        let cameraImage = model.camera.snapshotCameraImage()
+
+        // 2. Only hide CameraPreview if we got a camera image; otherwise keep it visible
+        isCapturingScreenshot = cameraImage != nil
 
         if !silent {
             // Flash screen
@@ -107,9 +111,8 @@ struct ContentView: View {
             }
         }
 
-        // Allow SwiftUI to render CameraPreview hidden before capturing
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) {
-            // Capture the full screen (HUD overlay)
+        // 3. Wait 0.06s for SwiftUI to flush transparent background before compositing
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
             guard let window = UIApplication.shared.connectedScenes
                 .compactMap({ ($0 as? UIWindowScene)?.keyWindow }).first else {
                 isCapturingScreenshot = false
@@ -118,9 +121,6 @@ struct ContentView: View {
 
             let bounds = window.bounds
             let renderer = UIGraphicsImageRenderer(bounds: bounds)
-
-            // First get the camera frame
-            let cameraImage = model.camera.snapshotCameraImage()
 
             let composited = renderer.image { ctx in
                 // 1. Draw camera image (aspectFill to match CameraPreview)
@@ -468,7 +468,7 @@ private struct RuleWeatherPill: View {
     var body: some View {
         Button(action: model.cycleRoadCondition) {
             HStack(spacing: 10) {
-                Text(model.distanceRuleMode == .vnLaw ? "TT38 • MIN \(String(format: "%.0f", model.activeMinimumDistance))m" : "MIN \(String(format: "%.0f", model.activeMinimumDistance))m")
+                Text(model.distanceRuleMode == .vnLaw ? "TT38 • MIN \(String(format: "%.0f", model.displayMinimumDistance))m" : "MIN \(String(format: "%.0f", model.displayMinimumDistance))m")
                     .font(.system(size: 16, weight: .bold, design: .rounded))
                 Divider().frame(height: 20).overlay(Color.white.opacity(nightDim ? 0.27 : 0.35))
                 

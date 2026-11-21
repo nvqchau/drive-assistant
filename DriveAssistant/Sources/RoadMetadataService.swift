@@ -8,7 +8,7 @@ import CoreLocation
 final class RoadMetadataService: ObservableObject {
     @Published private(set) var isDividedRoad: Bool = false
     @Published private(set) var roadMaxSpeed: Int? = nil
-    @Published private(set) var osmIsInResidentialArea: Bool? = nil  // true if inside residential/urban area per OSM
+    @Published private(set) var osmIsInResidentialArea: Bool = false  // true if inside residential/urban area per OSM
     @Published private(set) var lastQueryLocation: CLLocation?
     @Published private(set) var isQuerying: Bool = false
     @Published private(set) var lastQueryDate: Date?
@@ -55,7 +55,7 @@ final class RoadMetadataService: ObservableObject {
         is_in(\(lat),\(lon))->.a;
         area.a["landuse"="residential"];
         out tags 1;
-        area.a["place"~"^(city|town|suburb|quarter|neighbourhood|village)$"];
+        area.a["place"~"^(town|suburb|quarter|neighbourhood|village)$"];
         out tags 1;
         """
 
@@ -80,7 +80,7 @@ final class RoadMetadataService: ObservableObject {
 
     /// Parse Overpass JSON response for oneway, dual_carriageway, lanes, maxspeed tags,
     /// and residential/urban area detection.
-    private func parseOverpassResponse(_ data: Data) throws -> (isDivided: Bool, maxSpeed: Int?, isInResidentialArea: Bool?) {
+    private func parseOverpassResponse(_ data: Data) throws -> (isDivided: Bool, maxSpeed: Int?, isInResidentialArea: Bool) {
         struct OverpassResponse: Decodable {
             let elements: [Element]
             struct Element: Decodable {
@@ -111,7 +111,7 @@ final class RoadMetadataService: ObservableObject {
                 foundResidentialArea = true
             }
             if let place = tags["place"],
-               ["city", "town", "suburb", "quarter", "neighbourhood", "village"].contains(place) {
+               ["town", "suburb", "quarter", "neighbourhood", "village"].contains(place) {
                 foundUrbanArea = true
             }
 
@@ -144,7 +144,7 @@ final class RoadMetadataService: ObservableObject {
         let isInResidentialArea = foundResidentialArea || foundUrbanArea ||
             (bestHighway == "residential" || bestHighway == "living_street")
 
-        return (isDivided, bestMaxSpeed, isInResidentialArea ? true : nil)
+        return (isDivided, bestMaxSpeed, isInResidentialArea)
     }
 
     /// Manual override from driver tap on HUD pill

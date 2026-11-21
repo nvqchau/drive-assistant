@@ -119,6 +119,8 @@ final class DriveAssistantModel: ObservableObject {
     @Published private(set) var isInResidentialArea: Bool? = nil  // nil=unknown, true=inside, false=outside
     @Published private(set) var isDividedRoad: Bool = false  // from OSM or dual carriageway sign
     private var isCurrentLimitStatutory = false  // true if detectedSpeedLimit came from TT38, false if from P.127 sign
+    private var lastCameraResidentialSignTime: Date = .distantPast  // for 5-min camera precedence over OSM
+    private var hasReceivedCameraSignOverride = false  // true after any camera sign confirmed or manual clear
 
     // Display Theme & Mirror Mode
     @Published var displayThemeMode: DisplayThemeMode = .auto {
@@ -188,24 +190,44 @@ final class DriveAssistantModel: ObservableObject {
 
     var safeDistance: Double { max(5, speedKMPH / 3.6 * timeHeadway) }
 
+    /// TT38 statutory distance for a given speed (km/h), with wet multiplier.
+    private func tt38Distance(forSpeed speed: Double) -> Double {
+        let base: Double
+        switch speed {
+        case ..<10: base = 5.0
+        case 10..<58: base = max(5, speed * 0.5)
+        case 58...60: base = 35
+        case 60..<80: base = 55
+        case 80...100: base = 70
+        default: base = 100
+        }
+        return (distanceRuleMode == .vnLaw && effectiveRoadCondition == .wet) ? base * 1.3 : base
+    }
+
     var baseSafeDistance: Double {
         switch distanceRuleMode {
         case .timeHeadway:
             return max(5, speedKMPH / 3.6 * timeHeadway)
         case .vnLaw:
-            switch speedKMPH {
-            case ..<10: return 0
-            case 10..<58: return max(5, speedKMPH * 0.5)
-            case 58...60: return 35
-            case 60..<80: return 55
-            case 80...100: return 70
-            default: return 100
-            }
+            return tt38Distance(forSpeed: speedKMPH)
         }
     }
 
+    /// Used for collision alert gating & progress bar (0 when < 10 km/h in .vnLaw mode).
     var activeMinimumDistance: Double {
-        baseSafeDistance * (distanceRuleMode == .vnLaw && effectiveRoadCondition == .wet ? 1.3 : 1.0)
+        baseSafeDistance
+    }
+
+    /// Used for HUD display: when stopped/crawling (< 10 km/h) in .vnLaw mode,
+    /// show the statutory distance for the active speed limit (or 5m floor).
+    var displayMinimumDistance: Double {
+        if distanceRuleMode == .vnLaw && speedKMPH < 10 {
+            if let limit = detectedSpeedLimit {
+                return tt38Distance(forSpeed: Double(limit))
+            }
+            return 5.0
+        }
+        return activeMinimumDistance
     }
 
     var effectiveRoadCondition: RoadCondition {
@@ -378,9 +400,11 @@ final class DriveAssistantModel: ObservableObject {
                     if !(inResidential && limit == 50) {
                         self?.isCurrentLimitStatutory = false
                     }
+                    self?.hasReceivedCameraSignOverride = true  // any confirmed camera sign
                 } else {
                     // Manual clear (tap on badge) resets statutory tracking
                     self?.isCurrentLimitStatutory = false
+                    self?.hasReceivedCameraSignOverride = true
                 }
                 self?.updateOverspeedState()
             }
@@ -394,6 +418,7 @@ final class DriveAssistantModel: ObservableObject {
                 self.detectedSpeedLimit = nil
                 self.isOverspeeding = false
                 self.showSpeedLimitCleared = true
+                self.hasReceivedCameraSignOverride = true  // manual clear counts as camera override
                 self.alerts.playSpeedLimitClearedAlert(speak: self.voiceAlertsEnabled)
 
                 // Auto-hide micro-badge after 2.5s
@@ -434,8 +459,11 @@ final class DriveAssistantModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] inResidential in
                 self?.isInResidentialArea = inResidential
-                // Entering/exiting residential area triggers statutory limit — enable tracking
-                if inResidential != nil { self?.isCurrentLimitStatutory = true }
+                // Record timestamp when camera sees explicit R.420/R.421 (non-nil) for 5-min precedence over OSM
+                if inResidential != nil {
+                    self?.lastCameraResidentialSignTime = Date()
+                    self?.isCurrentLimitStatutory = true
+                }
                 self?.applyTT38StatutoryLimit()
             }
             .store(in: &cancellables)
@@ -463,8 +491,8 @@ final class DriveAssistantModel: ObservableObject {
         location.roadMetadata.$roadMaxSpeed
             .receive(on: DispatchQueue.main)
             .sink { [weak self] maxSpeed in
-                // Fallback when no camera sign has been seen yet
-                if self?.detectedSpeedLimit == nil, let maxSpeed {
+                // Fallback only before any camera sign confirmed or manual clear
+                if !(self?.hasReceivedCameraSignOverride ?? false), let maxSpeed, self?.detectedSpeedLimit == nil {
                     self?.detectedSpeedLimit = maxSpeed
                     self?.updateOverspeedState()
                 }
@@ -472,13 +500,14 @@ final class DriveAssistantModel: ObservableObject {
             .store(in: &cancellables)
 
         // OSM Residential area detection: auto-activate "Khu dân cư" badge + TT38 50/60 km/h
-        // when no explicit R.420/R.421 camera sign has been seen (isInResidentialArea == nil)
+        // when no explicit R.420/R.421 camera sign has been seen recently (5-min precedence)
         location.roadMetadata.$osmIsInResidentialArea
             .receive(on: DispatchQueue.main)
             .sink { [weak self] osmInResidential in
                 guard let self else { return }
-                // Only apply OSM residential state if camera hasn't seen explicit R.420/R.421
-                if self.camera.trafficSignDetector.isInResidentialArea == nil {
+                // Only apply OSM if camera hasn't seen explicit R.420/R.421 within last 5 minutes
+                let cameraPrecedenceElapsed = Date().timeIntervalSince(self.lastCameraResidentialSignTime)
+                if self.camera.trafficSignDetector.isInResidentialArea == nil && cameraPrecedenceElapsed > 300 {
                     self.isInResidentialArea = osmInResidential
                     self.applyTT38StatutoryLimit()
                 }
@@ -765,7 +794,7 @@ final class DriveAssistantModel: ObservableObject {
     ///     * isInResidentialArea == nil:   do nothing (unknown)
     private func applyTT38StatutoryLimit() {
         // If an explicit P.127 speed sign was confirmed by camera, respect it and don't override
-        guard !isCurrentLimitStatutory || detectedSpeedLimit == nil else { return }
+        guard isCurrentLimitStatutory || detectedSpeedLimit == nil else { return }
         guard let inResidential = isInResidentialArea else { return }  // unknown state
         guard enableDefaultOutsideResidentialLimit || inResidential else { return }  // outside residential but feature disabled
 
