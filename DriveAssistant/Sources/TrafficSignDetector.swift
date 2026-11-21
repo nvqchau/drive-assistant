@@ -20,6 +20,10 @@ final class TrafficSignDetector: ObservableObject {
     private let requiredConsecutiveMatches = 2
     private let confidenceThreshold: Float = 0.48
     private let minBoxWidth: CGFloat = 0.018
+    // For diagnostic logging: include raw labels at lower confidence to see what model emits
+    private let diagnosticConfidenceThreshold: Float = 0.42
+    // Tolerate 1 transient missed frame during consecutive confirmation
+    private let maxMissedMatchFrames = 1
 
     // MARK: - Label to Sign mapping (supports both Count strings and 0-based index strings from classid.csv)
     // Speed limits: "124"/"57"->10, "114"/"61"->20, "62"->30, "360"/"2"->40, "402"/"39"->50,
@@ -71,6 +75,7 @@ final class TrafficSignDetector: ObservableObject {
     private var lastProcessTime: TimeInterval = 0
     private var consecutiveMatchCount = 0
     private var lastMatchedLimit: Int?
+    private var missedMatchFrames = 0  // tolerance for transient missed frame
     private var thermalState: ProcessInfo.ThermalState = .nominal
     private var visionOrientation: CGImagePropertyOrientation = .up
     private var coreMLModel: VNCoreMLModel?
@@ -165,22 +170,30 @@ final class TrafficSignDetector: ObservableObject {
 
         guard let results = request.results as? [VNRecognizedObjectObservation] else { return }
 
-        // Filter detections
+        // Filter detections at normal threshold for state updates
         var speedLimitDetections: [(Int, Float, CGRect)] = []  // (speedValue, confidence, bbox)
         var clearLimitDetections: [(Float, CGRect)] = []        // (confidence, bbox)
-        var advisoryDetections: [(String, Float, CGRect)] = []  // (text, confidence, bbox)
+        var advisoryDetections: [(String, Float, CGRect)] = []  // (key, confidence, bbox)
         var residential50Detected = false
 
+        // For diagnostic logging: collect ALL raw labels at lower threshold
+        var allRawDetections: [(String, Float, CGRect)] = []    // (rawLabel, confidence, bbox)
+
         for obs in results {
-            guard obs.confidence >= confidenceThreshold else { continue }
+            guard obs.confidence >= diagnosticConfidenceThreshold else { continue }
             guard obs.boundingBox.width >= minBoxWidth else { continue }
 
             // Get the top label - identifier is the class label string (Count from data.yaml)
             guard let topLabel = obs.labels.first else { continue }
             let label = topLabel.identifier
-            guard let signInfo = labelToSign[label] else { continue }
-
             let bbox = obs.boundingBox  // normalized, bottom-left origin
+
+            // Record ALL raw labels for verification
+            allRawDetections.append((label, obs.confidence, bbox))
+
+            // Only process for state updates if above normal confidence threshold
+            guard obs.confidence >= confidenceThreshold else { continue }
+            guard let signInfo = labelToSign[label] else { continue }
 
             if signInfo.isSpeedLimit, let speed = signInfo.speedValue {
                 speedLimitDetections.append((speed, obs.confidence, bbox))
@@ -194,11 +207,14 @@ final class TrafficSignDetector: ObservableObject {
             }
         }
 
-        // Diagnostic logging: every 1.0s
+        // Diagnostic logging: every 1.0s - include ALL raw labels
         let now = CACurrentMediaTime()
         if now - lastTSRLogTime >= 1.0 {
             lastTSRLogTime = now
-            let details = "speedDetections=\(speedLimitDetections.map { "(\($0.0),\(String(format: "%.2f", $0.1)),\(String(format: "%.3f", $0.2.minX)))\($0.2.width)" }.joined(separator: ";")) clearDetections=\(clearLimitDetections.count) advisoryDetections=\(advisoryDetections.map { "(\($0.0),\(String(format: "%.2f", $0.1)))" }.joined(separator: ";")) residential50=\(residential50Detected)"
+            let rawDetails = allRawDetections.map {
+                "(rawLabel=\($0.0), conf=\(String(format: "%.2f", $0.1)), x=\(String(format: "%.2f", $0.2.minX)), w=\(String(format: "%.3f", $0.2.width)))"
+            }.joined(separator: ";")
+            let details = "raw=\(rawDetails.isEmpty ? "none" : rawDetails); speedDetections=\(speedLimitDetections.map { "(\($0.0),\(String(format: "%.2f", $0.1)),\(String(format: "%.3f", $0.2.minX)))\($0.2.width)" }.joined(separator: ";")) clearDetections=\(clearLimitDetections.count) advisoryDetections=\(advisoryDetections.map { "(\($0.0),\(String(format: "%.2f", $0.1)))" }.joined(separator: ";")) residential50=\(residential50Detected)"
             diagnostics?.record(type: "tsr_yolo_detect", details: details)
         }
 
@@ -207,6 +223,7 @@ final class TrafficSignDetector: ObservableObject {
             let speedValue = bestSpeed.0
             endSignConsecutiveCount = 0
             lastEndSignType = nil
+            missedMatchFrames = 0  // reset miss tolerance on detection
 
             if speedValue == lastMatchedLimit {
                 consecutiveMatchCount += 1
@@ -232,8 +249,15 @@ final class TrafficSignDetector: ObservableObject {
                 diagnostics?.record(type: "tsr_state", details: "action=P127_confirmed limit=\(speedValue) consecutive=\(consecutiveMatchCount) residential50=\(residential50Detected)")
             }
         } else {
-            consecutiveMatchCount = 0
-            lastMatchedLimit = nil
+            // Tolerate transient missed frames before resetting confirmation
+            if lastMatchedLimit != nil {
+                missedMatchFrames += 1
+                if missedMatchFrames > maxMissedMatchFrames {
+                    consecutiveMatchCount = 0
+                    lastMatchedLimit = nil
+                    missedMatchFrames = 0
+                }
+            }
         }
 
         // Handle clear limit detection (DP.134 / DP.135)
