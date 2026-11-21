@@ -14,6 +14,8 @@ final class TrafficSignDetector: ObservableObject {
     @Published private(set) var didClearSpeedLimitEvent: Date?
     @Published private(set) var detectedEndOfAllRestrictions: Bool = false
     @Published private(set) var activeAdvisorySignText: String?  // e.g., "No Overtaking", "No Cars", "Residential Area"
+    @Published private(set) var isInResidentialArea: Bool? = nil  // true = R.420 seen, false = R.421/DP.135 seen
+    @Published private(set) var isDividedRoadFromSign: Bool = false  // set when class "142" (dual carriageway) detected
 
     // MARK: - Configuration
     private let processInterval: TimeInterval = 0.5  // 2 Hz
@@ -28,8 +30,10 @@ final class TrafficSignDetector: ObservableObject {
     // MARK: - Label to Sign mapping (ONLY true Count strings from vn_signs_ios16.mlpackage data.yaml)
     // Speed limits: "124"=ID57->10, "360"=ID2->40, "402"=ID39->50, "750"=ID12->60,
     // "105"=ID40->70, "441"=ID41->80, "101"=ID59->110
-    // Residential area (sets 50 km/h + advisory): "164"=ID79
-    // Clear speed limit (DP.134/DP.135): "190"=ID48, "141"=ID78, "117"=ID80
+    // Residential area (sets 50 km/h + advisory): "164"=ID79 (R.420)
+    // End residential area: "117"=ID80 (R.421), "190"=ID48 (DP.135 end all prohibition)
+    // Clear speed limit (DP.134): "141"=ID78 (End of 50km/h speed limit)
+    // Dual carriageway (sets divided road): "142"=ID73
     // Prohibitory advisory: "572"=ID0->no_entry, "279"=ID6->no_cars, "123"=ID45->no_overtaking
     private let labelToSign: [String: SignInfo] = [
         // Speed limits (Count string -> speed value)
@@ -41,11 +45,14 @@ final class TrafficSignDetector: ObservableObject {
         "441": .speedLimit(80),   // ID 41: Speed limit 80km/h
         "101": .speedLimit(110),  // ID 59: Speed limit 110km/h
         // Residential area (sets 50 km/h speed limit + advisory key)
-        "164": .residential50,    // ID 79: Residential area (50 km/h)
-        // Clear speed limit (DP.134 / DP.135)
-        "190": .clearLimit,       // ID 48: End of all prohibition
+        "164": .residential50,    // ID 79: Residential area (R.420) - ENTER
+        // End residential area / end restrictions
+        "117": .endResidentialArea,    // ID 80: Sparsely populated area (R.421) - EXIT
+        "190": .endResidentialArea,    // ID 48: End of all prohibition (DP.135) - EXIT
+        // Clear speed limit (DP.134)
         "141": .clearLimit,       // ID 78: End of 50km/h speed limit
-        "117": .clearLimit,       // ID 80: Sparsely populated area
+        // Dual carriageway (sets divided road flag)
+        "142": .dualCarriageway,  // ID 73: Dual carriageway
         // Prohibitory advisory (canonical keys for localization)
         "572": .advisory("no_entry"),      // ID 0: No Entry
         "279": .advisory("no_cars"),       // ID 6: No Cars
@@ -55,12 +62,16 @@ final class TrafficSignDetector: ObservableObject {
     private enum SignInfo: Equatable {
         case speedLimit(Int)
         case residential50  // sets detectedSpeedLimit = 50 AND activeAdvisorySignText = "residential_area"
+        case endResidentialArea  // R.421 "117" or DP.135 "190" - exit residential area
         case clearLimit
+        case dualCarriageway  // "142" - dual carriageway sign
         case advisory(String)  // canonical key: "no_entry", "no_cars", "no_overtaking"
 
         var isSpeedLimit: Bool { if case .speedLimit = self { return true } else { return false } }
         var isResidential50: Bool { if case .residential50 = self { return true } else { return false } }
+        var isEndResidentialArea: Bool { if case .endResidentialArea = self { return true } else { return false } }
         var isClearLimit: Bool { if case .clearLimit = self { return true } else { return false } }
+        var isDualCarriageway: Bool { if case .dualCarriageway = self { return true } else { return false } }
         var isAdvisory: Bool { if case .advisory = self { return true } else { return false } }
         var speedValue: Int? { if case .speedLimit(let v) = self { return v } else { return nil } }
         var advisoryKey: String? { if case .advisory(let k) = self { return k } else { return nil } }
@@ -170,6 +181,8 @@ final class TrafficSignDetector: ObservableObject {
         var clearLimitDetections: [(Float, CGRect)] = []        // (confidence, bbox)
         var advisoryDetections: [(String, Float, CGRect)] = []  // (key, confidence, bbox)
         var residential50Detected = false
+        var endResidentialAreaDetected = false
+        var dualCarriagewayDetected = false
 
         // For diagnostic logging: collect ALL raw labels at lower threshold
         var allRawDetections: [(String, Float, CGRect)] = []    // (rawLabel, confidence, bbox)
@@ -195,8 +208,12 @@ final class TrafficSignDetector: ObservableObject {
             } else if signInfo.isResidential50 {
                 residential50Detected = true
                 speedLimitDetections.append((50, obs.confidence, bbox))
+            } else if signInfo.isEndResidentialArea {
+                endResidentialAreaDetected = true
             } else if signInfo.isClearLimit {
                 clearLimitDetections.append((obs.confidence, bbox))
+            } else if signInfo.isDualCarriageway {
+                dualCarriagewayDetected = true
             } else if signInfo.isAdvisory, let key = signInfo.advisoryKey {
                 advisoryDetections.append((key, obs.confidence, bbox))
             }
@@ -209,7 +226,7 @@ final class TrafficSignDetector: ObservableObject {
             let rawDetails = allRawDetections.map {
                 "(rawLabel=\($0.0), conf=\(String(format: "%.2f", $0.1)), x=\(String(format: "%.2f", $0.2.minX)), w=\(String(format: "%.3f", $0.2.width)))"
             }.joined(separator: ";")
-            let details = "raw=\(rawDetails.isEmpty ? "none" : rawDetails); speedDetections=\(speedLimitDetections.map { "(\($0.0),\(String(format: "%.2f", $0.1)),\(String(format: "%.3f", $0.2.minX)))\($0.2.width)" }.joined(separator: ";")) clearDetections=\(clearLimitDetections.count) advisoryDetections=\(advisoryDetections.map { "(\($0.0),\(String(format: "%.2f", $0.1)))" }.joined(separator: ";")) residential50=\(residential50Detected)"
+            let details = "raw=\(rawDetails.isEmpty ? "none" : rawDetails); speedDetections=\(speedLimitDetections.map { "(\($0.0),\(String(format: "%.2f", $0.1)),\(String(format: "%.3f", $0.2.minX)))\($0.2.width)" }.joined(separator: ";")) clearDetections=\(clearLimitDetections.count) advisoryDetections=\(advisoryDetections.map { "(\($0.0),\(String(format: "%.2f", $0.1)))" }.joined(separator: ";")) residential50=\(residential50Detected) endResidential=\(endResidentialAreaDetected) dualCarriageway=\(dualCarriagewayDetected)"
             diagnostics?.record(type: "tsr_yolo_detect", details: details)
         }
 
@@ -231,9 +248,10 @@ final class TrafficSignDetector: ObservableObject {
                 DispatchQueue.main.async { [weak self] in
                     self?.detectedSpeedLimit = speedValue
                     self?.detectedEndOfAllRestrictions = false
-                    // If residential50 was detected, also set advisory
+                    // If residential50 was detected, also set advisory and residential area flag
                     if residential50Detected {
                         self?.activeAdvisorySignText = "residential_area"
+                        self?.isInResidentialArea = true
                         DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) { [weak self] in
                             if self?.activeAdvisorySignText == "residential_area" {
                                 self?.activeAdvisorySignText = nil
@@ -288,6 +306,22 @@ final class TrafficSignDetector: ObservableObject {
         } else {
             advisoryConsecutiveCount = 0
             lastAdvisoryText = nil
+        }
+
+        // Handle end of residential area detection (R.421 "117" or DP.135 "190")
+        if endResidentialAreaDetected {
+            DispatchQueue.main.async { [weak self] in
+                self?.isInResidentialArea = false
+            }
+            diagnostics?.record(type: "tsr_state", details: "action=end_residential_area confirmed")
+        }
+
+        // Handle dual carriageway detection (class "142")
+        if dualCarriagewayDetected {
+            DispatchQueue.main.async { [weak self] in
+                self?.isDividedRoadFromSign = true
+            }
+            diagnostics?.record(type: "tsr_state", details: "action=dual_carriageway confirmed")
         }
     }
 
