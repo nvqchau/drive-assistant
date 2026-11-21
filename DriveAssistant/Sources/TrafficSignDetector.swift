@@ -18,43 +18,38 @@ final class TrafficSignDetector: ObservableObject {
     // MARK: - Configuration
     private let processInterval: TimeInterval = 0.5  // 2 Hz
     private let requiredConsecutiveMatches = 2
-    private let confidenceThreshold: Float = 0.48
+    private let confidenceThreshold: Float = 0.35
     private let minBoxWidth: CGFloat = 0.018
     // For diagnostic logging: include raw labels at lower confidence to see what model emits
-    private let diagnosticConfidenceThreshold: Float = 0.42
+    private let diagnosticConfidenceThreshold: Float = 0.25
     // Tolerate 1 transient missed frame during consecutive confirmation
     private let maxMissedMatchFrames = 1
 
-    // MARK: - Label to Sign mapping (supports both Count strings and 0-based index strings from classid.csv)
-    // Speed limits: "124"/"57"->10, "114"/"61"->20, "62"->30, "360"/"2"->40, "402"/"39"->50,
-    // "750"/"12"->60, "105"/"40"->70, "441"/"41"->80, "102"/"63"->90, "103"/"58"->100, "101"/"59"->110, "60"->120
-    // Residential area (sets 50 km/h + advisory): "164"/"79"->.residential50
-    // Clear speed limit (DP.134/DP.135): "190"/"48", "141"/"78", "117"/"80"->.clearLimit
-    // Prohibitory advisory: "572"/"0"->no_entry, "279"/"6"->no_cars, "123"/"45"->no_overtaking
+    // MARK: - Label to Sign mapping (ONLY true Count strings from vn_signs_ios16.mlpackage data.yaml)
+    // Speed limits: "124"=ID57->10, "360"=ID2->40, "402"=ID39->50, "750"=ID12->60,
+    // "105"=ID40->70, "441"=ID41->80, "101"=ID59->110
+    // Residential area (sets 50 km/h + advisory): "164"=ID79
+    // Clear speed limit (DP.134/DP.135): "190"=ID48, "141"=ID78, "117"=ID80
+    // Prohibitory advisory: "572"=ID0->no_entry, "279"=ID6->no_cars, "123"=ID45->no_overtaking
     private let labelToSign: [String: SignInfo] = [
-        // Speed limits (Count string / class index -> speed value)
-        "124": .speedLimit(10), "57": .speedLimit(10),
-        "114": .speedLimit(20), "61": .speedLimit(20),
-        "62": .speedLimit(30),
-        "360": .speedLimit(40), "2": .speedLimit(40),
-        "402": .speedLimit(50), "39": .speedLimit(50),
-        "750": .speedLimit(60), "12": .speedLimit(60),
-        "105": .speedLimit(70), "40": .speedLimit(70),
-        "441": .speedLimit(80), "41": .speedLimit(80),
-        "102": .speedLimit(90), "63": .speedLimit(90),
-        "103": .speedLimit(100), "58": .speedLimit(100),
-        "101": .speedLimit(110), "59": .speedLimit(110),
-        "60": .speedLimit(120),
+        // Speed limits (Count string -> speed value)
+        "124": .speedLimit(10),   // ID 57: Speed limit 10km/h
+        "360": .speedLimit(40),   // ID 2: Speed limit 40km/h
+        "402": .speedLimit(50),   // ID 39: Speed limit 50km/h
+        "750": .speedLimit(60),   // ID 12: Speed limit 60km/h
+        "105": .speedLimit(70),   // ID 40: Speed limit 70km/h
+        "441": .speedLimit(80),   // ID 41: Speed limit 80km/h
+        "101": .speedLimit(110),  // ID 59: Speed limit 110km/h
         // Residential area (sets 50 km/h speed limit + advisory key)
-        "164": .residential50, "79": .residential50,
+        "164": .residential50,    // ID 79: Residential area (50 km/h)
         // Clear speed limit (DP.134 / DP.135)
-        "190": .clearLimit, "48": .clearLimit,
-        "141": .clearLimit, "78": .clearLimit,
-        "117": .clearLimit, "80": .clearLimit,
+        "190": .clearLimit,       // ID 48: End of all prohibition
+        "141": .clearLimit,       // ID 78: End of 50km/h speed limit
+        "117": .clearLimit,       // ID 80: Sparsely populated area
         // Prohibitory advisory (canonical keys for localization)
-        "572": .advisory("no_entry"), "0": .advisory("no_entry"),
-        "279": .advisory("no_cars"), "6": .advisory("no_cars"),
-        "123": .advisory("no_overtaking"), "45": .advisory("no_overtaking"),
+        "572": .advisory("no_entry"),      // ID 0: No Entry
+        "279": .advisory("no_cars"),       // ID 6: No Cars
+        "123": .advisory("no_overtaking"), // ID 45: No Overtaking
     ]
 
     private enum SignInfo: Equatable {
