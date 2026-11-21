@@ -6,6 +6,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     @Published private(set) var horizontalAccuracy: CLLocationAccuracy = .infinity
     @Published private(set) var weatherRoadCondition: RoadCondition = .dry
     @Published private(set) var isAstronomicalNight: Bool? = nil
+    @MainActor let roadMetadata = RoadMetadataService()
     private let manager = CLLocationManager()
     private let weatherService = WeatherService()
     private var stallTimer: Timer?
@@ -57,6 +58,10 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         computeIsAstronomicalNight(for: location)
         weatherService.update(for: location) { [weak self] condition in
             self?.weatherRoadCondition = condition
+        }
+        // Query OSM road metadata (throttled) - call on MainActor
+        Task { @MainActor in
+            roadMetadata.maybeQueryRoadMetadata(for: location)
         }
     }
 

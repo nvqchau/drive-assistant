@@ -29,6 +29,7 @@ enum DisplayThemeMode: String, CaseIterable {
     case night = "night"
 }
 
+@MainActor
 final class DriveAssistantModel: ObservableObject {
     @Published var distance: Double?
     @Published var speedKMPH: Double = 0
@@ -111,6 +112,13 @@ final class DriveAssistantModel: ObservableObject {
     @Published private(set) var activeAdvisorySignText: String?  // e.g., "Cấm vượt", "Cấm ô tô", "Khu dân cư"
     @Published private(set) var debugCaptureTrigger: Date? = nil  // triggers silent auto-screenshot
 
+    // Vietnam TT38 statutory speed limits based on residential area + divided road
+    @Published var enableDefaultOutsideResidentialLimit: Bool = true {
+        didSet { UserDefaults.standard.set(enableDefaultOutsideResidentialLimit, forKey: "enableDefaultOutsideResidentialLimit") }
+    }
+    @Published private(set) var isInResidentialArea: Bool? = nil  // nil=unknown, true=inside, false=outside
+    @Published private(set) var isDividedRoad: Bool = false  // from OSM or dual carriageway sign
+
     // Display Theme & Mirror Mode
     @Published var displayThemeMode: DisplayThemeMode = .auto {
         didSet { UserDefaults.standard.set(displayThemeMode.rawValue, forKey: "displayThemeMode") }
@@ -148,7 +156,7 @@ final class DriveAssistantModel: ObservableObject {
     let motion = MotionManager()
     let laneDetector = LaneDetector()
     let diagnostics = DiagnosticsLogStore()
-    private let location = LocationManager()
+    let location = LocationManager()
     private let alerts = AlertManager()
     private var cancellables = Set<AnyCancellable>()
     private var smoothedDistance: Double?
@@ -224,6 +232,7 @@ final class DriveAssistantModel: ObservableObject {
         displayThemeMode = DisplayThemeMode(rawValue: defaults.string(forKey: "displayThemeMode") ?? "") ?? .auto
         hudMirrorMode = defaults.bool(forKey: "hudMirrorMode")
         autoDebugScreenshotEnabled = defaults.object(forKey: "autoDebugScreenshotEnabled") as? Bool ?? true
+        enableDefaultOutsideResidentialLimit = defaults.object(forKey: "enableDefaultOutsideResidentialLimit") as? Bool ?? true
         if hudMirrorMode {
             savedBrightness = UIScreen.main.brightness
             UIScreen.main.brightness = 1.0
@@ -405,6 +414,46 @@ final class DriveAssistantModel: ObservableObject {
                 self.lastAdvisoryAlertTime = now
                 self.alerts.playTrafficSignAdvisoryAlert(key: key, speak: self.voiceAlertsEnabled)
                 self.diagnostics.record(type: "tsr_advisory_alert", details: "key=\(key) speedKMPH=\(String(format: "%.1f", self.speedKMPH))")
+            }
+            .store(in: &cancellables)
+
+        // TSR: Residential area state (R.420/R.421/DP.135) — apply TT38 statutory limits
+        camera.trafficSignDetector.$isInResidentialArea
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] inResidential in
+                self?.isInResidentialArea = inResidential
+                self?.applyTT38StatutoryLimit()
+            }
+            .store(in: &cancellables)
+
+        // TSR: Dual carriageway sign (class "142") — override OSM divided road
+        camera.trafficSignDetector.$isDividedRoadFromSign
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] fromSign in
+                if fromSign { self?.isDividedRoad = true }
+            }
+            .store(in: &cancellables)
+
+        // OSM Road metadata: divided road + maxspeed fallback
+        location.roadMetadata.$isDividedRoad
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] divided in
+                // Only apply OSM if not overridden by camera sign
+                if !(self?.camera.trafficSignDetector.isDividedRoadFromSign ?? false) {
+                    self?.isDividedRoad = divided
+                }
+                self?.applyTT38StatutoryLimit()
+            }
+            .store(in: &cancellables)
+
+        location.roadMetadata.$roadMaxSpeed
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] maxSpeed in
+                // Fallback when no camera sign has been seen yet
+                if self?.detectedSpeedLimit == nil, let maxSpeed {
+                    self?.detectedSpeedLimit = maxSpeed
+                    self?.updateOverspeedState()
+                }
             }
             .store(in: &cancellables)
 
@@ -677,6 +726,33 @@ final class DriveAssistantModel: ObservableObject {
                 diagnostics.record(type: "overspeed_alert", details: "speedKMPH=\(String(format: "%.1f", speedKMPH)), limit=\(limit), toleranceKmh=\(String(format: "%.1f", overspeedToleranceKmh))")
             }
         }
+    }
+
+    /// Apply Vietnam TT38 statutory speed limits based on residential area + divided road status.
+    /// Called when isInResidentialArea or isDividedRoad changes, or when explicit P.127 sign clears.
+    /// - If explicit P.127 sign is active (detectedSpeedLimit set by camera), do nothing.
+    /// - If no explicit sign:
+    ///     * isInResidentialArea == true:  50 km/h (2-way) or 60 km/h (divided)
+    ///     * isInResidentialArea == false: 80 km/h (2-way) or 90 km/h (divided)  [if enableDefaultOutsideResidentialLimit]
+    ///     * isInResidentialArea == nil:   do nothing (unknown)
+    private func applyTT38StatutoryLimit() {
+        // If an explicit P.127 speed sign was confirmed by camera, respect it and don't override
+        // We detect this by checking if the current limit matches a known P.127 value and was recently set
+        // For simplicity: only apply statutory limits when detectedSpeedLimit is nil (no camera sign active)
+        guard detectedSpeedLimit == nil else { return }
+        guard let inResidential = isInResidentialArea else { return }  // unknown state
+        guard enableDefaultOutsideResidentialLimit || inResidential else { return }  // outside residential but feature disabled
+
+        let newLimit: Int
+        if inResidential {
+            newLimit = isDividedRoad ? 60 : 50
+        } else {
+            newLimit = isDividedRoad ? 90 : 80
+        }
+
+        detectedSpeedLimit = newLimit
+        diagnostics.record(type: "tsr_tt38_statutory", details: "limit=\(newLimit) inResidential=\(inResidential) divided=\(isDividedRoad) source=\(isDividedRoad ? (camera.trafficSignDetector.isDividedRoadFromSign ? "sign" : "osm") : "osm")")
+        updateOverspeedState()
     }
 
     /// Dynamic in-drive horizon auto-calibration with progress tracking

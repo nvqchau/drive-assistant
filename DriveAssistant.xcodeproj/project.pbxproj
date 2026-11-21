@@ -23,6 +23,7 @@
 		00000000000000000000004B /* vn_signs_ios16.mlpackage in Resources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000004A /* vn_signs_ios16.mlpackage */; };
 		00000000000000000000003A /* LaneDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000039 /* LaneDetector.swift */; };
 		5F5E8E7F6FDA2B0BB2974CF7 /* TrafficSignDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF21CE15F0E014781C9BBA0F /* TrafficSignDetector.swift */; };
+		B4A2F1C9E8D3A7B6C5D4E3F2 /* RoadMetadataService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4A2F1C9E8D3A7B6C5D4E3F1 /* RoadMetadataService.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -44,6 +45,7 @@
 		00000000000000000000004A /* vn_signs_ios16.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = wrapper.coreml; path = vn_signs_ios16.mlpackage; sourceTree = SOURCE_ROOT; };
 		000000000000000000000039 /* LaneDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistant/Sources/LaneDetector.swift; sourceTree = SOURCE_ROOT; };
 		AF21CE15F0E014781C9BBA0F /* TrafficSignDetector.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = TrafficSignDetector.swift; path = ../DriveAssistant/Sources/TrafficSignDetector.swift; sourceTree = "<group>"; };
+		B4A2F1C9E8D3A7B6C5D4E3F1 /* RoadMetadataService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistant/Sources/RoadMetadataService.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -83,6 +85,7 @@
 				000000000000000000000028 /* WeatherService.swift */,
 				00000000000000000000002B /* MotionManager.swift */,
 				000000000000000000000039 /* LaneDetector.swift */,
+						B4A2F1C9E8D3A7B6C5D4E3F1 /* RoadMetadataService.swift */,
 			);
 			path = Sources;
 			sourceTree = SOURCE_ROOT;
@@ -181,6 +184,7 @@
 				00000000000000000000002C /* MotionManager.swift in Sources */,
 				00000000000000000000003A /* LaneDetector.swift in Sources */,
 				5F5E8E7F6FDA2B0BB2974CF7 /* TrafficSignDetector.swift in Sources */,
+				B4A2F1C9E8D3A7B6C5D4E3F2 /* RoadMetadataService.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
