@@ -32,11 +32,12 @@
 - **Diagnostics:** Emits `ldws_departure_alert` (on rising edge) and `ldws_mode_changed` (dynamic↔static, throttled to 5 s) events.
 
 ### Traffic Sign Recognition (TSR) — Vietnam Speed Limits & Advisory Signs
-- **Custom CoreML model** (`vn_signs_ios16.mlpackage`) runs at 2 Hz (`processInterval = 0.5 s`) on Neural Engine via `VNCoreMLRequest` with `MLComputeUnits.cpuAndNeuralEngine`. Uses `.scaleFill` on full frame, paused at critical thermal state.
-- **Detections filtered** at `confidence ≥ 0.48` and `boundingBox.width ≥ 0.018`. Class indices (0–81) mapped to Vietnamese sign labels via lookup table from training `classid.csv`.
-- **Speed limits (P.127):** Class indices → values: `57/124→10`, `61/114→20`, `62→30`, `2/360→40`, `39/402→50`, `12/750→60`, `40/105→70`, `41/441→80`, `63/102→90`, `58/103→100`, `59/101→110`, `60→120`. Requires 2 consecutive frames before updating `detectedSpeedLimit`.
-- **Clear limit (DP.134 / DP.135):** Class indices `48/190`, `78/141`, `80/117` → auto-clears stale speed limit after 2 consecutive frames, fires `didClearSpeedLimitEvent`.
-- **Advisory / prohibitory signs:** `79/164→"Residential Area"`, `0/572→"No Entry"`, `6/279→"No Cars"`, `45/123→"No Overtaking"`. Published as `activeAdvisorySignText` (e.g., "No Overtaking", "Residential Area") with 3.5 s auto-clear. Rendered as secondary blue badge next to speed limit badge on HUD.
+- **Custom CoreML model** (`vn_signs_ios16.mlpackage` compiled to `.mlmodelc`) runs at 2 Hz (`processInterval = 0.5 s`) on Neural Engine via `VNCoreMLRequest` with `MLComputeUnits.cpuAndNeuralEngine`. Uses `.scaleFill` on full frame, paused at critical thermal state.
+- **Detections filtered** at `confidence ≥ 0.48` and `boundingBox.width ≥ 0.018`. Model outputs class labels (Count strings from `data.yaml` / 0-based indices) mapped to sign types via lookup table in `TrafficSignDetector.swift`.
+- **Speed limits (P.127):** Label → value: `"124"/"57"→10`, `"114"/"61"→20`, `"62"→30`, `"360"/"2"→40`, `"402"/"39"→50`, `"750"/"12"→60`, `"105"/"40"→70`, `"441"/"41"→80`, `"102"/"63"→90`, `"103"/"58"→100`, `"101"/"59"→110`, `"60"→120`. Requires 2 consecutive frames before updating `detectedSpeedLimit`.
+- **Residential area:** Labels `"164"/"79"` → sets `detectedSpeedLimit = 50` AND publishes advisory `"Residential Area"` (localized).
+- **Clear limit (DP.134 / DP.135):** Labels `"190"/"48"`, `"141"/"78"`, `"117"/"80"` → auto-clears stale speed limit after 2 consecutive frames, fires `didClearSpeedLimitEvent`.
+- **Advisory / prohibitory signs:** `"572"/"0"→"No Entry"`, `"279"/"6"→"No Cars"`, `"123"/"45"→"No Overtaking"`. Published as canonical keys (`"no_entry"`, `"no_cars"`, `"no_overtaking"`, `"residential_area"`) in `activeAdvisorySignText` with 3.5 s auto-clear. Rendered as secondary blue badge next to speed limit badge; text localized to Vietnamese/English per language setting.
 - **Stability:** All classifications require 2 consecutive matches. Manual clear via tap on speed-limit badge.
 - **Diagnostics:** Emits `tsr_yolo_detect` (raw detections per frame) and `tsr_state` (confirmed actions) events.
 
@@ -81,7 +82,7 @@
 - Landscape dark HUD shows GPS speed and accuracy, distance, safe-gap progress, thermal state, detected/target vehicle, and weather/road-condition pill.
 - **GPSSpeedPill:** Speed text turns red-orange (`1.0, 0.2, 0.0`) when overspeeding (pulsing glow + scale animation).
 - **SpeedLimitSignBadge:** 38 pt white circle with 4 pt red border, bold number (or dimmed `"--"`). Tap clears limit. Red glow pulse when overspeeding.
-- **Secondary Advisory Badge:** Blue rounded-rect with exclamation-triangle icon + Vietnamese text (e.g., "No Overtaking", "Residential Area") rendered next to speed limit badge; auto-clears after 3.5 s.
+- **Secondary Advisory Badge:** Blue rounded-rect with exclamation-triangle icon + localized text (e.g., "No Overtaking" / "Cấm vượt", "Residential Area" / "Khu dân cư") rendered next to speed limit badge; auto-clears after 3.5 s.
 - **Calibration status** (in Distance card): Shows "Auto-calibrating X%" (cyan) while auto-calibrating, "⚠ Mount shifted" (amber) on mount shift, hidden when calibrated.
 - **Display Theme:** Auto (3-tier: camera luminance → GPS astronomical sunrise/sunset → clock fallback), Day, Night.
 - **HUD Mirror Mode:** Vertically flips the view for windshield reflection; sets screen brightness to maximum, restores on exit.
