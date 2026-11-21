@@ -5,9 +5,8 @@ import Foundation
 import SwiftUI
 import Vision
 
-/// Vietnam traffic sign recognition using custom CoreML model (vn_signs_ios16.mlpackage compiled to .mlmodelc).
-/// Runs VNCoreMLRequest at 4 Hz on Neural Engine (~8.4 ms latency), maps class labels (Count strings from data.yaml) to Vietnamese sign labels.
-/// Hybrid YOLO localization + cropped Vision OCR for speed limit number verification.
+/// Vietnam traffic sign recognition using shared observations from unified CoreML model (vn_adas_unified_ios16.mlpackage).
+/// Consumes VNRecognizedObjectObservation from CameraManager's single-pass inference, runs hybrid cropped Vision OCR for speed limit number verification.
 final class TrafficSignDetector: ObservableObject {
     // MARK: - Published
     @Published private(set) var detectedSpeedLimit: Int?
@@ -96,9 +95,6 @@ final class TrafficSignDetector: ObservableObject {
     private var missedMatchFrames = 0  // tolerance for transient missed frame
     private var thermalState: ProcessInfo.ThermalState = .nominal
     private var visionOrientation: CGImagePropertyOrientation = .up
-    private var coreMLModel: VNCoreMLModel?
-    private var modelLoaded = false
-    private var loadTask: Task<Void, Never>?
 
     // Confirmation state
     private var endSignConsecutiveCount = 0
@@ -115,7 +111,6 @@ final class TrafficSignDetector: ObservableObject {
     private var lastTSRLogTime: TimeInterval = 0
 
     init() {
-        loadCoreMLModelAsync()
         setupOCRRequest()
     }
 
@@ -128,37 +123,6 @@ final class TrafficSignDetector: ObservableObject {
         self.textRecognitionRequest = request
     }
 
-    deinit {
-        loadTask?.cancel()
-    }
-
-    private func loadCoreMLModelAsync() {
-        loadTask = Task.detached(priority: .userInitiated) { [weak self] in
-            guard let self else { return }
-            do {
-                // Xcode compiles .mlpackage resources to .mlmodelc in the app bundle
-                let modelURL = Bundle.main.url(forResource: "vn_signs_ios16", withExtension: "mlmodelc")
-                guard let modelURL else {
-                    print("TrafficSignDetector: vn_signs_ios16.mlmodelc not found in bundle")
-                    return
-                }
-                let mlModel = try MLModel(contentsOf: modelURL, configuration: {
-                    let config = MLModelConfiguration()
-                    config.computeUnits = .cpuAndNeuralEngine
-                    return config
-                }())
-                let vnModel = try VNCoreMLModel(for: mlModel)
-                await MainActor.run {
-                    self.coreMLModel = vnModel
-                    self.modelLoaded = true
-                    print("TrafficSignDetector: CoreML model loaded successfully from \(modelURL.lastPathComponent)")
-                }
-            } catch {
-                print("TrafficSignDetector: Failed to load CoreML model: \(error)")
-            }
-        }
-    }
-
     /// Attach diagnostics store for TSR event logging
     func attachDiagnostics(_ diagnostics: DiagnosticsLogStore) {
         self.diagnostics = diagnostics
@@ -169,38 +133,24 @@ final class TrafficSignDetector: ObservableObject {
         visionOrientation = orientation
     }
 
-    /// Call from CameraManager.captureOutput for each frame.
-    func processFrameIfNeeded(_ pixelBuffer: CVPixelBuffer) {
+    /// Called from CameraManager with shared unified model observations.
+    /// Runs on background queue, throttled by thermal state (4 Hz nominal, 2 Hz on .fair/.serious).
+    func processObservations(_ observations: [VNRecognizedObjectObservation], pixelBuffer: CVPixelBuffer, orientation: CGImagePropertyOrientation) {
         guard !isProcessing else { return }
-        // Adjust scan rate based on thermal state
-        processInterval = (thermalState == .nominal) ? baseProcessInterval : thermalProcessInterval
         let now = CACurrentMediaTime()
         guard now - lastProcessTime >= processInterval else { return }
         guard thermalState != .critical else { return }
-        guard modelLoaded, coreMLModel != nil else { return }
 
         lastProcessTime = now
         isProcessing = true
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            self?.processFrame(pixelBuffer)
+            self?.processFrame(observations, pixelBuffer: pixelBuffer, orientation: orientation)
         }
     }
 
-    private func processFrame(_ pixelBuffer: CVPixelBuffer) {
+    private func processFrame(_ observations: [VNRecognizedObjectObservation], pixelBuffer: CVPixelBuffer, orientation: CGImagePropertyOrientation) {
         defer { isProcessing = false }
-
-        guard let request = makeCoreMLRequest() else { return }
-
-        let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: visionOrientation, options: [:])
-        do {
-            try handler.perform([request])
-        } catch {
-            print("TrafficSignDetector: VNCoreMLRequest error: \(error)")
-            return
-        }
-
-        guard let results = request.results as? [VNRecognizedObjectObservation] else { return }
 
         // Filter detections at normal threshold for state updates
         var speedLimitDetections: [(Int, Float, CGRect, String)] = []  // (speedValue, confidence, bbox, label)
@@ -213,7 +163,7 @@ final class TrafficSignDetector: ObservableObject {
         // For diagnostic logging: collect ALL raw labels at lower threshold
         var allRawDetections: [(String, Float, CGRect)] = []    // (rawLabel, confidence, bbox)
 
-        for obs in results {
+        for obs in observations {
             guard obs.confidence >= diagnosticConfidenceThreshold else { continue }
             guard obs.boundingBox.width >= minBoxWidth else { continue }
 
@@ -270,7 +220,7 @@ final class TrafficSignDetector: ObservableObject {
             var finalSpeedValue = yoloSpeedValue
             var ocrVerified = false
             if speedLimitLabels.contains(bestLabel) {
-                if let ocrSpeed = runOCROnSpeedSign(pixelBuffer: pixelBuffer, bbox: bestBBox, orientation: visionOrientation) {
+                if let ocrSpeed = runOCROnSpeedSign(pixelBuffer: pixelBuffer, bbox: bestBBox, orientation: orientation) {
                     finalSpeedValue = ocrSpeed
                     ocrVerified = true
                 }
@@ -381,13 +331,6 @@ final class TrafficSignDetector: ObservableObject {
             }
             diagnostics?.record(type: "tsr_state", details: "action=dual_carriageway confirmed")
         }
-    }
-
-    private func makeCoreMLRequest() -> VNCoreMLRequest? {
-        guard let model = coreMLModel else { return nil }
-        let request = VNCoreMLRequest(model: model)
-        request.imageCropAndScaleOption = .scaleFill
-        return request
     }
 
     // MARK: - Hybrid YOLO Localization + Cropped Vision OCR for Speed Limits
