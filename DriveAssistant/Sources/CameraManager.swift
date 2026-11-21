@@ -874,7 +874,7 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
         let topY: CGFloat = 0.38
         let bottomY: CGFloat = 0.95
         let topWidth: CGFloat = 0.16   // narrowed from 0.22 for narrow two-way streets
-        let bottomWidth: CGFloat = 0.42 // narrowed from 0.48
+        let bottomWidth: CGFloat = 0.54 // widened from 0.42 to match real road markings
         
         guard yFromTop >= topY && yFromTop <= bottomY else { return false }
         
@@ -897,7 +897,7 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
         let topY: CGFloat = 0.38
         let bottomY: CGFloat = 0.95
         let topWidth: CGFloat = 0.16   // narrowed from 0.22
-        let bottomWidth: CGFloat = 0.42 // narrowed from 0.48
+        let bottomWidth: CGFloat = 0.54 // widened from 0.42 to match real road markings
         
         let boxBottomY = box.minY
         let yFromTop = bottomYFromTop

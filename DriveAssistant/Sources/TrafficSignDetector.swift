@@ -7,6 +7,7 @@ import Vision
 
 /// Vietnam traffic sign recognition using custom CoreML model (vn_signs_ios16.mlpackage compiled to .mlmodelc).
 /// Runs VNCoreMLRequest at 2 Hz on Neural Engine, maps class labels (Count strings from data.yaml) to Vietnamese sign labels.
+/// Hybrid YOLO localization + cropped Vision OCR for speed limit number verification.
 final class TrafficSignDetector: ObservableObject {
     // MARK: - Published
     @Published private(set) var detectedSpeedLimit: Int?
@@ -26,6 +27,12 @@ final class TrafficSignDetector: ObservableObject {
     private let diagnosticConfidenceThreshold: Float = 0.25
     // Tolerate 1 transient missed frame during consecutive confirmation
     private let maxMissedMatchFrames = 3
+
+    // OCR configuration for speed limit number verification
+    private let ocrExpansionFactor: CGFloat = 1.15  // expand YOLO bbox by 15% for OCR crop
+    private let validSpeedTokens: Set<Int> = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120]
+    private let speedLimitLabels: Set<String> = ["124", "114", "360", "402", "750", "105", "441", "102", "103", "101"]
+    private var textRecognitionRequest: VNRecognizeTextRequest?
 
     // MARK: - Label to Sign mapping (ONLY true Count strings from vn_signs_ios16.mlpackage data.yaml)
     // Speed limits: "124"=ID57->10, "114"=ID61->20, "360"=ID2->40, "402"=ID39->50,
@@ -106,6 +113,16 @@ final class TrafficSignDetector: ObservableObject {
 
     init() {
         loadCoreMLModelAsync()
+        setupOCRRequest()
+    }
+
+    private func setupOCRRequest() {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .fast
+        request.usesLanguageCorrection = false
+        request.recognitionLanguages = ["vi-VN", "en-US"]
+        request.minimumTextHeight = 0.02
+        self.textRecognitionRequest = request
     }
 
     deinit {
@@ -181,7 +198,7 @@ final class TrafficSignDetector: ObservableObject {
         guard let results = request.results as? [VNRecognizedObjectObservation] else { return }
 
         // Filter detections at normal threshold for state updates
-        var speedLimitDetections: [(Int, Float, CGRect)] = []  // (speedValue, confidence, bbox)
+        var speedLimitDetections: [(Int, Float, CGRect, String)] = []  // (speedValue, confidence, bbox, label)
         var clearLimitDetections: [(Float, CGRect)] = []        // (confidence, bbox)
         var advisoryDetections: [(String, Float, CGRect)] = []  // (key, confidence, bbox)
         var residential50Detected = false
@@ -208,10 +225,10 @@ final class TrafficSignDetector: ObservableObject {
             guard let signInfo = labelToSign[label] else { continue }
 
             if signInfo.isSpeedLimit, let speed = signInfo.speedValue {
-                speedLimitDetections.append((speed, obs.confidence, bbox))
+                speedLimitDetections.append((speed, obs.confidence, bbox, label))
             } else if signInfo.isResidential50 {
                 residential50Detected = true
-                speedLimitDetections.append((50, obs.confidence, bbox))
+                speedLimitDetections.append((50, obs.confidence, bbox, label))
             } else if signInfo.isEndResidentialArea {
                 endResidentialAreaDetected = true
             } else if signInfo.isClearLimit {
@@ -230,31 +247,43 @@ final class TrafficSignDetector: ObservableObject {
             let rawDetails = allRawDetections.map {
                 "(rawLabel=\($0.0), conf=\(String(format: "%.2f", $0.1)), x=\(String(format: "%.2f", $0.2.minX)), w=\(String(format: "%.3f", $0.2.width)))"
             }.joined(separator: ";")
-            let details = "raw=\(rawDetails.isEmpty ? "none" : rawDetails); speedDetections=\(speedLimitDetections.map { "(\($0.0),\(String(format: "%.2f", $0.1)),\(String(format: "%.3f", $0.2.minX)))\($0.2.width)" }.joined(separator: ";")) clearDetections=\(clearLimitDetections.count) advisoryDetections=\(advisoryDetections.map { "(\($0.0),\(String(format: "%.2f", $0.1)))" }.joined(separator: ";")) residential50=\(residential50Detected) endResidential=\(endResidentialAreaDetected) dualCarriageway=\(dualCarriagewayDetected)"
+            let details = "raw=\(rawDetails.isEmpty ? "none" : rawDetails); speedDetections=\(speedLimitDetections.map { "(\($0.0),\(String(format: "%.2f", $0.1)),\(String(format: "%.3f", $0.2.minX)))\($0.2.width),\($0.3)" }.joined(separator: ";")) clearDetections=\(clearLimitDetections.count) advisoryDetections=\(advisoryDetections.map { "(\($0.0),\(String(format: "%.2f", $0.1)))" }.joined(separator: ";")) residential50=\(residential50Detected) endResidential=\(endResidentialAreaDetected) dualCarriageway=\(dualCarriagewayDetected)"
             diagnostics?.record(type: "tsr_yolo_detect", details: details)
         }
 
         // Handle speed limit detection (including residential50 which sets 50 km/h)
         if let bestSpeed = speedLimitDetections.max(by: { $0.1 < $1.1 }) {
-            let speedValue = bestSpeed.0
+            let yoloSpeedValue = bestSpeed.0
             let bestConfidence = bestSpeed.1
+            let bestBBox = bestSpeed.2
+            let bestLabel = bestSpeed.3
             endSignConsecutiveCount = 0
             lastEndSignType = nil
             missedMatchFrames = 0  // reset miss tolerance on detection
 
+            // Run OCR on the best speed sign detection for number verification
+            var finalSpeedValue = yoloSpeedValue
+            var ocrVerified = false
+            if speedLimitLabels.contains(bestLabel) {
+                if let ocrSpeed = runOCROnSpeedSign(pixelBuffer: pixelBuffer, bbox: bestBBox, orientation: visionOrientation) {
+                    finalSpeedValue = ocrSpeed
+                    ocrVerified = true
+                }
+            }
+
             // High-confidence immediate confirmation (>= 0.45) bypasses 2-frame requirement
             let shouldConfirmImmediately = bestConfidence >= 0.45
 
-            if speedValue == lastMatchedLimit {
+            if finalSpeedValue == lastMatchedLimit {
                 consecutiveMatchCount += 1
             } else {
                 consecutiveMatchCount = 1
-                lastMatchedLimit = speedValue
+                lastMatchedLimit = finalSpeedValue
             }
 
             if shouldConfirmImmediately || consecutiveMatchCount >= requiredConsecutiveMatches {
                 DispatchQueue.main.async { [weak self] in
-                    self?.detectedSpeedLimit = speedValue
+                    self?.detectedSpeedLimit = finalSpeedValue
                     self?.detectedEndOfAllRestrictions = false
                     // If residential50 was detected, also set advisory and residential area flag
                     if residential50Detected {
@@ -267,7 +296,7 @@ final class TrafficSignDetector: ObservableObject {
                         }
                     }
                 }
-                diagnostics?.record(type: "tsr_state", details: "action=P127_confirmed limit=\(speedValue) conf=\(String(format: "%.2f", bestConfidence)) immediate=\(shouldConfirmImmediately) consecutive=\(consecutiveMatchCount) residential50=\(residential50Detected)")
+                diagnostics?.record(type: "tsr_state", details: "action=P127_confirmed limit=\(finalSpeedValue) yoloLimit=\(yoloSpeedValue) ocrVerified=\(ocrVerified) conf=\(String(format: "%.2f", bestConfidence)) immediate=\(shouldConfirmImmediately) consecutive=\(consecutiveMatchCount) residential50=\(residential50Detected)")
             }
         } else {
             // Tolerate transient missed frames before resetting confirmation
@@ -350,6 +379,69 @@ final class TrafficSignDetector: ObservableObject {
         let request = VNCoreMLRequest(model: model)
         request.imageCropAndScaleOption = .scaleFill
         return request
+    }
+
+    // MARK: - Hybrid YOLO Localization + Cropped Vision OCR for Speed Limits
+    private func runOCROnSpeedSign(pixelBuffer: CVPixelBuffer, bbox: CGRect, orientation: CGImagePropertyOrientation) -> Int? {
+        guard let ocrRequest = textRecognitionRequest else { return nil }
+
+        // Expand bbox by 1.15x in normalized coordinates (bottom-left origin from YOLO)
+        let expandedBBox = expandBoundingBox(bbox, factor: ocrExpansionFactor)
+
+        // Convert normalized bbox (bottom-left origin) to CIImage crop rect (top-left origin)
+        let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+        let imageWidth = ciImage.extent.width
+        let imageHeight = ciImage.extent.height
+
+        // YOLO bbox: origin bottom-left, normalized
+        // CIImage crop: origin top-left, pixel coordinates
+        let cropX = expandedBBox.minX * imageWidth
+        let cropY = (1.0 - expandedBBox.maxY) * imageHeight  // flip Y
+        let cropWidth = expandedBBox.width * imageWidth
+        let cropHeight = expandedBBox.height * imageHeight
+
+        let cropRect = CGRect(x: cropX, y: cropY, width: cropWidth, height: cropHeight)
+            .intersection(ciImage.extent)
+
+        guard cropRect.width > 10, cropRect.height > 10 else { return nil }
+
+        let croppedImage = ciImage.cropped(to: cropRect)
+
+        // Apply orientation correction for OCR
+        let orientedImage = croppedImage.oriented(orientation)
+
+        var recognizedText: String?
+        let handler = VNImageRequestHandler(ciImage: orientedImage, options: [:])
+        do {
+            try handler.perform([ocrRequest])
+            recognizedText = ocrRequest.results?.first?.topCandidates(1).first?.string
+        } catch {
+            diagnostics?.record(type: "tsr_ocr_error", details: "error=\(error.localizedDescription)")
+            return nil
+        }
+
+        guard let text = recognizedText else { return nil }
+
+        // Parse text for speed number (extract digits)
+        let digits = text.filter { $0.isNumber }
+        guard let speed = Int(digits), validSpeedTokens.contains(speed) else {
+            diagnostics?.record(type: "tsr_ocr_invalid", details: "rawText=\(text), parsedDigits=\(digits)")
+            return nil
+        }
+
+        return speed
+    }
+
+    private func expandBoundingBox(_ bbox: CGRect, factor: CGFloat) -> CGRect {
+        let centerX = bbox.midX
+        let centerY = bbox.midY
+        let newWidth = min(bbox.width * factor, 1.0)
+        let newHeight = min(bbox.height * factor, 1.0)
+        let newMinX = max(0, centerX - newWidth / 2)
+        let newMinY = max(0, centerY - newHeight / 2)
+        let newMaxX = min(1, newMinX + newWidth)
+        let newMaxY = min(1, newMinY + newHeight)
+        return CGRect(x: newMinX, y: newMinY, width: newMaxX - newMinX, height: newMaxY - newMinY)
     }
 
     private func handleEndSignDetection(_ type: EndSignType) {
