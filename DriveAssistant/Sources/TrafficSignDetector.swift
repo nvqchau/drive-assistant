@@ -18,8 +18,8 @@ final class TrafficSignDetector: ObservableObject {
     @Published private(set) var isDividedRoadFromSign: Bool = false  // set when class "142" (dual carriageway) detected
 
     // MARK: - Configuration
-    private var processInterval: TimeInterval = 0.25  // 4 Hz (adjusted by thermal state)
-    private let baseProcessInterval: TimeInterval = 0.25
+    private var processInterval: TimeInterval = 0.15  // ~6.6 Hz guard (adjusted by thermal state)
+    private let baseProcessInterval: TimeInterval = 0.15
     private let thermalProcessInterval: TimeInterval = 0.5  // fallback when thermal >= .fair
     private let requiredConsecutiveMatches = 2
     private let confidenceThreshold: Float = 0.28
