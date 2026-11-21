@@ -292,6 +292,7 @@ final class TrafficSignDetector: ObservableObject {
         // Handle advisory sign detection
         if let bestAdvisory = advisoryDetections.max(by: { $0.1 < $1.1 }) {
             let advisoryKey = bestAdvisory.0
+            let advisoryConfidence = bestAdvisory.1
             if advisoryKey == lastAdvisoryText {
                 advisoryConsecutiveCount += 1
             } else {
@@ -299,17 +300,20 @@ final class TrafficSignDetector: ObservableObject {
                 lastAdvisoryText = advisoryKey
             }
 
-            if advisoryConsecutiveCount >= requiredConsecutiveMatches {
+            // High-confidence immediate confirmation (>= 0.45) bypasses 2-frame requirement
+            let shouldConfirmImmediately = advisoryConfidence >= 0.45
+
+            if shouldConfirmImmediately || advisoryConsecutiveCount >= requiredConsecutiveMatches {
                 DispatchQueue.main.async { [weak self] in
                     self?.activeAdvisorySignText = advisoryKey
-                    // Auto-clear after 3.5s
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) { [weak self] in
+                    // Auto-clear after 5.0s for transient prohibitory signs
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
                         if self?.activeAdvisorySignText == advisoryKey {
                             self?.activeAdvisorySignText = nil
                         }
                     }
                 }
-                diagnostics?.record(type: "tsr_state", details: "action=advisory_confirmed key=\(advisoryKey)")
+                diagnostics?.record(type: "tsr_state", details: "action=advisory_confirmed key=\(advisoryKey) conf=\(String(format: "%.2f", advisoryConfidence)) immediate=\(shouldConfirmImmediately)")
             }
         } else {
             advisoryConsecutiveCount = 0

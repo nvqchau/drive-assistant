@@ -5,6 +5,81 @@ import Photos
 import SwiftUI
 import UIKit
 
+// MARK: - Authentic Vietnam Advisory Sign Graphics
+private struct VietnamAdvisorySign: View {
+    let advisoryKey: String
+    let size: CGFloat = 38
+
+    var body: some View {
+        switch advisoryKey {
+        case "no_entry":          // P.102 — Cấm ngược chiều
+            ZStack {
+                Circle()
+                    .fill(Color.red)
+                    .frame(width: size, height: size)
+                Rectangle()
+                    .fill(Color.white)
+                    .frame(width: 22, height: 6)
+                    .cornerRadius(1.5)
+            }
+        case "no_cars":           // P.103a — Cấm ô tô
+            ZStack {
+                Circle()
+                    .stroke(Color.red, lineWidth: 4)
+                    .frame(width: size, height: size)
+                    .background(Circle().fill(Color.white))
+                Image(systemName: "car.fill")
+                    .font(.system(size: size * 0.5, weight: .bold))
+                    .foregroundColor(.black)
+                Rectangle()
+                    .fill(Color.red)
+                    .frame(width: 34, height: 3.5)
+                    .rotationEffect(.degrees(-45))
+            }
+        case "no_overtaking":     // P.125 — Cấm vượt
+            ZStack {
+                Circle()
+                    .stroke(Color.red, lineWidth: 4)
+                    .frame(width: size, height: size)
+                    .background(Circle().fill(Color.white))
+                HStack(spacing: 2) {
+                    Image(systemName: "car.fill")
+                        .font(.system(size: size * 0.38, weight: .bold))
+                        .foregroundColor(.red)
+                    Image(systemName: "car.fill")
+                        .font(.system(size: size * 0.38, weight: .bold))
+                        .foregroundColor(.black)
+                }
+                Rectangle()
+                    .fill(Color.red)
+                    .frame(width: 34, height: 3.5)
+                    .rotationEffect(.degrees(-45))
+            }
+        case "residential_area":  // R.420 — Khu dân cư
+            ZStack {
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color.blue)
+                    .frame(width: size, height: size)
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(Color.white, lineWidth: 2)
+                    .frame(width: size - 4, height: size - 4)
+                Image(systemName: "building.2.fill")
+                    .font(.system(size: size * 0.5, weight: .bold))
+                    .foregroundColor(.white)
+            }
+        default:
+            Circle()
+                .fill(Color.gray.opacity(0.3))
+                .frame(width: size, height: size)
+                .overlay(
+                    Text(advisoryKey)
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundColor(.white)
+                )
+        }
+    }
+}
+
 struct ContentView: View {
     @ObservedObject var model: DriveAssistantModel
     @State private var screenshotFlash = false
@@ -231,12 +306,11 @@ struct ContentView: View {
                                         }
                                         .transition(.opacity.combined(with: .scale))
                                     }
-                                    // Secondary advisory sign (localized from canonical keys) — red for prohibitory, blue for informational
-                                    // Residential area badge ("Khu dân cư") stays visible while isInResidentialArea==true; others auto-hide after 3.5s
+                                    // Secondary advisory sign (localized from canonical keys) — authentic Vietnam sign graphics
+                                    // Residential area badge ("Khu dân cư") stays visible while isInResidentialArea==true; others auto-hide after 5.0s
                                     if let advisoryKey = model.activeAdvisorySignText ?? (model.isInResidentialArea == true ? "residential_area" : nil) {
                                         let isProhibitory = advisoryKey == "no_entry" || advisoryKey == "no_cars" || advisoryKey == "no_overtaking"
                                         let badgeColor: Color = isProhibitory ? .red : .blue
-                                        let badgeIcon: String = isProhibitory ? "xmark.octagon.fill" : "house.fill"
                                         let advisoryText: String = {
                                             switch advisoryKey {
                                             case "no_entry":
@@ -252,19 +326,8 @@ struct ContentView: View {
                                             }
                                         }()
                                         VStack(spacing: 2) {
-                                            ZStack {
-                                                RoundedRectangle(cornerRadius: 6)
-                                                    .fill(badgeColor.opacity(0.15))
-                                                    .frame(width: 38, height: 38)
-                                                RoundedRectangle(cornerRadius: 6)
-                                                    .stroke(badgeColor, lineWidth: 3)
-                                                    .frame(width: 38, height: 38)
-                                                Image(systemName: badgeIcon)
-                                                    .font(.system(size: 16, weight: .bold))
-                                                    .foregroundColor(badgeColor)
-                                            }
-                                            .frame(width: 38, height: 38)
-                                            .shadow(color: Color.black.opacity(0.3), radius: 4)
+                                            VietnamAdvisorySign(advisoryKey: advisoryKey)
+                                                .shadow(color: Color.black.opacity(0.3), radius: 4)
                                             Text(advisoryText)
                                                 .font(.system(size: 8, weight: .bold, design: .rounded))
                                                 .foregroundColor(badgeColor)
