@@ -6,7 +6,7 @@ import SwiftUI
 import Vision
 
 /// Vietnam traffic sign recognition using custom CoreML model (vn_signs_ios16.mlpackage compiled to .mlmodelc).
-/// Runs VNCoreMLRequest at 2 Hz on Neural Engine, maps class labels (Count strings from data.yaml) to Vietnamese sign labels.
+/// Runs VNCoreMLRequest at 4 Hz on Neural Engine (~8.4 ms latency), maps class labels (Count strings from data.yaml) to Vietnamese sign labels.
 /// Hybrid YOLO localization + cropped Vision OCR for speed limit number verification.
 final class TrafficSignDetector: ObservableObject {
     // MARK: - Published
@@ -19,12 +19,14 @@ final class TrafficSignDetector: ObservableObject {
     @Published private(set) var isDividedRoadFromSign: Bool = false  // set when class "142" (dual carriageway) detected
 
     // MARK: - Configuration
-    private let processInterval: TimeInterval = 0.5  // 2 Hz
+    private var processInterval: TimeInterval = 0.25  // 4 Hz (adjusted by thermal state)
+    private let baseProcessInterval: TimeInterval = 0.25
+    private let thermalProcessInterval: TimeInterval = 0.5  // fallback when thermal >= .fair
     private let requiredConsecutiveMatches = 2
-    private let confidenceThreshold: Float = 0.35
+    private let confidenceThreshold: Float = 0.28
     private let minBoxWidth: CGFloat = 0.018
     // For diagnostic logging: include raw labels at lower confidence to see what model emits
-    private let diagnosticConfidenceThreshold: Float = 0.25
+    private let diagnosticConfidenceThreshold: Float = 0.20
     // Tolerate 1 transient missed frame during consecutive confirmation
     private let maxMissedMatchFrames = 3
 
@@ -169,6 +171,8 @@ final class TrafficSignDetector: ObservableObject {
     /// Call from CameraManager.captureOutput for each frame.
     func processFrameIfNeeded(_ pixelBuffer: CVPixelBuffer) {
         guard !isProcessing else { return }
+        // Adjust scan rate based on thermal state
+        processInterval = (thermalState == .nominal) ? baseProcessInterval : thermalProcessInterval
         let now = CACurrentMediaTime()
         guard now - lastProcessTime >= processInterval else { return }
         guard thermalState != .critical else { return }
@@ -271,8 +275,8 @@ final class TrafficSignDetector: ObservableObject {
                 }
             }
 
-            // High-confidence immediate confirmation (>= 0.45) bypasses 2-frame requirement
-            let shouldConfirmImmediately = bestConfidence >= 0.45
+            // High-confidence immediate confirmation (>= 0.45) OR OCR verified bypasses 2-frame requirement
+            let shouldConfirmImmediately = bestConfidence >= 0.45 || ocrVerified
 
             if finalSpeedValue == lastMatchedLimit {
                 consecutiveMatchCount += 1
