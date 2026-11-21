@@ -48,6 +48,7 @@ final class RoadMetadataService: ObservableObject {
         let lat = location.coordinate.latitude
         let lon = location.coordinate.longitude
         // Query both highway ways AND enclosing residential/urban areas
+        // Also query admin_level=8 (Vietnam wards/townships) for Phường/Thị trấn detection
         let query = """
         [out:json][timeout:5];
         way(around:\(queryRadius),\(lat),\(lon))["highway"];
@@ -57,6 +58,8 @@ final class RoadMetadataService: ObservableObject {
         out tags 1;
         area.a["place"~"^(town|suburb|quarter|neighbourhood|village)$"];
         out tags 1;
+        area.a["admin_level"="8"];
+        out tags 2;
         """
 
         guard let url = URL(string: overpassURL) else { return }
@@ -112,6 +115,12 @@ final class RoadMetadataService: ObservableObject {
             }
             if let place = tags["place"],
                ["town", "suburb", "quarter", "neighbourhood", "village"].contains(place) {
+                foundUrbanArea = true
+            }
+            // Check for Vietnam admin_level=8 (wards/townships): Phường (urban ward) or Thị trấn (township)
+            if tags["admin_level"] == "8",
+               let name = tags["name"],
+               name.range(of: #"^(Phường|Thị trấn)\b"#, options: [.regularExpression, .caseInsensitive]) != nil {
                 foundUrbanArea = true
             }
 

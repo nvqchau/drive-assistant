@@ -191,14 +191,15 @@ final class DriveAssistantModel: ObservableObject {
     var safeDistance: Double { max(5, speedKMPH / 3.6 * timeHeadway) }
 
     /// TT38 statutory distance for a given speed (km/h), with wet multiplier.
+    /// Per TT38/2023/TT-BGTVT: 80 km/h -> 55m (60.01...80.0), 80.01...100 -> 70m
     private func tt38Distance(forSpeed speed: Double) -> Double {
         let base: Double
         switch speed {
         case ..<10: base = 5.0
         case 10..<58: base = max(5, speed * 0.5)
         case 58...60: base = 35
-        case 60..<80: base = 55
-        case 80...100: base = 70
+        case 60.01...80.0: base = 55
+        case 80.01...100.0: base = 70
         default: base = 100
         }
         return (distanceRuleMode == .vnLaw && effectiveRoadCondition == .wet) ? base * 1.3 : base
