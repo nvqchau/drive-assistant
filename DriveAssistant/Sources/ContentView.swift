@@ -120,8 +120,18 @@ struct ContentView: View {
             }
 
             let bounds = window.bounds
-            let renderer = UIGraphicsImageRenderer(bounds: bounds)
 
+            // Capture HUD layer into transparent UIImage (opaque=false)
+            let hudFormat = UIGraphicsImageRendererFormat()
+            hudFormat.opaque = false
+            hudFormat.scale = UIScreen.main.scale
+            let hudRenderer = UIGraphicsImageRenderer(bounds: bounds, format: hudFormat)
+            let hudImage = hudRenderer.image { _ in
+                window.layer.render(in: UIGraphicsGetCurrentContext()!)
+            }
+
+            // Composite camera + HUD into final opaque image
+            let renderer = UIGraphicsImageRenderer(bounds: bounds)
             let composited = renderer.image { ctx in
                 // 1. Draw camera image (aspectFill to match CameraPreview)
                 if let camImg = cameraImage {
@@ -133,8 +143,8 @@ struct ContentView: View {
                     camImg.draw(in: CGRect(x: xOffset, y: yOffset, width: scaledVideoSize.width, height: scaledVideoSize.height))
                 }
 
-                // 2. Draw the HUD overlay (window hierarchy) - skip CameraPreview black background
-                window.drawHierarchy(in: bounds, afterScreenUpdates: true)
+                // 2. Draw HUD overlay on top (transparent background, no CameraPreview black)
+                hudImage.draw(in: bounds)
             }
 
             isCapturingScreenshot = false

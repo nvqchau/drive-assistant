@@ -160,7 +160,7 @@ final class LaneDetector: ObservableObject {
         ])
 
         let whiteMask = gray.applyingFilter("CIColorThreshold", parameters: [
-            "inputThreshold": 0.62
+            "inputThreshold": 0.58
         ])
         
         let yellowMask = image.applyingFilter("CIColorControls", parameters: [
@@ -208,23 +208,23 @@ final class LaneDetector: ObservableObject {
     private func classifyLaneLines(_ contours: [VNContour], cropRect: CGRect, imageSize: CGSize) -> (left: [VNContour], right: [VNContour]) {
         var leftLines: [VNContour] = []
         var rightLines: [VNContour] = []
-        
+
         let normalizedRoiCenterX = 0.5 + roiCenterOffsetX
-        
+
         for contour in contours {
             let points = contour.normalizedPoints
             guard points.count >= 4 else { continue }
-            
+
             // Map contour points from cropped image back to full normalized screen coordinates
             // VNContour.normalizedPoints are in 0...1 relative to cropRect
             // Convert to full image normalized coordinates (top-left origin, 0...1)
-            let xs = points.map { 
+            let xs = points.map {
                 (cropRect.minX + CGFloat($0.x) * cropRect.width) / CGFloat(imageSize.width)
             }
-            let ys = points.map { 
+            let ys = points.map {
                 1.0 - ((cropRect.minY + CGFloat($0.y) * cropRect.height) / CGFloat(imageSize.height))
             }
-            
+
             let minX = xs.min() ?? 0
             let maxX = xs.max() ?? 1
             let minY = ys.min() ?? 0
@@ -233,11 +233,11 @@ final class LaneDetector: ObservableObject {
             let height = maxY - minY
             let aspectRatio = width / max(height, 1)
 
-            guard aspectRatio > 1.8 || (1/aspectRatio) > 1.8 else { continue }
-            
+            guard aspectRatio > 1.5 || (1/aspectRatio) > 1.5 else { continue }
+
             let area = width * height
             guard area > 0.0001 && area < 0.15 else { continue }
-            
+
             let contourCenterX = (minX + maxX) / 2
             if contourCenterX < normalizedRoiCenterX {
                 leftLines.append(contour)
@@ -245,23 +245,23 @@ final class LaneDetector: ObservableObject {
                 rightLines.append(contour)
             }
         }
-        
+
         return (leftLines, rightLines)
     }
     
     private func fitLaneCurves(leftLines: [VNContour], rightLines: [VNContour], imageSize: CGSize) -> (left: [CGPoint]?, right: [CGPoint]?) {
         let leftPoints = sampleContourPoints(leftLines, cropRect: calculateROICropRect(imageExtent: CGRect(origin: .zero, size: imageSize)), imageSize: imageSize, isLeft: true)
         let rightPoints = sampleContourPoints(rightLines, cropRect: calculateROICropRect(imageExtent: CGRect(origin: .zero, size: imageSize)), imageSize: imageSize, isLeft: false)
-        
-        let leftFit = fitQuadratic(points: leftPoints, imageSize: imageSize, isLeft: true)
-        let rightFit = fitQuadratic(points: rightPoints, imageSize: imageSize, isLeft: false)
-        
+
+        let leftFit = fitLinear(points: leftPoints, imageSize: imageSize, isLeft: true)
+        let rightFit = fitLinear(points: rightPoints, imageSize: imageSize, isLeft: false)
+
         return (leftFit, rightFit)
     }
-    
+
     private func sampleContourPoints(_ contours: [VNContour], cropRect: CGRect, imageSize: CGSize, isLeft: Bool) -> [CGPoint] {
         var points: [CGPoint] = []
-        
+
         for contour in contours {
             let normalizedPoints = contour.normalizedPoints
             for normalizedPoint in normalizedPoints {
@@ -271,97 +271,64 @@ final class LaneDetector: ObservableObject {
                 points.append(CGPoint(x: normX, y: normYFromTop))
             }
         }
-        
+
         return points
     }
-    
-    private func fitQuadratic(points: [CGPoint], imageSize: CGSize, isLeft: Bool) -> [CGPoint]? {
-        guard points.count >= 6 else { return nil }
-        
-        var sumY = 0.0, sumY2 = 0.0, sumY3 = 0.0, sumY4 = 0.0
-        var sumX = 0.0, sumXY = 0.0, sumXY2 = 0.0
-        
+
+    /// Fit linear perspective line x = slope * y + intercept using least-squares.
+    /// Validate realistic perspective slope: left lane converges right (-1.8 <= m <= -0.15),
+    /// right lane converges left (0.15 <= m <= 1.8). Requires >= 4 points.
+    private func fitLinear(points: [CGPoint], imageSize: CGSize, isLeft: Bool) -> [CGPoint]? {
+        guard points.count >= 4 else { return nil }
+
+        var sumY = 0.0, sumY2 = 0.0
+        var sumX = 0.0, sumXY = 0.0
+
         for point in points {
             let y = point.y
             let x = point.x
             sumY += y
             sumY2 += y * y
-            sumY3 += y * y * y
-            sumY4 += y * y * y * y
             sumX += x
             sumXY += x * y
-            sumXY2 += x * y * y
         }
-        
+
         let n = Double(points.count)
-        
-        let A = [
-            [sumY4, sumY3, sumY2],
-            [sumY3, sumY2, sumY],
-            [sumY2, sumY, n]
-        ]
-        let B = [sumXY2, sumXY, sumX]
-        
-        guard let coeffs = solveLinearSystem(A, B) else { return nil }
-        
-        let a = coeffs[0], b = coeffs[1], c = coeffs[2]
-        
+        let denom = n * sumY2 - sumY * sumY
+        guard abs(denom) > 1e-10 else { return nil }
+
+        let slope = (n * sumXY - sumX * sumY) / denom
+        let intercept = (sumX * sumY2 - sumY * sumXY) / denom
+
+        // Validate perspective slope
+        // Y decreases upward (0=top, 1=bottom), so:
+        // Left lane: converges RIGHT toward horizon => x decreases as y decreases => negative slope
+        // Right lane: converges LEFT toward horizon => x increases as y decreases => positive slope
+        if isLeft {
+            guard slope >= -1.8 && slope <= -0.15 else { return nil }
+        } else {
+            guard slope >= 0.15 && slope <= 1.8 else { return nil }
+        }
+
         var fittedPoints: [CGPoint] = []
         let startY = roiBottomY
         let endY = roiTopY
         let steps = 20
-        
+
         for i in 0..<steps {
             let y = startY - (startY - endY) * Double(i) / Double(steps - 1)
-            let x = a * y * y + b * y + c
+            let x = slope * y + intercept
             let clampedX = max(0.0, min(1.0, x))
             fittedPoints.append(CGPoint(x: clampedX, y: y))
         }
-        
+
         let centerX = 0.5 + roiCenterOffsetX
         let avgX = fittedPoints.map { $0.x }.reduce(0, +) / Double(fittedPoints.count)
-        
+
         if isLeft && avgX > centerX { return nil }
         if !isLeft && avgX < centerX { return nil }
-        
+
         return fittedPoints
-    }
-    
-    private func solveLinearSystem(_ A: [[Double]], _ B: [Double]) -> [Double]? {
-        var M = A
-        var b = B
-        
-        for i in 0..<3 {
-            var maxRow = i
-            for j in (i+1)..<3 {
-                if abs(M[j][i]) > abs(M[maxRow][i]) { maxRow = j }
-            }
-            
-            if abs(M[maxRow][i]) < 1e-10 { return nil }
-            
-            if maxRow != i {
-                M.swapAt(i, maxRow)
-                b.swapAt(i, maxRow)
-            }
-            
-            let pivot = M[i][i]
-            for j in i..<3 { M[i][j] /= pivot }
-            b[i] /= pivot
-            
-            for j in (i+1)..<3 {
-                let factor = M[j][i]
-                for k in i..<3 { M[j][k] -= factor * M[i][k] }
-                b[j] -= factor * b[i]
-            }
-        }
-        
-        var x = [0.0, 0.0, 0.0]
-        for i in (0..<3).reversed() {
-            x[i] = b[i]
-            for j in (i+1)..<3 { x[i] -= M[i][j] * x[j] }
-        }
-        
-        return x
     }
     
     // MARK: - EMA with Grace Window
