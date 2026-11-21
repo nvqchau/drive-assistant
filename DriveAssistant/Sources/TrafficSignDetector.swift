@@ -25,11 +25,11 @@ final class TrafficSignDetector: ObservableObject {
     // For diagnostic logging: include raw labels at lower confidence to see what model emits
     private let diagnosticConfidenceThreshold: Float = 0.25
     // Tolerate 1 transient missed frame during consecutive confirmation
-    private let maxMissedMatchFrames = 1
+    private let maxMissedMatchFrames = 3
 
     // MARK: - Label to Sign mapping (ONLY true Count strings from vn_signs_ios16.mlpackage data.yaml)
-    // Speed limits: "124"=ID57->10, "360"=ID2->40, "402"=ID39->50, "750"=ID12->60,
-    // "105"=ID40->70, "441"=ID41->80, "101"=ID59->110
+    // Speed limits: "124"=ID57->10, "114"=ID61->20, "360"=ID2->40, "402"=ID39->50,
+    // "750"=ID12->60, "105"=ID40->70, "441"=ID41->80, "102"=ID63->90, "103"=ID58->100, "101"=ID59->110
     // Residential area (sets 50 km/h + advisory): "164"=ID79 (R.420)
     // End residential area: "117"=ID80 (R.421), "190"=ID48 (DP.135 end all prohibition)
     // Clear speed limit (DP.134): "141"=ID78 (End of 50km/h speed limit)
@@ -38,11 +38,14 @@ final class TrafficSignDetector: ObservableObject {
     private let labelToSign: [String: SignInfo] = [
         // Speed limits (Count string -> speed value)
         "124": .speedLimit(10),   // ID 57: Speed limit 10km/h
+        "114": .speedLimit(20),   // ID 61: Speed limit 20km/h
         "360": .speedLimit(40),   // ID 2: Speed limit 40km/h
         "402": .speedLimit(50),   // ID 39: Speed limit 50km/h
         "750": .speedLimit(60),   // ID 12: Speed limit 60km/h
         "105": .speedLimit(70),   // ID 40: Speed limit 70km/h
         "441": .speedLimit(80),   // ID 41: Speed limit 80km/h
+        "102": .speedLimit(90),   // ID 63: Speed limit 90km/h
+        "103": .speedLimit(100),  // ID 58: Speed limit 100km/h
         "101": .speedLimit(110),  // ID 59: Speed limit 110km/h
         // Residential area (sets 50 km/h speed limit + advisory key)
         "164": .residential50,    // ID 79: Residential area (R.420) - ENTER
@@ -234,9 +237,13 @@ final class TrafficSignDetector: ObservableObject {
         // Handle speed limit detection (including residential50 which sets 50 km/h)
         if let bestSpeed = speedLimitDetections.max(by: { $0.1 < $1.1 }) {
             let speedValue = bestSpeed.0
+            let bestConfidence = bestSpeed.1
             endSignConsecutiveCount = 0
             lastEndSignType = nil
             missedMatchFrames = 0  // reset miss tolerance on detection
+
+            // High-confidence immediate confirmation (>= 0.45) bypasses 2-frame requirement
+            let shouldConfirmImmediately = bestConfidence >= 0.45
 
             if speedValue == lastMatchedLimit {
                 consecutiveMatchCount += 1
@@ -245,7 +252,7 @@ final class TrafficSignDetector: ObservableObject {
                 lastMatchedLimit = speedValue
             }
 
-            if consecutiveMatchCount >= requiredConsecutiveMatches {
+            if shouldConfirmImmediately || consecutiveMatchCount >= requiredConsecutiveMatches {
                 DispatchQueue.main.async { [weak self] in
                     self?.detectedSpeedLimit = speedValue
                     self?.detectedEndOfAllRestrictions = false
@@ -260,7 +267,7 @@ final class TrafficSignDetector: ObservableObject {
                         }
                     }
                 }
-                diagnostics?.record(type: "tsr_state", details: "action=P127_confirmed limit=\(speedValue) consecutive=\(consecutiveMatchCount) residential50=\(residential50Detected)")
+                diagnostics?.record(type: "tsr_state", details: "action=P127_confirmed limit=\(speedValue) conf=\(String(format: "%.2f", bestConfidence)) immediate=\(shouldConfirmImmediately) consecutive=\(consecutiveMatchCount) residential50=\(residential50Detected)")
             }
         } else {
             // Tolerate transient missed frames before resetting confirmation
