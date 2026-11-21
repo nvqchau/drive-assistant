@@ -1,6 +1,6 @@
 # DriveAssistant
 
-**DriveAssistant** is an experimental native iOS ADAS prototype built with **Swift**, **SwiftUI**, **AVFoundation**, **Vision**, **CoreML**, **CoreImage**, and **CoreMotion**. It uses the rear camera and GPS speed to estimate the distance to the closest detected vehicle ahead, visualize a dynamic forward-lane carpet with lane-departure warnings, warn when the gap falls below the configured threshold, and recognizes Vietnam speed limit signs (P.127 / DP.134 / DP.135) to alert on overspeed and auto-clear stale limits.
+**DriveAssistant** is an experimental native iOS ADAS prototype built with **Swift**, **SwiftUI**, **AVFoundation**, **Vision**, **CoreML**, **CoreImage**, and **CoreMotion**. It uses the rear camera and GPS speed to estimate the distance to the closest detected vehicle ahead, visualize a dynamic forward-lane carpet with lane-departure warnings, warn when the gap falls below the configured threshold, and recognizes Vietnam traffic signs via a custom CoreML model to alert on overspeed and auto-clear stale limits.
 
 > **Important:** This is not a certified or production-ready safety system. Monocular distance estimates can be wrong in low light, curves, hills, camera movement, occlusion, and when vehicle size changes. Use it only as a supplemental prototype while parked or during carefully supervised testing.
 
@@ -31,13 +31,14 @@
 - **Out-of-ROI vehicles:** Subtle gray boxes for vehicles detected outside the lane polygon (no alerts).
 - **Diagnostics:** Emits `ldws_departure_alert` (on rising edge) and `ldws_mode_changed` (dynamic↔static, throttled to 5 s) events.
 
-### Traffic Sign Recognition (TSR) — Vietnam P.127 / DP.134 / DP.135
-- **Lightweight OCR + pixel analysis** at 2 Hz on upper-right ROI (`x: 0.48–0.98`, `y: 0.05–0.55`), no second CoreML model.
-- **P.127 (Active Speed Limit):** Vision `VNRecognizeTextRequest` (`.fast`, minTextHeight `0.04`, `vi-VN`/`en-US`) with strict allowlist `[30, 40, 50, 60, 70, 80, 90, 100, 120]`. Candidate bbox verified near-square (aspect `0.65–1.45`). Red-ring check on 1.35× expanded bbox: `R > 145 && R > G×1.4 && R > B×1.4` ratio ≥ `0.30` → active limit confirmed.
-- **DP.134 (End of Speed Limit):** Same OCR digit detected but red-ring weak; dark diagonal slash (anti-diagonal band `|(1-u)-v| < 0.14`, luma < 90) ratio ≥ `0.35` on expanded bbox → auto-clears stale limit after 2 consecutive frames.
-- **DP.135 (End of All Restrictions):** No digits. `VNDetectContoursRequest` finds near-circular bright contour (aspect `0.75–1.30`, min `0.04` norm). Strong anti-diagonal dark stripe (ratio ≥ `0.40`) → auto-clears stale limit after 2 consecutive frames.
-- **Stability:** All classifications require 2 consecutive matches. `@Published detectedSpeedLimit: Int?` + `didClearSpeedLimitEvent: Date?` for HUD reaction.
-- **Manual clear:** Tap speed-limit badge on HUD to dismiss immediately.
+### Traffic Sign Recognition (TSR) — Vietnam Speed Limits & Advisory Signs
+- **Custom CoreML model** (`vn_signs_ios16.mlpackage`) runs at 2 Hz (`processInterval = 0.5 s`) on Neural Engine via `VNCoreMLRequest` with `MLComputeUnits.cpuAndNeuralEngine`. Uses `.scaleFill` on full frame, paused at critical thermal state.
+- **Detections filtered** at `confidence ≥ 0.48` and `boundingBox.width ≥ 0.018`. Class indices (0–81) mapped to Vietnamese sign labels via lookup table from training `classid.csv`.
+- **Speed limits (P.127):** Class indices → values: `57/124→10`, `61/114→20`, `62→30`, `2/360→40`, `39/402→50`, `12/750→60`, `40/105→70`, `41/441→80`, `63/102→90`, `58/103→100`, `59/101→110`, `60→120`. Requires 2 consecutive frames before updating `detectedSpeedLimit`.
+- **Clear limit (DP.134 / DP.135):** Class indices `48/190`, `78/141`, `80/117` → auto-clears stale speed limit after 2 consecutive frames, fires `didClearSpeedLimitEvent`.
+- **Advisory / prohibitory signs:** `79/164→"Residential Area"`, `0/572→"No Entry"`, `6/279→"No Cars"`, `45/123→"No Overtaking"`. Published as `activeAdvisorySignText` (e.g., "No Overtaking", "Residential Area") with 3.5 s auto-clear. Rendered as secondary blue badge next to speed limit badge on HUD.
+- **Stability:** All classifications require 2 consecutive matches. Manual clear via tap on speed-limit badge.
+- **Diagnostics:** Emits `tsr_yolo_detect` (raw detections per frame) and `tsr_state` (confirmed actions) events.
 
 ### Camera & thermal policy
 - Captures `1280×720` at up to `15 FPS` on the rear wide-angle camera.
@@ -66,21 +67,22 @@
 - **Trigger:** Vehicle ahead detected within `20 m` → arm; vehicle moves beyond `12 m` (or is lost) while speed ≤ `5 km/h` → fire.
 - **State machine:** `idle` → `armed` (distance ≤ 20 m & speed ≤ 5 km/h) → `triggered` (distance > 12 m or lost) → `cooldown` (8 s).
 - **Disarm:** Speed > 5 km/h for ≥ 1 s or distance > 25 m returns to `idle`.
-- **Alert:** Ascending two-note chime `C5 (523.25 Hz) → E5 (659.25 Hz)` with 0.15 s gap + success haptic + Vietnamese speech `"Xe phía trước đã di chuyển"`.
+- **Alert:** Ascending two-note chime `C5 (523.25 Hz) → E5 (659.25 Hz)` with 0.15 s gap + success haptic + Vietnamese speech "Lead vehicle has moved".
 
 ### Rules & alerts
 - **VN TT38-style mode** applies speed-tiered minimum gaps: `max(5, speed × 0.5)` below `58 km/h`, `35 m` around `58–60 km/h`, `55 m` from `60–80 km/h`, `70 m` from `80–100 km/h`, and `100 m` above `100 km/h`. It suppresses alerts below `10 km/h`.
 - **Time-headway mode** uses `max(5, speed × timeHeadway)` with a configurable `1.5–4.0 s` headway; its warning threshold also covers very short low-speed gaps (`< 4 m`).
 - Wet-road detection can increase VN-law minimums by `1.3×`. Open-Meteo is queried at most every `5 minutes` or after moving more than `5 km`; network failure falls back to dry.
 - Critical state requires three consecutive candidate frames. Warning chimes have a `5 s` cooldown; critical alerts have a `3 s` cooldown. Critical speech is Vietnamese (`vi-VN`) and can be disabled.
-- **Overspeed Alert (TSR):** When TSR active limit exists, `speed > limit + tolerance` triggers sharp A5 (880 Hz) chime + error haptic + Vietnamese `"Vượt quá tốc độ giới hạn X ki-lô-mét trên giờ"`. Cooldown `10 s`. Tolerance configurable `0–10 km/h` (default `3 km/h`).
-- **Speed Limit Cleared Alert (DP.134/DP.135):** Descending `E5 → C5` (0.12 s gap) + success haptic + `"Hết hạn chế tốc độ"`. Shows emerald micro-badge `"Hết hạn chế"` / `"Limit ended"` under badge for 2.5 s.
+- **Overspeed Alert (TSR):** When TSR active limit exists, `speed > limit + tolerance` triggers sharp A5 (880 Hz) chime + error haptic + Vietnamese "Exceeds speed limit X kilometers per hour". Cooldown `10 s`. Tolerance configurable `0–10 km/h` (default `3 km/h`).
+- **Speed Limit Cleared Alert (DP.134/DP.135):** Descending `E5 → C5` (0.12 s gap) + success haptic + "Speed limit ended". Shows emerald micro-badge "Limit ended" under badge for 2.5 s.
 
 ### HUD, settings & diagnostics
 - Landscape dark HUD shows GPS speed and accuracy, distance, safe-gap progress, thermal state, detected/target vehicle, and weather/road-condition pill.
 - **GPSSpeedPill:** Speed text turns red-orange (`1.0, 0.2, 0.0`) when overspeeding (pulsing glow + scale animation).
 - **SpeedLimitSignBadge:** 38 pt white circle with 4 pt red border, bold number (or dimmed `"--"`). Tap clears limit. Red glow pulse when overspeeding.
-- **Calibration status** (in Distance card): Shows `"Đang tự hiệu chỉnh X%"` (cyan) while auto-calibrating, `"⚠ Máy bị xê dịch"` (amber) on mount shift, hidden when calibrated.
+- **Secondary Advisory Badge:** Blue rounded-rect with exclamation-triangle icon + Vietnamese text (e.g., "No Overtaking", "Residential Area") rendered next to speed limit badge; auto-clears after 3.5 s.
+- **Calibration status** (in Distance card): Shows "Auto-calibrating X%" (cyan) while auto-calibrating, "⚠ Mount shifted" (amber) on mount shift, hidden when calibrated.
 - **Display Theme:** Auto (3-tier: camera luminance → GPS astronomical sunrise/sunset → clock fallback), Day, Night.
 - **HUD Mirror Mode:** Vertically flips the view for windshield reflection; sets screen brightness to maximum, restores on exit.
 - **Eco Black HUD:** Replaces live video with black background to reduce power and heat.
@@ -88,11 +90,11 @@
 - **Screenshot capture:** Flash animation + composites live camera frame + HUD overlay into Photos library. **Silent auto-capture** (no flash/alert) on critical alerts and anomaly events via `debugCaptureTrigger`.
 - **Live timestamp:** Bottom-center HUD label `dd/MM/yyyy HH:mm:ss` (11 pt monospaced), updates via 1 s timer.
 - Settings expose: Distance rule, calibration factor, hood offset, lane center offset, time headway, road condition, language (VI/EN), voice alerts, LDWS enable + speed threshold, display theme, mirror mode, Eco HUD, glass effect, horizon guide, out-of-lane vehicles, mount calibration save/reset.
-- **TSR Settings:** "Nhận diện biển báo tốc độ" toggle (default on) + "Dung sai vượt giới hạn" slider `0–10 km/h`.
-- **Stop-and-Go Settings:** "Nhắc xe trước di chuyển" toggle (default on).
-- **Diagnostics Settings:** "Tự động chụp ảnh khi nghi ngờ lỗi" toggle (default on, persisted) — auto-captures silent screenshots on `oncoming_lane_suspect`, `oncoming_closing_speed_spike`, and critical alerts (shared 5 s cooldown).
+- **TSR Settings:** "Speed Sign Recognition" toggle (default on) + "Overspeed tolerance" slider `0–10 km/h`.
+- **Stop-and-Go Settings:** "Lead Vehicle Departure Alert" toggle (default on).
+- **Diagnostics Settings:** "Auto-Capture Debug Snapshots" toggle (default on, persisted) — auto-captures silent screenshots on `oncoming_lane_suspect`, `oncoming_closing_speed_spike`, and critical alerts (shared 5 s cooldown).
 - **DiagnosticsLogStore:** Persistent daily JSONL logging to `Documents/DriveAssistantLogs/DriveAssistant-yyyy-MM-dd.jsonl` (async append on serial background queue). In-memory ring buffer (5000 events) + `eventPublisher` PassthroughSubject for real-time observers. Export reads today's daily log if in-memory empty. `clear()` deletes all `.jsonl` files.
-- **Anomaly event types:** `target_switched_iou`, `oncoming_lane_suspect`, `oncoming_closing_speed_spike`, `ldws_departure_alert`, `ldws_mode_changed`, `overspeed_alert`, `stop_and_go_alert`, `mount_shifted`, `alert_state_changed` (with `state=warning/critical/clear` + `reason=ttc|distance_below_3.5m`).
+- **Anomaly event types:** `target_switched_iou`, `oncoming_lane_suspect`, `oncoming_closing_speed_spike`, `ldws_departure_alert`, `ldws_mode_changed`, `overspeed_alert`, `stop_and_go_alert`, `mount_shifted`, `alert_state_changed` (with `state=warning/critical/clear` + `reason=ttc|distance_below_3.5m`), `tsr_yolo_detect`, `tsr_state`.
 
 ---
 
@@ -102,6 +104,7 @@
 DriveAssistant/
 ├── DriveAssistant.xcodeproj
 ├── yolov8n.mlpackage/                 # Quantized CoreML object-detection model (~6.5 MB)
+├── vn_signs_ios16.mlpackage/          # Custom CoreML traffic sign classifier (~8 MB)
 └── DriveAssistant/
     ├── Assets.xcassets
     ├── Info.plist                     # Camera/location usage, landscape support, launch screen
@@ -118,21 +121,23 @@ DriveAssistant/
         ├── DiagnosticsLogStore.swift  # Persistent daily JSONL logging + in-memory ring buffer (5000), eventPublisher, export/clear
         ├── LaneDetector.swift         # CoreImage/Vision contour lane detection, EMA, LDWS state machine, departure/mode diagnostics
         ├── MotionManager.swift        # CMMotionManager gravity-vector attitude, mount profile, horizon calibration, mount-shift (2 s @ 3.5°)
-        └── TrafficSignDetector.swift  # Vision OCR + red-ring/diagonal pixel analysis for P.127/DP.134/DP.135 (2 Hz), contour DP.135
+        └── TrafficSignDetector.swift  # VNCoreMLRequest on vn_signs_ios16 (2 Hz, Neural Engine), class-index→label mapping, advisory badge
 ```
 
-The app intentionally avoids a separate distance manager: `CameraManager` owns Vision and tracking outputs, `LaneDetector` owns lane geometry, `MotionManager` owns horizon alignment, `TrafficSignDetector` owns TSR, while `DriveAssistantModel` combines those outputs with GPS, road condition, settings, and alert state.
+The app intentionally avoids a separate distance manager: `CameraManager` owns Vision and tracking outputs, `LaneDetector` owns lane geometry, `MotionManager` owns horizon alignment, `TrafficSignDetector` owns TSR (CoreML-based), while `DriveAssistantModel` combines those outputs with GPS, road condition, settings, and alert state.
 
 ---
 
 ## Requirements
 
 - macOS with **Xcode 14.0+**
-- iPhone or iPad running **iOS 16.0+**
+- iPhone or iPad running **iOS 16.0+** (Neural Engine required for TSR model)
 - Camera and location permissions
 - Internet only for automatic wet-road detection; the remainder of the pipeline works offline
 
-The CoreML model (`yolov8n.mlpackage`) is included in the repository and configured as a target resource.
+CoreML models included in the repository and configured as target resources:
+- `yolov8n.mlpackage` — quantized object detection (~6.5 MB)
+- `vn_signs_ios16.mlpackage` — Vietnam traffic sign classifier (~8 MB)
 
 ---
 
@@ -156,7 +161,7 @@ The CoreML model (`yolov8n.mlpackage`) is included in the repository and configu
 5. Install with Xcode devices, Apple Configurator, `ideviceinstaller`, or another sideloading tool.
 
 ### CI / GitHub Actions
-- **Workflow:** `.github/workflows/build-ipa.yml` builds unsigned Release IPA on `macos-14` on every push to `main` and via `workflow_dispatch`.
+- **Workflow:** `.github/workflows/build-ipa.yml` builds unsigned Release IPA on `macos-latest` on every push to `main` and via `workflow_dispatch`.
 - **Artifact:** `DriveAssistant-Release.ipa` uploaded with 7-day retention.
 - **Build flags:** `CODE_SIGNING_ALLOWED=NO`, `CODE_SIGNING_REQUIRED=NO`, `CODE_SIGN_IDENTITY=""`.
 
@@ -172,9 +177,9 @@ The CoreML model (`yolov8n.mlpackage`) is included in the repository and configu
 ### In-drive auto-calibration (recommended)
 1. Ensure **Show Horizon Guide** is enabled in Settings → **Interface**.
 2. Drive straight on a level road at `> 25 km/h` with a visible lead vehicle or clear lane markings.
-3. Watch the Distance card: it shows `"Đang tự hiệu chỉnh X%"` (cyan) as progress increases.
+3. Watch the Distance card: it shows `"Auto-calibrating X%"` (cyan) as progress increases.
 4. At `100%`, the mount angle and horizon offset are automatically saved. The HUD shows **✓ Mount aligned** (green) on next launch.
-5. If the mount shifts (`"⚠ Máy bị xê dịch"` appears), simply drive straight again — it will auto-recalibrate once settled.
+5. If the mount shifts (`"⚠ Mount shifted"` appears), simply drive straight again — it will auto-recalibrate once settled.
 
 ### Distance calibration
 1. Park about one car length (`4.5–5.0 m`) behind a standard sedan.
@@ -190,8 +195,7 @@ The CoreML model (`yolov8n.mlpackage`) is included in the repository and configu
 - Distance is monocular and depends on bounding-box width; it is not radar/LiDAR-grade and can be biased by vehicle type, crop, scale, occlusion, and tracking error.
 - Lane detection uses contour heuristics on the lower ROI; it can fail in rain, glare, faded markings, or heavy shadows.
 - The dynamic ROI for vehicle filtering snaps to detected lanes but falls back to the fixed trapezoid when confidence is low.
-- TSR runs on upper-right ROI only; signs on left, center gantry, or partially occluded may be missed. Red-ring verification needs daylight-level illumination.
-- DP.134/DP.135 detection relies on clear diagonal slash contrast; faded or non-standard signs may not trigger.
+- TSR runs on full frame via CoreML; signs on far left, center gantry, or heavily occluded may be missed. Model trained on Vietnamese sign dataset; non-standard or heavily faded signs may not trigger.
 - Diagnostics persist daily as JSONL (`DriveAssistant-yyyy-MM-dd.jsonl`) in `Documents/DriveAssistantLogs/`; export reads today's log if in-memory buffer empty. No automatic log rotation (manual clear from Settings).
 - Weather-based wet mode depends on network availability and uses coarse Open-Meteo conditions rather than direct road-surface sensing.
 - **GPS stall detection:** If GPS speed < `1 km/h` for `> 10 s` while moving previously, `isSpeedStalled` flags true (prevents stale speed from triggering false alerts).
