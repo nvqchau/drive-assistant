@@ -83,6 +83,11 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
     private let lowLightThreshold: Double = 1.2    // switch to night
     private let daylightThreshold: Double = 2.2    // switch back to day (hysteresis)
 
+    // Unified model thermal throttling (4 Hz nominal, 2 Hz on .fair/.serious)
+    private var lastTSRProcessTime: TimeInterval = 0
+    private let baseTSRInterval: TimeInterval = 0.25
+    private let thermalTSRInterval: TimeInterval = 0.5
+
     override init() {
         super.init()
         updateCachedOrientation(for: UIDevice.current.orientation)
@@ -166,13 +171,13 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
             let extensions = ["mlmodelc"]
             var loaded = false
             for ext in extensions {
-                if let modelURL = Bundle.main.url(forResource: "yolov8n", withExtension: ext),
+                if let modelURL = Bundle.main.url(forResource: "vn_adas_unified_ios16", withExtension: ext),
                    let model = try? MLModel(contentsOf: modelURL, configuration: modelConfiguration),
                    let visionModel = try? VNCoreMLModel(for: model) {
                     DispatchQueue.main.async {
                         self.visionModel = visionModel
                         self.isModelReady = true
-                        self.logger.info("Vision model loaded and ready from .\(ext)")
+                        self.logger.info("Unified ADAS model loaded and ready from .\(ext)")
                     }
                     loaded = true
                     break
@@ -180,7 +185,7 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
             }
             if !loaded {
                 DispatchQueue.main.async {
-                    self.logger.error("Failed to load Vision model (tried .mlmodelc)")
+                    self.logger.error("Failed to load Unified ADAS model (tried .mlmodelc)")
                 }
             }
         }
@@ -329,36 +334,29 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
                 self?.cameraFrameSize = frameSize
             }
         }
-        
+
         // Store latest frame for snapshot (no manual retain needed - ARC handles it)
         frameLock.lock()
         latestFramePixelBuffer = pixelBuffer
         frameLock.unlock()
-        
+
         if !hasLoggedFrameFormat {
             hasLoggedFrameFormat = true
             diagnostics?.record(type: "camera_frame_format", details: "width=\(CVPixelBufferGetWidth(pixelBuffer)), height=\(CVPixelBufferGetHeight(pixelBuffer)), videoOrientation=\(videoOrientation)")
         }
         lastInference = now
         inferenceCount += 1
-        
+
         // Sample camera ambient brightness every ~1.5s
         if now - lastBrightnessSampleTime >= brightnessSampleInterval {
             lastBrightnessSampleTime = now
             sampleCameraBrightness(sampleBuffer: sampleBuffer)
         }
-        
+
         // Feed frame to lane detector (runs on its own queue) - every 2nd frame, skip on serious/critical thermal
         let thermal = thermalStateForInference()
         if inferenceCount % 2 == 0 && thermal != .serious && thermal != .critical {
             laneDetector?.processFrame(pixelBuffer: pixelBuffer, speedKMPH: currentSpeedKMPH)
-        }
-
-        // Feed frame to traffic sign detector (TSR) - lightweight 2 Hz OCR + red-ring verification
-        trafficSignDetector.setThermalState(thermal)
-        trafficSignDetector.setVisionOrientation(visionOrientation)
-        if enableSpeedSignRecognition {
-            trafficSignDetector.processFrameIfNeeded(pixelBuffer)
         }
 
         autoreleasepool {
@@ -371,7 +369,8 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
                 self?.recordInferenceDuration(CACurrentMediaTime() - inferenceStart)
                 self?.handle(request: request, pixelBuffer: pixelBuffer)
             }
-            request.imageCropAndScaleOption = .centerCrop
+            // Use .scaleFill to match 640x640 unified training aspect ratio (YOLO bbox coords preserved)
+            request.imageCropAndScaleOption = .scaleFill
             request.regionOfInterest = CGRect(x: 0, y: 0, width: 1, height: 1)
             let orientation = visionOrientation
             do {
@@ -600,7 +599,23 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
 
     private func handle(request: VNRequest, pixelBuffer: CVPixelBuffer) {
         let now = CACurrentMediaTime()
-        let candidates = (request.results as? [VNRecognizedObjectObservation] ?? []).compactMap { observation -> (CGRect, Float, String)? in
+        // Get ALL observations from unified model (vehicles + traffic signs)
+        let allObservations = request.results as? [VNRecognizedObjectObservation] ?? []
+
+        // Forward ALL observations to TrafficSignDetector for TSR processing (single-pass unified inference)
+        if enableSpeedSignRecognition {
+            // Thermal throttling for TSR (4 Hz nominal, 2 Hz on .fair/.serious)
+            let tsrInterval = (thermalState == .nominal) ? baseTSRInterval : thermalTSRInterval
+            if now - lastTSRProcessTime >= tsrInterval {
+                lastTSRProcessTime = now
+                trafficSignDetector.setThermalState(thermalState)
+                trafficSignDetector.setVisionOrientation(visionOrientation)
+                trafficSignDetector.processObservations(allObservations, pixelBuffer: pixelBuffer, orientation: visionOrientation)
+            }
+        }
+
+        // Filter vehicle observations for FCW pipeline
+        let candidates = allObservations.compactMap { observation -> (CGRect, Float, String)? in
             guard let label = observation.labels.first,
                   ["car", "truck", "bus", "motorcycle", "motorbike"].contains(label.identifier) else { return nil }
             guard label.confidence >= 0.42 else { return nil }

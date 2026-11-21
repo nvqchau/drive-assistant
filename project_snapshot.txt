@@ -1704,7 +1704,7 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
         let topY: CGFloat = 0.38
         let bottomY: CGFloat = 0.95
         let topWidth: CGFloat = 0.16   // narrowed from 0.22 for narrow two-way streets
-        let bottomWidth: CGFloat = 0.42 // narrowed from 0.48
+        let bottomWidth: CGFloat = 0.54 // widened from 0.42 to match real road markings
         
         guard yFromTop >= topY && yFromTop <= bottomY else { return false }
         
@@ -1727,7 +1727,7 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
         let topY: CGFloat = 0.38
         let bottomY: CGFloat = 0.95
         let topWidth: CGFloat = 0.16   // narrowed from 0.22
-        let bottomWidth: CGFloat = 0.42 // narrowed from 0.48
+        let bottomWidth: CGFloat = 0.54 // widened from 0.42 to match real road markings
         
         let boxBottomY = box.minY
         let yFromTop = bottomYFromTop
@@ -1959,7 +1959,11 @@ struct ContentView: View {
     }
 
     private func takeScreenshot(silent: Bool = false) {
-        isCapturingScreenshot = true
+        // 1. Fetch camera image FIRST (may be nil if session not running)
+        let cameraImage = model.camera.snapshotCameraImage()
+
+        // 2. Only hide CameraPreview if we got a camera image; otherwise keep it visible
+        isCapturingScreenshot = cameraImage != nil
 
         if !silent {
             // Flash screen
@@ -1969,9 +1973,8 @@ struct ContentView: View {
             }
         }
 
-        // Allow SwiftUI to render CameraPreview hidden before capturing
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) {
-            // Capture the full screen (HUD overlay)
+        // 3. Wait 0.06s for SwiftUI to flush transparent background before compositing
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
             guard let window = UIApplication.shared.connectedScenes
                 .compactMap({ ($0 as? UIWindowScene)?.keyWindow }).first else {
                 isCapturingScreenshot = false
@@ -1980,9 +1983,6 @@ struct ContentView: View {
 
             let bounds = window.bounds
             let renderer = UIGraphicsImageRenderer(bounds: bounds)
-
-            // First get the camera frame
-            let cameraImage = model.camera.snapshotCameraImage()
 
             let composited = renderer.image { ctx in
                 // 1. Draw camera image (aspectFill to match CameraPreview)
@@ -2729,7 +2729,7 @@ private struct LaneCarpet: View {
         let horizonTopYNorm = max(0.25, min(0.65, horizonY))
         let bottomYNorm = 0.95
         let topWidthNorm = 0.16
-        let bottomWidthNorm = 0.42
+        let bottomWidthNorm = 0.54  // widened from 0.42 to match real road markings
 
         // Compute effectiveTopY in normalized video space (clip at lead vehicle bottom)
         let effectiveTopYNorm: CGFloat
@@ -3432,6 +3432,8 @@ final class DriveAssistantModel: ObservableObject {
     @Published private(set) var isInResidentialArea: Bool? = nil  // nil=unknown, true=inside, false=outside
     @Published private(set) var isDividedRoad: Bool = false  // from OSM or dual carriageway sign
     private var isCurrentLimitStatutory = false  // true if detectedSpeedLimit came from TT38, false if from P.127 sign
+    private var lastCameraResidentialSignTime: Date = .distantPast  // for 5-min camera precedence over OSM
+    private var hasReceivedCameraSignOverride = false  // true after any camera sign confirmed or manual clear
 
     // Display Theme & Mirror Mode
     @Published var displayThemeMode: DisplayThemeMode = .auto {
@@ -3691,9 +3693,11 @@ final class DriveAssistantModel: ObservableObject {
                     if !(inResidential && limit == 50) {
                         self?.isCurrentLimitStatutory = false
                     }
+                    self?.hasReceivedCameraSignOverride = true  // any confirmed camera sign
                 } else {
                     // Manual clear (tap on badge) resets statutory tracking
                     self?.isCurrentLimitStatutory = false
+                    self?.hasReceivedCameraSignOverride = true
                 }
                 self?.updateOverspeedState()
             }
@@ -3707,6 +3711,7 @@ final class DriveAssistantModel: ObservableObject {
                 self.detectedSpeedLimit = nil
                 self.isOverspeeding = false
                 self.showSpeedLimitCleared = true
+                self.hasReceivedCameraSignOverride = true  // manual clear counts as camera override
                 self.alerts.playSpeedLimitClearedAlert(speak: self.voiceAlertsEnabled)
 
                 // Auto-hide micro-badge after 2.5s
@@ -3747,8 +3752,11 @@ final class DriveAssistantModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] inResidential in
                 self?.isInResidentialArea = inResidential
-                // Entering/exiting residential area triggers statutory limit — enable tracking
-                if inResidential != nil { self?.isCurrentLimitStatutory = true }
+                // Record timestamp when camera sees explicit R.420/R.421 (non-nil) for 5-min precedence over OSM
+                if inResidential != nil {
+                    self?.lastCameraResidentialSignTime = Date()
+                    self?.isCurrentLimitStatutory = true
+                }
                 self?.applyTT38StatutoryLimit()
             }
             .store(in: &cancellables)
@@ -3776,10 +3784,25 @@ final class DriveAssistantModel: ObservableObject {
         location.roadMetadata.$roadMaxSpeed
             .receive(on: DispatchQueue.main)
             .sink { [weak self] maxSpeed in
-                // Fallback when no camera sign has been seen yet
-                if self?.detectedSpeedLimit == nil, let maxSpeed {
+                // Fallback only before any camera sign confirmed or manual clear
+                if !(self?.hasReceivedCameraSignOverride ?? false), let maxSpeed, self?.detectedSpeedLimit == nil {
                     self?.detectedSpeedLimit = maxSpeed
                     self?.updateOverspeedState()
+                }
+            }
+            .store(in: &cancellables)
+
+        // OSM Residential area detection: auto-activate "Khu dân cư" badge + TT38 50/60 km/h
+        // when no explicit R.420/R.421 camera sign has been seen recently (5-min precedence)
+        location.roadMetadata.$osmIsInResidentialArea
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] osmInResidential in
+                guard let self else { return }
+                // Only apply OSM if camera hasn't seen explicit R.420/R.421 within last 5 minutes
+                let cameraPrecedenceElapsed = Date().timeIntervalSince(self.lastCameraResidentialSignTime)
+                if self.camera.trafficSignDetector.isInResidentialArea == nil && cameraPrecedenceElapsed > 300 {
+                    self.isInResidentialArea = osmInResidential
+                    self.applyTT38StatutoryLimit()
                 }
             }
             .store(in: &cancellables)
@@ -4064,7 +4087,7 @@ final class DriveAssistantModel: ObservableObject {
     ///     * isInResidentialArea == nil:   do nothing (unknown)
     private func applyTT38StatutoryLimit() {
         // If an explicit P.127 speed sign was confirmed by camera, respect it and don't override
-        guard !isCurrentLimitStatutory || detectedSpeedLimit == nil else { return }
+        guard isCurrentLimitStatutory || detectedSpeedLimit == nil else { return }
         guard let inResidential = isInResidentialArea else { return }  // unknown state
         guard enableDefaultOutsideResidentialLimit || inResidential else { return }  // outside residential but feature disabled
 
@@ -4232,7 +4255,7 @@ final class LaneDetector: ObservableObject {
     private let roiTopY: CGFloat = 0.38
     private let roiBottomY: CGFloat = 0.95
     private let roiTopWidth: CGFloat = 0.16
-    private let roiBottomWidth: CGFloat = 0.42
+    private let roiBottomWidth: CGFloat = 0.54  // widened from 0.42 to match real road markings
     private var roiCenterOffsetX: CGFloat = -0.03
     
     // LDWS enabled flag
@@ -4322,12 +4345,12 @@ final class LaneDetector: ObservableObject {
     private func enhanceLaneMarkings(_ image: CIImage) -> CIImage {
         let gray = image.applyingFilter("CIColorControls", parameters: [
             kCIInputSaturationKey: 0,
-            kCIInputContrastKey: 1.5,
+            kCIInputContrastKey: 1.8,
             kCIInputBrightnessKey: 0.1
         ])
-        
+
         let whiteMask = gray.applyingFilter("CIColorThreshold", parameters: [
-            "inputThreshold": 0.7
+            "inputThreshold": 0.62
         ])
         
         let yellowMask = image.applyingFilter("CIColorControls", parameters: [
@@ -4399,8 +4422,8 @@ final class LaneDetector: ObservableObject {
             let width = maxX - minX
             let height = maxY - minY
             let aspectRatio = width / max(height, 1)
-            
-            guard aspectRatio > 3.0 || (1/aspectRatio) > 3.0 else { continue }
+
+            guard aspectRatio > 1.8 || (1/aspectRatio) > 1.8 else { continue }
             
             let area = width * height
             guard area > 0.0001 && area < 0.15 else { continue }
@@ -4443,7 +4466,7 @@ final class LaneDetector: ObservableObject {
     }
     
     private func fitQuadratic(points: [CGPoint], imageSize: CGSize, isLeft: Bool) -> [CGPoint]? {
-        guard points.count >= 10 else { return nil }
+        guard points.count >= 6 else { return nil }
         
         var sumY = 0.0, sumY2 = 0.0, sumY3 = 0.0, sumY4 = 0.0
         var sumX = 0.0, sumXY = 0.0, sumXY2 = 0.0
@@ -5137,11 +5160,13 @@ import Foundation
 import CoreLocation
 
 /// Free OpenStreetMap (Overpass API) road-type lookup for Vietnam TT38 statutory speed limits.
-/// Queries Overpass API to determine if current road is divided/dual-carriageway and fetches maxspeed tags.
+/// Queries Overpass API to determine if current road is divided/dual-carriageway, fetches maxspeed tags,
+/// and detects if ego vehicle is inside a residential/urban area for automatic TT38 50/60 km/h limit.
 @MainActor
 final class RoadMetadataService: ObservableObject {
     @Published private(set) var isDividedRoad: Bool = false
     @Published private(set) var roadMaxSpeed: Int? = nil
+    @Published private(set) var osmIsInResidentialArea: Bool = false  // true if inside residential/urban area per OSM
     @Published private(set) var lastQueryLocation: CLLocation?
     @Published private(set) var isQuerying: Bool = false
     @Published private(set) var lastQueryDate: Date?
@@ -5180,9 +5205,15 @@ final class RoadMetadataService: ObservableObject {
 
         let lat = location.coordinate.latitude
         let lon = location.coordinate.longitude
+        // Query both highway ways AND enclosing residential/urban areas
         let query = """
         [out:json][timeout:5];
         way(around:\(queryRadius),\(lat),\(lon))["highway"];
+        out tags 1;
+        is_in(\(lat),\(lon))->.a;
+        area.a["landuse"="residential"];
+        out tags 1;
+        area.a["place"~"^(town|suburb|quarter|neighbourhood|village)$"];
         out tags 1;
         """
 
@@ -5198,14 +5229,16 @@ final class RoadMetadataService: ObservableObject {
             let result = try parseOverpassResponse(data)
             self.isDividedRoad = result.isDivided
             self.roadMaxSpeed = result.maxSpeed
+            self.osmIsInResidentialArea = result.isInResidentialArea
         } catch {
             // Offline-safe: silently ignore, keep last known values
             print("RoadMetadataService: Overpass query failed: \(error)")
         }
     }
 
-    /// Parse Overpass JSON response for oneway, dual_carriageway, lanes, maxspeed tags.
-    private func parseOverpassResponse(_ data: Data) throws -> (isDivided: Bool, maxSpeed: Int?) {
+    /// Parse Overpass JSON response for oneway, dual_carriageway, lanes, maxspeed tags,
+    /// and residential/urban area detection.
+    private func parseOverpassResponse(_ data: Data) throws -> (isDivided: Bool, maxSpeed: Int?, isInResidentialArea: Bool) {
         struct OverpassResponse: Decodable {
             let elements: [Element]
             struct Element: Decodable {
@@ -5219,6 +5252,8 @@ final class RoadMetadataService: ObservableObject {
         var bestMaxSpeed: Int? = nil
         var bestOneway: String? = nil
         var bestDualCarriageway: String? = nil
+        var foundResidentialArea = false
+        var foundUrbanArea = false
 
         // Priority: primary > secondary > tertiary > unclassified > residential > service
         let highwayPriority: [String: Int] = [
@@ -5228,6 +5263,16 @@ final class RoadMetadataService: ObservableObject {
 
         for element in response.elements {
             guard let tags = element.tags else { continue }
+
+            // Check for residential/urban area tags from is_in query
+            if tags["landuse"] == "residential" {
+                foundResidentialArea = true
+            }
+            if let place = tags["place"],
+               ["town", "suburb", "quarter", "neighbourhood", "village"].contains(place) {
+                foundUrbanArea = true
+            }
+
             let highway = tags["highway"] ?? ""
             let priority = highwayPriority[highway] ?? -1
             let currentBestPriority = highwayPriority[bestHighway ?? ""] ?? -1
@@ -5252,7 +5297,12 @@ final class RoadMetadataService: ObservableObject {
             }
         }
 
-        return (isDivided, bestMaxSpeed)
+        // Determine if in residential/urban area
+        // True if: found residential landuse, found urban place, OR nearest road is residential/living_street
+        let isInResidentialArea = foundResidentialArea || foundUrbanArea ||
+            (bestHighway == "residential" || bestHighway == "living_street")
+
+        return (isDivided, bestMaxSpeed, isInResidentialArea)
     }
 
     /// Manual override from driver tap on HUD pill
@@ -5468,6 +5518,7 @@ import Vision
 
 /// Vietnam traffic sign recognition using custom CoreML model (vn_signs_ios16.mlpackage compiled to .mlmodelc).
 /// Runs VNCoreMLRequest at 2 Hz on Neural Engine, maps class labels (Count strings from data.yaml) to Vietnamese sign labels.
+/// Hybrid YOLO localization + cropped Vision OCR for speed limit number verification.
 final class TrafficSignDetector: ObservableObject {
     // MARK: - Published
     @Published private(set) var detectedSpeedLimit: Int?
@@ -5487,6 +5538,12 @@ final class TrafficSignDetector: ObservableObject {
     private let diagnosticConfidenceThreshold: Float = 0.25
     // Tolerate 1 transient missed frame during consecutive confirmation
     private let maxMissedMatchFrames = 3
+
+    // OCR configuration for speed limit number verification
+    private let ocrExpansionFactor: CGFloat = 1.15  // expand YOLO bbox by 15% for OCR crop
+    private let validSpeedTokens: Set<Int> = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120]
+    private let speedLimitLabels: Set<String> = ["124", "114", "360", "402", "750", "105", "441", "102", "103", "101"]
+    private var textRecognitionRequest: VNRecognizeTextRequest?
 
     // MARK: - Label to Sign mapping (ONLY true Count strings from vn_signs_ios16.mlpackage data.yaml)
     // Speed limits: "124"=ID57->10, "114"=ID61->20, "360"=ID2->40, "402"=ID39->50,
@@ -5567,6 +5624,16 @@ final class TrafficSignDetector: ObservableObject {
 
     init() {
         loadCoreMLModelAsync()
+        setupOCRRequest()
+    }
+
+    private func setupOCRRequest() {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .fast
+        request.usesLanguageCorrection = false
+        request.recognitionLanguages = ["vi-VN", "en-US"]
+        request.minimumTextHeight = 0.02
+        self.textRecognitionRequest = request
     }
 
     deinit {
@@ -5642,7 +5709,7 @@ final class TrafficSignDetector: ObservableObject {
         guard let results = request.results as? [VNRecognizedObjectObservation] else { return }
 
         // Filter detections at normal threshold for state updates
-        var speedLimitDetections: [(Int, Float, CGRect)] = []  // (speedValue, confidence, bbox)
+        var speedLimitDetections: [(Int, Float, CGRect, String)] = []  // (speedValue, confidence, bbox, label)
         var clearLimitDetections: [(Float, CGRect)] = []        // (confidence, bbox)
         var advisoryDetections: [(String, Float, CGRect)] = []  // (key, confidence, bbox)
         var residential50Detected = false
@@ -5669,10 +5736,10 @@ final class TrafficSignDetector: ObservableObject {
             guard let signInfo = labelToSign[label] else { continue }
 
             if signInfo.isSpeedLimit, let speed = signInfo.speedValue {
-                speedLimitDetections.append((speed, obs.confidence, bbox))
+                speedLimitDetections.append((speed, obs.confidence, bbox, label))
             } else if signInfo.isResidential50 {
                 residential50Detected = true
-                speedLimitDetections.append((50, obs.confidence, bbox))
+                speedLimitDetections.append((50, obs.confidence, bbox, label))
             } else if signInfo.isEndResidentialArea {
                 endResidentialAreaDetected = true
             } else if signInfo.isClearLimit {
@@ -5691,31 +5758,43 @@ final class TrafficSignDetector: ObservableObject {
             let rawDetails = allRawDetections.map {
                 "(rawLabel=\($0.0), conf=\(String(format: "%.2f", $0.1)), x=\(String(format: "%.2f", $0.2.minX)), w=\(String(format: "%.3f", $0.2.width)))"
             }.joined(separator: ";")
-            let details = "raw=\(rawDetails.isEmpty ? "none" : rawDetails); speedDetections=\(speedLimitDetections.map { "(\($0.0),\(String(format: "%.2f", $0.1)),\(String(format: "%.3f", $0.2.minX)))\($0.2.width)" }.joined(separator: ";")) clearDetections=\(clearLimitDetections.count) advisoryDetections=\(advisoryDetections.map { "(\($0.0),\(String(format: "%.2f", $0.1)))" }.joined(separator: ";")) residential50=\(residential50Detected) endResidential=\(endResidentialAreaDetected) dualCarriageway=\(dualCarriagewayDetected)"
+            let details = "raw=\(rawDetails.isEmpty ? "none" : rawDetails); speedDetections=\(speedLimitDetections.map { "(\($0.0),\(String(format: "%.2f", $0.1)),\(String(format: "%.3f", $0.2.minX)))\($0.2.width),\($0.3)" }.joined(separator: ";")) clearDetections=\(clearLimitDetections.count) advisoryDetections=\(advisoryDetections.map { "(\($0.0),\(String(format: "%.2f", $0.1)))" }.joined(separator: ";")) residential50=\(residential50Detected) endResidential=\(endResidentialAreaDetected) dualCarriageway=\(dualCarriagewayDetected)"
             diagnostics?.record(type: "tsr_yolo_detect", details: details)
         }
 
         // Handle speed limit detection (including residential50 which sets 50 km/h)
         if let bestSpeed = speedLimitDetections.max(by: { $0.1 < $1.1 }) {
-            let speedValue = bestSpeed.0
+            let yoloSpeedValue = bestSpeed.0
             let bestConfidence = bestSpeed.1
+            let bestBBox = bestSpeed.2
+            let bestLabel = bestSpeed.3
             endSignConsecutiveCount = 0
             lastEndSignType = nil
             missedMatchFrames = 0  // reset miss tolerance on detection
 
+            // Run OCR on the best speed sign detection for number verification
+            var finalSpeedValue = yoloSpeedValue
+            var ocrVerified = false
+            if speedLimitLabels.contains(bestLabel) {
+                if let ocrSpeed = runOCROnSpeedSign(pixelBuffer: pixelBuffer, bbox: bestBBox, orientation: visionOrientation) {
+                    finalSpeedValue = ocrSpeed
+                    ocrVerified = true
+                }
+            }
+
             // High-confidence immediate confirmation (>= 0.45) bypasses 2-frame requirement
             let shouldConfirmImmediately = bestConfidence >= 0.45
 
-            if speedValue == lastMatchedLimit {
+            if finalSpeedValue == lastMatchedLimit {
                 consecutiveMatchCount += 1
             } else {
                 consecutiveMatchCount = 1
-                lastMatchedLimit = speedValue
+                lastMatchedLimit = finalSpeedValue
             }
 
             if shouldConfirmImmediately || consecutiveMatchCount >= requiredConsecutiveMatches {
                 DispatchQueue.main.async { [weak self] in
-                    self?.detectedSpeedLimit = speedValue
+                    self?.detectedSpeedLimit = finalSpeedValue
                     self?.detectedEndOfAllRestrictions = false
                     // If residential50 was detected, also set advisory and residential area flag
                     if residential50Detected {
@@ -5728,7 +5807,7 @@ final class TrafficSignDetector: ObservableObject {
                         }
                     }
                 }
-                diagnostics?.record(type: "tsr_state", details: "action=P127_confirmed limit=\(speedValue) conf=\(String(format: "%.2f", bestConfidence)) immediate=\(shouldConfirmImmediately) consecutive=\(consecutiveMatchCount) residential50=\(residential50Detected)")
+                diagnostics?.record(type: "tsr_state", details: "action=P127_confirmed limit=\(finalSpeedValue) yoloLimit=\(yoloSpeedValue) ocrVerified=\(ocrVerified) conf=\(String(format: "%.2f", bestConfidence)) immediate=\(shouldConfirmImmediately) consecutive=\(consecutiveMatchCount) residential50=\(residential50Detected)")
             }
         } else {
             // Tolerate transient missed frames before resetting confirmation
@@ -5811,6 +5890,71 @@ final class TrafficSignDetector: ObservableObject {
         let request = VNCoreMLRequest(model: model)
         request.imageCropAndScaleOption = .scaleFill
         return request
+    }
+
+    // MARK: - Hybrid YOLO Localization + Cropped Vision OCR for Speed Limits
+    private func runOCROnSpeedSign(pixelBuffer: CVPixelBuffer, bbox: CGRect, orientation: CGImagePropertyOrientation) -> Int? {
+        guard let ocrRequest = textRecognitionRequest else { return nil }
+
+        // Expand bbox by 1.15x in normalized coordinates (bottom-left origin from YOLO)
+        let expandedBBox = expandBoundingBox(bbox, factor: ocrExpansionFactor)
+
+        // Convert normalized bbox (bottom-left origin) to CIImage crop rect (bottom-left origin)
+        // CIImage.extent uses bottom-left origin, matching VNRecognizedObjectObservation.boundingBox
+        let ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+        let imageWidth = ciImage.extent.width
+        let imageHeight = ciImage.extent.height
+
+        // YOLO bbox: origin bottom-left, normalized
+        // CIImage crop: origin bottom-left, pixel coordinates (same coordinate system)
+        let cropX = expandedBBox.minX * imageWidth
+        let cropY = expandedBBox.minY * imageHeight  // bottom-left origin, no Y flip needed
+        let cropWidth = expandedBBox.width * imageWidth
+        let cropHeight = expandedBBox.height * imageHeight
+
+        let cropRect = CGRect(x: cropX, y: cropY, width: cropWidth, height: cropHeight)
+            .intersection(ciImage.extent)
+
+        guard cropRect.width > 10, cropRect.height > 10 else { return nil }
+
+        let croppedImage = ciImage.cropped(to: cropRect)
+
+        // Pass orientation directly to VNImageRequestHandler (not croppedImage.oriented)
+        // so coordinates stay aligned for landscapeRight / down orientations
+        var recognizedText: String?
+        let handler = VNImageRequestHandler(ciImage: croppedImage, orientation: orientation, options: [:])
+        do {
+            try handler.perform([ocrRequest])
+            recognizedText = ocrRequest.results?.first?.topCandidates(1).first?.string
+        } catch {
+            diagnostics?.record(type: "tsr_ocr_error", details: "error=\(error.localizedDescription)")
+            return nil
+        }
+
+        guard let text = recognizedText else { return nil }
+
+        // Parse text for speed number: split by non-digits, pick first token in validSpeedTokens
+        // Handles "P.127 60" -> ["", "127", "", "60"] -> picks 60 (127 not in validSpeedTokens)
+        let tokens = text.components(separatedBy: CharacterSet.decimalDigits.inverted)
+        for token in tokens {
+            if let speed = Int(token), validSpeedTokens.contains(speed) {
+                return speed
+            }
+        }
+        diagnostics?.record(type: "tsr_ocr_invalid", details: "rawText=\(text), tokens=\(tokens)")
+        return nil
+    }
+
+    private func expandBoundingBox(_ bbox: CGRect, factor: CGFloat) -> CGRect {
+        let centerX = bbox.midX
+        let centerY = bbox.midY
+        let newWidth = min(bbox.width * factor, 1.0)
+        let newHeight = min(bbox.height * factor, 1.0)
+        let newMinX = max(0, centerX - newWidth / 2)
+        let newMinY = max(0, centerY - newHeight / 2)
+        let newMaxX = min(1, newMinX + newWidth)
+        let newMaxY = min(1, newMinY + newHeight)
+        return CGRect(x: newMinX, y: newMinY, width: newMaxX - newMinX, height: newMaxY - newMinY)
     }
 
     private func handleEndSignDetection(_ type: EndSignType) {
