@@ -8,7 +8,7 @@ import CoreLocation
 final class RoadMetadataService: ObservableObject {
     @Published private(set) var isDividedRoad: Bool = false
     @Published private(set) var roadMaxSpeed: Int? = nil
-    @Published private(set) var osmIsInResidentialArea: Bool = false  // true if inside residential/urban area per OSM
+    @Published private(set) var osmIsInResidentialArea: Bool? = nil  // nil=unknown until first Overpass response, true=inside, false=outside
     @Published private(set) var lastQueryLocation: CLLocation?
     @Published private(set) var isQuerying: Bool = false
     @Published private(set) var lastQueryDate: Date?
@@ -121,6 +121,11 @@ final class RoadMetadataService: ObservableObject {
             if tags["admin_level"] == "8",
                let name = tags["name"],
                name.range(of: #"^(Phường|Thị trấn)\b"#, options: [.regularExpression, .caseInsensitive]) != nil {
+                foundUrbanArea = true
+            }
+            // Additional: localized case-insensitive contains for Vietnamese ward/township names
+            if let name = tags["name"],
+               name.localizedCaseInsensitiveContains("phường") || name.localizedCaseInsensitiveContains("thị trấn") {
                 foundUrbanArea = true
             }
 

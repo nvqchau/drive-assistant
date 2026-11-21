@@ -106,6 +106,7 @@ final class TrafficSignDetector: ObservableObject {
     private var advisoryConsecutiveCount = 0
     private var lastAdvisoryText: String?
     private var endResidentialConsecutiveCount = 0  // for R.421/DP.135 exit confirmation
+    private var lastEndResidentialTriggerTime: TimeInterval = 0  // 6s cooldown for DP.134/135/R.421
 
     private enum EndSignType { case dp134, dp135 }
 
@@ -357,12 +358,16 @@ final class TrafficSignDetector: ObservableObject {
         if endResidentialAreaDetected {
             endResidentialConsecutiveCount += 1
             if endResidentialConsecutiveCount >= requiredConsecutiveMatches {
-                DispatchQueue.main.async { [weak self] in
-                    self?.detectedSpeedLimit = nil
-                    self?.didClearSpeedLimitEvent = Date()
-                    self?.isInResidentialArea = false
+                let now = CACurrentMediaTime()
+                if now - lastEndResidentialTriggerTime >= 6.0 {
+                    lastEndResidentialTriggerTime = now
+                    DispatchQueue.main.async { [weak self] in
+                        self?.detectedSpeedLimit = nil
+                        self?.didClearSpeedLimitEvent = Date()
+                        self?.isInResidentialArea = false
+                    }
+                    diagnostics?.record(type: "tsr_state", details: "action=end_residential_area_confirmed cleared_limit")
                 }
-                diagnostics?.record(type: "tsr_state", details: "action=end_residential_area_confirmed cleared_limit")
                 endResidentialConsecutiveCount = 0
             }
         } else {

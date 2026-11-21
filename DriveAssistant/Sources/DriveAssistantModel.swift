@@ -509,8 +509,10 @@ final class DriveAssistantModel: ObservableObject {
                 // Only apply OSM if camera hasn't seen explicit R.420/R.421 within last 5 minutes
                 let cameraPrecedenceElapsed = Date().timeIntervalSince(self.lastCameraResidentialSignTime)
                 if self.camera.trafficSignDetector.isInResidentialArea == nil && cameraPrecedenceElapsed > 300 {
-                    self.isInResidentialArea = osmInResidential
-                    self.applyTT38StatutoryLimit()
+                    if let osmInResidential {
+                        self.isInResidentialArea = osmInResidential
+                        self.applyTT38StatutoryLimit()
+                    }
                 }
             }
             .store(in: &cancellables)
