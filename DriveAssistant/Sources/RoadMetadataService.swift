@@ -2,11 +2,13 @@ import Foundation
 import CoreLocation
 
 /// Free OpenStreetMap (Overpass API) road-type lookup for Vietnam TT38 statutory speed limits.
-/// Queries Overpass API to determine if current road is divided/dual-carriageway and fetches maxspeed tags.
+/// Queries Overpass API to determine if current road is divided/dual-carriageway, fetches maxspeed tags,
+/// and detects if ego vehicle is inside a residential/urban area for automatic TT38 50/60 km/h limit.
 @MainActor
 final class RoadMetadataService: ObservableObject {
     @Published private(set) var isDividedRoad: Bool = false
     @Published private(set) var roadMaxSpeed: Int? = nil
+    @Published private(set) var osmIsInResidentialArea: Bool? = nil  // true if inside residential/urban area per OSM
     @Published private(set) var lastQueryLocation: CLLocation?
     @Published private(set) var isQuerying: Bool = false
     @Published private(set) var lastQueryDate: Date?
@@ -45,9 +47,15 @@ final class RoadMetadataService: ObservableObject {
 
         let lat = location.coordinate.latitude
         let lon = location.coordinate.longitude
+        // Query both highway ways AND enclosing residential/urban areas
         let query = """
         [out:json][timeout:5];
         way(around:\(queryRadius),\(lat),\(lon))["highway"];
+        out tags 1;
+        is_in(\(lat),\(lon))->.a;
+        area.a["landuse"="residential"];
+        out tags 1;
+        area.a["place"~"^(city|town|suburb|quarter|neighbourhood|village)$"];
         out tags 1;
         """
 
@@ -63,14 +71,16 @@ final class RoadMetadataService: ObservableObject {
             let result = try parseOverpassResponse(data)
             self.isDividedRoad = result.isDivided
             self.roadMaxSpeed = result.maxSpeed
+            self.osmIsInResidentialArea = result.isInResidentialArea
         } catch {
             // Offline-safe: silently ignore, keep last known values
             print("RoadMetadataService: Overpass query failed: \(error)")
         }
     }
 
-    /// Parse Overpass JSON response for oneway, dual_carriageway, lanes, maxspeed tags.
-    private func parseOverpassResponse(_ data: Data) throws -> (isDivided: Bool, maxSpeed: Int?) {
+    /// Parse Overpass JSON response for oneway, dual_carriageway, lanes, maxspeed tags,
+    /// and residential/urban area detection.
+    private func parseOverpassResponse(_ data: Data) throws -> (isDivided: Bool, maxSpeed: Int?, isInResidentialArea: Bool?) {
         struct OverpassResponse: Decodable {
             let elements: [Element]
             struct Element: Decodable {
@@ -84,6 +94,8 @@ final class RoadMetadataService: ObservableObject {
         var bestMaxSpeed: Int? = nil
         var bestOneway: String? = nil
         var bestDualCarriageway: String? = nil
+        var foundResidentialArea = false
+        var foundUrbanArea = false
 
         // Priority: primary > secondary > tertiary > unclassified > residential > service
         let highwayPriority: [String: Int] = [
@@ -93,6 +105,16 @@ final class RoadMetadataService: ObservableObject {
 
         for element in response.elements {
             guard let tags = element.tags else { continue }
+
+            // Check for residential/urban area tags from is_in query
+            if tags["landuse"] == "residential" {
+                foundResidentialArea = true
+            }
+            if let place = tags["place"],
+               ["city", "town", "suburb", "quarter", "neighbourhood", "village"].contains(place) {
+                foundUrbanArea = true
+            }
+
             let highway = tags["highway"] ?? ""
             let priority = highwayPriority[highway] ?? -1
             let currentBestPriority = highwayPriority[bestHighway ?? ""] ?? -1
@@ -117,7 +139,12 @@ final class RoadMetadataService: ObservableObject {
             }
         }
 
-        return (isDivided, bestMaxSpeed)
+        // Determine if in residential/urban area
+        // True if: found residential landuse, found urban place, OR nearest road is residential/living_street
+        let isInResidentialArea = foundResidentialArea || foundUrbanArea ||
+            (bestHighway == "residential" || bestHighway == "living_street")
+
+        return (isDivided, bestMaxSpeed, isInResidentialArea ? true : nil)
     }
 
     /// Manual override from driver tap on HUD pill

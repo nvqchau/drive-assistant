@@ -471,6 +471,20 @@ final class DriveAssistantModel: ObservableObject {
             }
             .store(in: &cancellables)
 
+        // OSM Residential area detection: auto-activate "Khu dân cư" badge + TT38 50/60 km/h
+        // when no explicit R.420/R.421 camera sign has been seen (isInResidentialArea == nil)
+        location.roadMetadata.$osmIsInResidentialArea
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] osmInResidential in
+                guard let self else { return }
+                // Only apply OSM residential state if camera hasn't seen explicit R.420/R.421
+                if self.camera.trafficSignDetector.isInResidentialArea == nil {
+                    self.isInResidentialArea = osmInResidential
+                    self.applyTT38StatutoryLimit()
+                }
+            }
+            .store(in: &cancellables)
+
         // Overspeed alert state - update when speed or tolerance changes
         $speedKMPH
             .combineLatest($overspeedToleranceKmh)
