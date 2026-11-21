@@ -93,6 +93,7 @@ final class TrafficSignDetector: ObservableObject {
     private var lastEndSignType: EndSignType?
     private var advisoryConsecutiveCount = 0
     private var lastAdvisoryText: String?
+    private var endResidentialConsecutiveCount = 0  // for R.421/DP.135 exit confirmation
 
     private enum EndSignType { case dp134, dp135 }
 
@@ -308,12 +309,20 @@ final class TrafficSignDetector: ObservableObject {
             lastAdvisoryText = nil
         }
 
-        // Handle end of residential area detection (R.421 "117" or DP.135 "190")
+        // Handle end of residential area detection (R.421 "117" or DP.135 "190") — require 2 consecutive matches
         if endResidentialAreaDetected {
-            DispatchQueue.main.async { [weak self] in
-                self?.isInResidentialArea = false
+            endResidentialConsecutiveCount += 1
+            if endResidentialConsecutiveCount >= requiredConsecutiveMatches {
+                DispatchQueue.main.async { [weak self] in
+                    self?.detectedSpeedLimit = nil
+                    self?.didClearSpeedLimitEvent = Date()
+                    self?.isInResidentialArea = false
+                }
+                diagnostics?.record(type: "tsr_state", details: "action=end_residential_area_confirmed cleared_limit")
+                endResidentialConsecutiveCount = 0
             }
-            diagnostics?.record(type: "tsr_state", details: "action=end_residential_area confirmed")
+        } else {
+            endResidentialConsecutiveCount = 0
         }
 
         // Handle dual carriageway detection (class "142")
@@ -371,5 +380,8 @@ final class TrafficSignDetector: ObservableObject {
         didClearSpeedLimitEvent = nil
         detectedEndOfAllRestrictions = false
         activeAdvisorySignText = nil
+        isInResidentialArea = nil
+        isDividedRoadFromSign = false
+        endResidentialConsecutiveCount = 0
     }
 }

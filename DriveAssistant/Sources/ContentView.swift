@@ -185,32 +185,25 @@ struct ContentView: View {
                                                 .background(Color.black.opacity(0.6), in: Capsule())
                                                 .transition(.opacity.combined(with: .move(edge: .top)))
                                         }
-                                        // TT38 Statutory Road-Type Pill (shown when statutory limit is active)
+                                        // TT38 Statutory Road-Type Pill (shown when residential area state is known and a limit is displayed)
                                         if let inResidential = model.isInResidentialArea,
                                            model.detectedSpeedLimit != nil,
                                            !model.showSpeedLimitCleared,
                                            !model.showEndOfAllRestrictions {
-                                            // Only show when statutory limit applies (no explicit P.127 sign override)
-                                            // We infer statutory by checking if the current limit matches TT38 values
-                                            let isStatutory: Bool = {
-                                                guard let limit = model.detectedSpeedLimit else { return false }
-                                                let expected = inResidential ? (model.isDividedRoad ? 60 : 50) : (model.isDividedRoad ? 90 : 80)
-                                                return limit == expected && model.enableDefaultOutsideResidentialLimit
-                                            }()
-                                            if isStatutory {
-                                                Button(action: { model.location.roadMetadata.toggleDividedRoad() }) {
-                                                    Text(model.usesVietnamese
-                                                        ? (model.isDividedRoad ? "Đôi • 60/90" : "2 chiều • 50/80")
-                                                        : (model.isDividedRoad ? "Divided • 60/90" : "2-Way • 50/80"))
-                                                        .font(.system(size: 9, weight: .bold, design: .rounded))
-                                                        .foregroundColor(.white)
-                                                        .padding(.horizontal, 8)
-                                                        .padding(.vertical, 2)
-                                                        .background(Color.blue.opacity(0.7), in: Capsule())
-                                                }
-                                                .buttonStyle(.plain)
-                                                .transition(.opacity.combined(with: .scale))
+                                            // Show pill whenever we're in/out of residential area with a limit displayed
+                                            // The limit may be statutory (TT38) or explicit P.127; pill reflects current divided state
+                                            Button(action: { model.location.roadMetadata.toggleDividedRoad() }) {
+                                                Text(model.usesVietnamese
+                                                    ? (model.isDividedRoad ? "Đôi • 60/90" : "2 chiều • 50/80")
+                                                    : (model.isDividedRoad ? "Divided • 60/90" : "2-Way • 50/80"))
+                                                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                                                    .foregroundColor(.white)
+                                                    .padding(.horizontal, 8)
+                                                    .padding(.vertical, 2)
+                                                    .background(Color.blue.opacity(0.7), in: Capsule())
                                             }
+                                            .buttonStyle(.plain)
+                                            .transition(.opacity.combined(with: .scale))
                                         }
                                     }
                                     // DP.135 (End of All Restrictions) indicator
