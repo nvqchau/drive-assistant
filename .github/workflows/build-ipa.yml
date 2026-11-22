@@ -17,9 +17,12 @@ jobs:
 
       - name: Run Unit Tests
         run: |
+          SIM_UDID=$(xcrun simctl list devices available iPhone | grep -m 1 -oE '[0-9A-F-]{36}')
+          DESTINATION=${SIM_UDID:+"platform=iOS Simulator,id=$SIM_UDID"}
+          DESTINATION=${DESTINATION:-"platform=iOS Simulator,name=iPhone 17"}
           xcodebuild test -project DriveAssistant.xcodeproj \
             -scheme DriveAssistant \
-            -destination 'platform=iOS Simulator,name=iPhone 14' \
+            -destination "$DESTINATION" \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
