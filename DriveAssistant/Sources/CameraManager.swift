@@ -618,19 +618,21 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
         let candidates = allObservations.compactMap { observation -> (CGRect, Float, String)? in
             guard let label = observation.labels.first,
                   ["car", "truck", "bus", "motorcycle", "motorbike"].contains(label.identifier) else { return nil }
-            guard label.confidence >= 0.42 else { return nil }
+            guard label.confidence >= 0.34 else { return nil }
             let box = observation.boundingBox
-            guard box.width >= 0.032, box.height >= 0.032 else { return nil }
+            guard box.width >= 0.025, box.height >= 0.025 else { return nil }
             return (box, label.confidence, label.identifier)
         }
-        
+
         let hasLockedTarget = trackedBox != nil
         let laneOffset = currentLaneCenterOffsetX
         let horizonEnabled = isHorizonFilterEnabled
         let horizonY = currentHorizonY
-        
-        let effectiveHorizonForFilter = horizonEnabled ? max(horizonY, 0.48) : horizonY
-        let ceilingY = min(effectiveHorizonForFilter, 0.45) - 0.03
+
+        // True vanishing-point physics: ceiling is horizonY - 0.04 (tires on ground)
+        // Only reject detections whose BOTTOM edge sits ABOVE the true horizon
+        // Tall vehicles (trucks/buses) with roofs above horizon are KEPT
+        let ceilingY = horizonEnabled ? horizonY - 0.04 : horizonY
         
         let horizonFiltered = mergeOverlappingDetections(candidates).filter { observation in
             let box = observation.0
