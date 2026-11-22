@@ -27,6 +27,10 @@
 		00000000000000000000005A /* TT38AndTSRPrecedenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000057 /* TT38AndTSRPrecedenceTests.swift */; };
 		00000000000000000000005B /* RoadMetadataParsingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000058 /* RoadMetadataParsingTests.swift */; };
 		00000000000000000000005C /* LaneAndMotionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000059 /* LaneAndMotionTests.swift */; };
+		F1A2B3C4D5E6F7A8B9C0D1E2 /* urban_sign_60.jpg in Resources */ = {isa = PBXBuildFile; fileRef = F1A2B3C4D5E6F7A8B9C0D1E5 /* urban_sign_60.jpg */; };
+		F1A2B3C4D5E6F7A8B9C0D1E3 /* highway_sign_40_dp135.jpg in Resources */ = {isa = PBXBuildFile; fileRef = F1A2B3C4D5E6F7A8B9C0D1E6 /* highway_sign_40_dp135.jpg */; };
+		F1A2B3C4D5E6F7A8B9C0D1E4 /* VisionFixtureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1A2B3C4D5E6F7A8B9C0D1E7 /* VisionFixtureTests.swift */; };
+		F1A2B3C4D5E6F7A8B9C0D1E9 /* vn_adas_unified_ios16.mlpackage in Resources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000004A /* vn_adas_unified_ios16.mlpackage */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -52,6 +56,13 @@
 		000000000000000000000039 /* LaneDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistant/Sources/LaneDetector.swift; sourceTree = SOURCE_ROOT; };
 		AF21CE15F0E014781C9BBA0F /* TrafficSignDetector.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = TrafficSignDetector.swift; path = ../DriveAssistant/Sources/TrafficSignDetector.swift; sourceTree = "<group>"; };
 		B4A2F1C9E8D3A7B6C5D4E3F1 /* RoadMetadataService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistant/Sources/RoadMetadataService.swift; sourceTree = SOURCE_ROOT; };
+		F1A2B3C4D5E6F7A8B9C0D1E5 /* urban_sign_60.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; name = urban_sign_60.jpg; path = DriveAssistantTests/TestFixtures/urban_sign_60.jpg; sourceTree = SOURCE_ROOT; };
+		F1A2B3C4D5E6F7A8B9C0D1E6 /* highway_sign_40_dp135.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; name = highway_sign_40_dp135.jpg; path = DriveAssistantTests/TestFixtures/highway_sign_40_dp135.jpg; sourceTree = SOURCE_ROOT; };
+		F1A2B3C4D5E6F7A8B9C0D1E7 /* VisionFixtureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistantTests/VisionFixtureTests.swift; sourceTree = SOURCE_ROOT; };
+		F1A2B3C4D5E6F7A8B9C0D1E8 /* TestFixtures */ = {isa = PBXGroup; children = (
+			F1A2B3C4D5E6F7A8B9C0D1E5 /* urban_sign_60.jpg */,
+			F1A2B3C4D5E6F7A8B9C0D1E6 /* highway_sign_40_dp135.jpg */,
+		); path = DriveAssistantTests/TestFixtures; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -114,6 +125,7 @@
 		000000000000000000000020 = {
 			isa = PBXGroup;
 			children = (
+				F1A2B3C4D5E6F7A8B9C0D1E8 /* TestFixtures */,
 				000000000000000000000004 /* DriveAssistant */,
 				000000000000000000000001 /* DriveAssistant.app */,
 				AF21CE15F0E014781C9BBA0F /* TrafficSignDetector.swift */,
@@ -201,6 +213,9 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 0;
 			files = (
+				F1A2B3C4D5E6F7A8B9C0D1E9 /* vn_adas_unified_ios16.mlpackage in Resources */,
+				F1A2B3C4D5E6F7A8B9C0D1E2 /* urban_sign_60.jpg in Resources */,
+				F1A2B3C4D5E6F7A8B9C0D1E3 /* highway_sign_40_dp135.jpg in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -232,6 +247,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 0;
 			files = (
+				F1A2B3C4D5E6F7A8B9C0D1E4 /* VisionFixtureTests.swift in Sources */,
 				00000000000000000000005A /* TT38AndTSRPrecedenceTests.swift in Sources */,
 				00000000000000000000005B /* RoadMetadataParsingTests.swift in Sources */,
 				00000000000000000000005C /* LaneAndMotionTests.swift in Sources */,
