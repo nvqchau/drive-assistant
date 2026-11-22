@@ -12,7 +12,6 @@ import CoreVideo
 @MainActor
 final class VisionFixtureTests: XCTestCase {
 
-    var cameraManager: CameraManager!
     var trafficSignDetector: TrafficSignDetector!
     var laneDetector: LaneDetector!
     var visionModel: VNCoreMLModel!
@@ -32,13 +31,12 @@ final class VisionFixtureTests: XCTestCase {
         let mlModel = try MLModel(contentsOf: modelURL, configuration: config)
         visionModel = try VNCoreMLModel(for: mlModel)
 
-        cameraManager = CameraManager()
-        trafficSignDetector = cameraManager.trafficSignDetector
+        // Use standalone TrafficSignDetector (no CameraManager) for deterministic unit testing
+        trafficSignDetector = TrafficSignDetector()
         laneDetector = LaneDetector()
     }
 
     override func tearDown() {
-        cameraManager = nil
         trafficSignDetector = nil
         laneDetector = nil
         visionModel = nil
@@ -80,10 +78,32 @@ final class VisionFixtureTests: XCTestCase {
 
         // Second pass - should confirm
         trafficSignDetector.processObservations(observations, pixelBuffer: pixelBuffer, orientation: .up)
-        try await Task.sleep(nanoseconds: 200_000_000)
+
+        // Poll for detectedSpeedLimit (VNRecognizeTextRequest may take longer on headless CI CPU simulators)
+        var detectedLimit: Int? = nil
+        let startTime = CACurrentMediaTime()
+        let timeout: TimeInterval = 1.5
+        let pollInterval: TimeInterval = 0.05
+
+        while CACurrentMediaTime() - startTime < timeout {
+            detectedLimit = await trafficSignDetector.detectedSpeedLimit
+            if detectedLimit != nil { break }
+            try await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
+        }
+
+        // Diagnostic logging on failure
+        if detectedLimit == nil {
+            print("=== VisionFixtureTests DIAGNOSTIC: testUrbanSign60_DetectsLeadVehicleAndSpeedLimit ===")
+            print("Timeout waiting for detectedSpeedLimit after \(timeout)s")
+            print("Observations count: \(observations.count)")
+            for (idx, obs) in observations.enumerated() {
+                if let label = obs.labels.first {
+                    print("  [\(idx)] label=\(label.identifier) confidence=\(label.confidence) bbox=\(obs.boundingBox)")
+                }
+            }
+        }
 
         // Verify speed limit 60 was detected and confirmed
-        let detectedLimit = await trafficSignDetector.detectedSpeedLimit
         XCTAssertEqual(detectedLimit, 60, "Should detect and confirm 60 km/h speed limit")
 
         // Run through LaneDetector
