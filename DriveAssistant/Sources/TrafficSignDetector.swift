@@ -22,7 +22,7 @@ final class TrafficSignDetector: ObservableObject {
     private let baseProcessInterval: TimeInterval = 0.15
     private let thermalProcessInterval: TimeInterval = 0.5  // fallback when thermal >= .fair
     private let requiredConsecutiveMatches = 2
-    private let confidenceThreshold: Float = 0.28
+    private let confidenceThreshold: Float = 0.38
     private let minBoxWidth: CGFloat = 0.018
     // For diagnostic logging: include raw labels at lower confidence to see what model emits
     private let diagnosticConfidenceThreshold: Float = 0.20
@@ -192,6 +192,10 @@ final class TrafficSignDetector: ObservableObject {
             } else if signInfo.isDualCarriageway {
                 dualCarriagewayDetected = true
             } else if signInfo.isAdvisory, let key = signInfo.advisoryKey {
+                // Spatial side-filtering for no_entry (label "572"): ignore right-side detections (storefront "Cấm" text)
+                if key == "no_entry" && bbox.midX > 0.65 {
+                    continue
+                }
                 advisoryDetections.append((key, obs.confidence, bbox))
             }
         }
@@ -214,19 +218,21 @@ final class TrafficSignDetector: ObservableObject {
             let bestBBox = bestSpeed.2
             let bestLabel = bestSpeed.3
 
-            // Run OCR on the best speed sign detection for number verification
+            // OCR mandatory for speed limit labels (P.127 variants). Residential50 ("164") skips OCR.
             var finalSpeedValue = yoloSpeedValue
             var ocrVerified = false
-            if speedLimitLabels.contains(bestLabel) {
+            let requiresOCR = speedLimitLabels.contains(bestLabel)
+            if requiresOCR {
                 if let ocrSpeed = runOCROnSpeedSign(pixelBuffer: pixelBuffer, bbox: bestBBox, orientation: orientation) {
                     finalSpeedValue = ocrSpeed
                     ocrVerified = true
                 }
+            } else {
+                // Residential50 - no OCR needed
+                ocrVerified = true
             }
 
-            // High-confidence immediate confirmation (>= 0.45) OR OCR verified bypasses 2-frame requirement
-            let shouldConfirmImmediately = bestConfidence >= 0.45 || ocrVerified
-
+            // No high-confidence bypass: confirmation requires consecutive matches AND OCR verification
             stateLock.lock()
             endSignConsecutiveCount = 0
             lastEndSignType = nil
@@ -239,7 +245,7 @@ final class TrafficSignDetector: ObservableObject {
                 lastMatchedLimit = finalSpeedValue
             }
 
-            let shouldConfirm = shouldConfirmImmediately || consecutiveMatchCount >= requiredConsecutiveMatches
+            let shouldConfirm = ocrVerified && consecutiveMatchCount >= requiredConsecutiveMatches
             let currentConsecutive = consecutiveMatchCount
             stateLock.unlock()
 
@@ -258,7 +264,7 @@ final class TrafficSignDetector: ObservableObject {
                         }
                     }
                 }
-                diagnostics?.record(type: "tsr_state", details: "action=P127_confirmed limit=\(finalSpeedValue) yoloLimit=\(yoloSpeedValue) ocrVerified=\(ocrVerified) conf=\(String(format: "%.2f", bestConfidence)) immediate=\(shouldConfirmImmediately) consecutive=\(currentConsecutive) residential50=\(residential50Detected)")
+                diagnostics?.record(type: "tsr_state", details: "action=P127_confirmed limit=\(finalSpeedValue) yoloLimit=\(yoloSpeedValue) ocrVerified=\(ocrVerified) conf=\(String(format: "%.2f", bestConfidence)) consecutive=\(currentConsecutive) residential50=\(residential50Detected)")
             }
         } else {
             // Tolerate transient missed frames before resetting confirmation

@@ -39,8 +39,8 @@ final class MotionManager: ObservableObject {
     // Mount shift detection
     @Published var isMountShifted: Bool = false
     private var mountShiftStartTime: TimeInterval?
-    private let mountShiftThreshold: TimeInterval = 2.0  // seconds
-    private let mountShiftAngleThreshold: Double = 3.5  // degrees
+    private let mountShiftThreshold: TimeInterval = 3.0  // seconds
+    private let mountShiftAngleThreshold: Double = 5.5  // degrees
 
     private let verticalFOV: Double = 41.0  // iPhone 1x landscape vertical FOV
     private let baseHorizonY: Double = 0.45  // Base normalized horizon (45% from top)
@@ -125,8 +125,8 @@ final class MotionManager: ObservableObject {
             }
         } else {
             mountShiftStartTime = nil
-            // Auto-clear mount shift when alignment is restored
-            if isMountShifted && hasProfile && abs(deltaRoll) <= 1.5 && abs(deltaPitch) <= 1.5 {
+            // Auto-clear mount shift when alignment is restored (2.5° tolerance)
+            if isMountShifted && hasProfile && abs(deltaRoll) <= 2.5 && abs(deltaPitch) <= 2.5 {
                 isMountShifted = false
             }
         }

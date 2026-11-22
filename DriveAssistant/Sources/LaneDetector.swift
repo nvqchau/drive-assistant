@@ -68,9 +68,9 @@ final class LaneDetector: ObservableObject {
     // ROI trapezoid params (matching CameraManager static ROI)
     private let roiTopY: CGFloat = 0.38
     private let roiBottomY: CGFloat = 0.95
-    private let roiTopWidth: CGFloat = 0.16
-    private let roiBottomWidth: CGFloat = 0.54  // widened from 0.42 to match real road markings
-    private var roiCenterOffsetX: CGFloat = -0.03
+    private let roiTopWidth: CGFloat = 0.14   // tightened for ego-lane centering
+    private let roiBottomWidth: CGFloat = 0.44 // narrowed to match ego-lane ROI
+    private var roiCenterOffsetX: CGFloat = 0.02
 
     // LDWS enabled flag
     private var isLDWSEnabled = true
@@ -176,12 +176,13 @@ final class LaneDetector: ObservableObject {
         let whiteMask = gray.applyingFilter("CIColorThreshold", parameters: [
             "inputThreshold": 0.58
         ])
-        
+
         let yellowMask = image.applyingFilter("CIColorControls", parameters: [
-            kCIInputSaturationKey: 2.0,
-            kCIInputContrastKey: 1.2
+            kCIInputSaturationKey: 2.5,  // boosted from 2.0 for stronger yellow center line response
+            kCIInputContrastKey: 1.5,    // boosted from 1.2
+            kCIInputBrightnessKey: 0.05
         ]).applyingFilter("CIColorThreshold", parameters: [
-            "inputThreshold": 0.5
+            "inputThreshold": 0.45       // lowered from 0.5 for better yellow line pickup
         ])
         
         let combined = whiteMask.applyingFilter("CISourceOverCompositing", parameters: [

@@ -66,7 +66,7 @@ final class DriveAssistantModel: ObservableObject {
     @Published var hoodOffsetMeters: Double = 1.8 {
         didSet { UserDefaults.standard.set(hoodOffsetMeters, forKey: "hoodOffsetMeters") }
     }
-    @Published var laneCenterOffsetX: Double = -0.03 {
+    @Published var laneCenterOffsetX: Double = 0.02 {
         didSet { 
             UserDefaults.standard.set(laneCenterOffsetX, forKey: "laneCenterOffsetX")
             camera.setLaneCenterOffsetX(laneCenterOffsetX)
@@ -245,7 +245,7 @@ final class DriveAssistantModel: ObservableObject {
         calibrationFactor = defaults.object(forKey: "calibrationFactor") as? Double ?? 1.15
         showOutOfROIVehicles = defaults.object(forKey: "showOutOfROIVehicles") as? Bool ?? true
         hoodOffsetMeters = defaults.object(forKey: "hoodOffsetMeters") as? Double ?? 1.8
-        laneCenterOffsetX = defaults.object(forKey: "laneCenterOffsetX") as? Double ?? -0.03
+        laneCenterOffsetX = defaults.object(forKey: "laneCenterOffsetX") as? Double ?? 0.02
         showHorizonGuide = defaults.object(forKey: "showHorizonGuide") as? Bool ?? true
         enableLaneDetection = defaults.object(forKey: "enableLaneDetection") as? Bool ?? true
         ldwsMinSpeedKmh = defaults.object(forKey: "ldwsMinSpeedKmh") as? Double ?? 50.0

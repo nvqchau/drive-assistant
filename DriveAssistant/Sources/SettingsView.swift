@@ -28,7 +28,7 @@ struct SettingsView: View {
                     }
                     VStack(alignment: .leading) {
                         Text(model.usesVietnamese ? "Độ lệch làn đường" : "Lane center offset")
-                        Slider(value: $model.laneCenterOffsetX, in: -0.15...0.15, step: 0.01)
+                        Slider(value: $model.laneCenterOffsetX, in: -0.25...0.25, step: 0.01)
                         Text(String(format: "%.2f", model.laneCenterOffsetX)).font(.caption.monospacedDigit()).foregroundColor(.secondary)
                     }
                     if model.distanceRuleMode == .timeHeadway {

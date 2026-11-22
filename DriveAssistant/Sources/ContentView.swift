@@ -359,26 +359,20 @@ struct ContentView: View {
                         ThermalBadge(state: model.camera.thermalState)
                     }
                     Spacer()
+                    // Top-center timestamp
+                    Text(timestampString)
+                        .font(.system(size: 11, weight: .regular, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.8))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(Color.black.opacity(0.35), in: Capsule())
+                    Spacer()
                     RuleWeatherPill(model: model, nightDim: model.isNightThemeActive && !model.hudMirrorMode)
                 }
                 .padding(.horizontal, 28)
                 .padding(.top, 22)
 
                 Spacer()
-
-                // Live timestamp label (bottom-center, low-glare)
-                HStack {
-                    Spacer()
-                    Text(timestampString)
-                        .font(.system(size: 11, weight: .regular, design: .monospaced))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(Color.black.opacity(0.45), in: Capsule())
-                        .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
-                    Spacer()
-                }
-                .padding(.bottom, 8)
 
                 HStack(alignment: .bottom) {
                     DistanceCard(model: model, color: activeStateColor, nightDim: model.isNightThemeActive && !model.hudMirrorMode)
@@ -882,8 +876,8 @@ private struct LaneCarpet: View {
         let centerXNorm = 0.5 + laneCenterOffsetX
         let horizonTopYNorm = max(0.25, min(0.65, horizonY))
         let bottomYNorm = 0.95
-        let topWidthNorm = 0.16
-        let bottomWidthNorm = 0.54  // widened from 0.42 to match real road markings
+        let topWidthNorm = 0.14
+        let bottomWidthNorm = 0.44
 
         // Compute effectiveTopY in normalized video space (clip at lead vehicle bottom)
         let effectiveTopYNorm: CGFloat

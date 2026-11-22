@@ -51,7 +51,7 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
     private let calibrationLock = NSLock()
     private var calibrationFactor: Double = 1.40
     private let laneOffsetLock = NSLock()
-    private var laneCenterOffsetX: Double = -0.03
+    private var laneCenterOffsetX: Double = 0.02
     private let horizonLock = NSLock()
     private var horizonFilterEnabled: Bool = true
     private var horizonY: Double = 0.45
@@ -888,8 +888,8 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
                                                 truncateTopY: CGFloat? = nil) -> Bool {
         let topY: CGFloat = 0.38
         let bottomY: CGFloat = 0.95
-        let topWidth: CGFloat = 0.16   // narrowed from 0.22 for narrow two-way streets
-        let bottomWidth: CGFloat = 0.54 // widened from 0.42 to match real road markings
+        let topWidth: CGFloat = 0.14   // tightened for ego-lane centering, prevents oncoming bleed
+        let bottomWidth: CGFloat = 0.44 // narrowed from 0.54 to reject cross-street/storefront detections
         
         guard yFromTop >= topY && yFromTop <= bottomY else { return false }
         
@@ -911,8 +911,8 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
     private static func hasSufficientBottomEdgeOverlap(box: CGRect, laneCenterOffsetX: Double, bottomYFromTop: CGFloat) -> Bool {
         let topY: CGFloat = 0.38
         let bottomY: CGFloat = 0.95
-        let topWidth: CGFloat = 0.16   // narrowed from 0.22
-        let bottomWidth: CGFloat = 0.54 // widened from 0.42 to match real road markings
+        let topWidth: CGFloat = 0.14   // tightened for ego-lane centering
+        let bottomWidth: CGFloat = 0.44 // narrowed to match ego-lane ROI
         
         let boxBottomY = box.minY
         let yFromTop = bottomYFromTop
