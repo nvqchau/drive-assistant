@@ -15,45 +15,54 @@ final class LaneAndMotionTests: XCTestCase {
         motionManager = MotionManager()
     }
 
-    // MARK: - Forward Lane ROI Rejects Oncoming Vehicles
+    // MARK: - Forward Lane ROI Rejects Oncoming Vehicles (Normalized [0.0...1.0] coordinates)
 
     func testForwardLaneROI_RejectsOncomingVehicle() {
-        // Oncoming vehicle in left side of frame (bbox centered at x=0.2)
-        // ROI: center=0.02, topWidth=0.14, bottomWidth=0.44
-        // At y=0.5, ROI spans approx [-0.125, 0.165] -> oncoming at x=0.15 is OUTSIDE
+        // Normalized coordinates: centerX = 0.52, topY=0.38, bottomY=0.95
+        // Oncoming vehicle on left side (midX = 0.25) at mid-height (y=0.5 -> yFromTop=0.5)
+        // At yFromTop=0.5: progress = (0.5-0.38)/(0.95-0.38) = 0.12/0.57 ≈ 0.21
+        // left = 0.52 - (0.07 + (0.22-0.07)*0.21) = 0.52 - 0.10 = 0.42
+        // right = 0.52 + 0.10 = 0.62
+        // oncoming at 0.25 < 0.42 -> OUTSIDE
 
-        let oncomingBox = CGRect(x: 0.15, y: 0.5, width: 0.1, height: 0.1) // left side
+        let oncomingBox = CGRect(x: 0.2, y: 0.5, width: 0.1, height: 0.1) // midX=0.25 (left side)
         let isInside = laneDetector.isInsideForwardLaneROI(boundingBox: oncomingBox)
-        XCTAssertFalse(isInside, "Oncoming vehicle at x=0.15 should be outside forward lane ROI")
+        XCTAssertFalse(isInside, "Oncoming vehicle at midX=0.25 should be outside forward lane ROI")
 
-        // Ego-lane vehicle in ROI (center ~0.02 at y=0.5)
-        let egoBox = CGRect(x: -0.02, y: 0.6, width: 0.1, height: 0.1) // near center
+        // Ego-lane vehicle in ROI (midX = 0.52 at y=0.5 -> yFromTop=0.5)
+        let egoBox = CGRect(x: 0.47, y: 0.5, width: 0.1, height: 0.1) // midX=0.52 (center)
         let isInside2 = laneDetector.isInsideForwardLaneROI(boundingBox: egoBox)
-        XCTAssertTrue(isInside2, "Ego-lane vehicle at x=-0.02 should be inside forward lane ROI")
+        XCTAssertTrue(isInside2, "Ego-lane vehicle at midX=0.52 should be inside forward lane ROI")
     }
 
     func testForwardLaneROI_BottomEdgeOverlap_RejectsPartialOncoming() {
-        // Vehicle partially overlapping bottom edge but centered left (oncoming)
-        let oncomingBox = CGRect(x: 0.18, y: 0.7, width: 0.2, height: 0.25)
+        // Vision coordinates: y=0 at bottom, y=1 at top
+        // Oncoming vehicle at bottom (y=0.1 -> maxY=0.35 -> yFromTop=0.65) - left side (midX=0.3)
+        let oncomingBox = CGRect(x: 0.2, y: 0.1, width: 0.2, height: 0.25)
         let hasOverlap = laneDetector.hasSufficientBottomEdgeOverlap(boundingBox: oncomingBox)
-        XCTAssertFalse(hasOverlap, "Oncoming vehicle with bottom overlap should be rejected by ROI center check")
+        XCTAssertFalse(hasOverlap, "Oncoming vehicle at left side should be rejected")
 
-        // Ego-lane vehicle with good bottom overlap (centered near ROI center)
-        let egoBox = CGRect(x: 0.0, y: 0.7, width: 0.2, height: 0.25)
+        // Ego-lane vehicle with good bottom overlap (midX=0.52, y=0.15 -> maxY=0.4 -> yFromTop=0.6)
+        // At yFromTop=0.6: within [0.38, 0.95], progress = 0.22/0.57 ≈ 0.39
+        let egoBox = CGRect(x: 0.42, y: 0.15, width: 0.2, height: 0.25)
         let hasOverlap2 = laneDetector.hasSufficientBottomEdgeOverlap(boundingBox: egoBox)
         XCTAssertTrue(hasOverlap2, "Ego-lane vehicle with bottom overlap should pass")
     }
 
     func testForwardLaneROI_AtBoundary() {
-        // ROI center = 0.02, topWidth = 0.14 -> top spans [-0.05, 0.09]
-        // bottomWidth = 0.44 -> bottom spans [-0.20, 0.24]
-        // Vehicle at x=0.1 should be OUTSIDE (right of top edge 0.09)
-        let boxAtRightTop = CGRect(x: 0.1, y: 0.1, width: 0.05, height: 0.05)
-        XCTAssertFalse(laneDetector.isInsideForwardLaneROI(boundingBox: boxAtRightTop), "x=0.1 > 0.09 top edge")
+        // ROI: centerX=0.52, topWidth=0.14, bottomWidth=0.44, topY=0.38, bottomY=0.95
+        // At topY=0.38: spans [0.45, 0.59]
+        // At bottomY=0.95: spans [0.30, 0.74]
 
-        // Vehicle at x=0.25 should be OUTSIDE (right of bottom edge 0.24)
-        let boxAtRightBottom = CGRect(x: 0.25, y: 0.9, width: 0.05, height: 0.05)
-        XCTAssertFalse(laneDetector.isInsideForwardLaneROI(boundingBox: boxAtRightBottom), "x=0.25 > 0.24 bottom edge")
+        // Vehicle at midX=0.65, yFromTop=0.38 (top boundary) -> midX=0.65 > 0.59 -> OUTSIDE
+        // Vision y = 1.0 - 0.38 = 0.62 (y=0 at bottom)
+        let boxAtRightTop = CGRect(x: 0.6, y: 0.62, width: 0.1, height: 0.1) // midX=0.65, yFromTop=0.38
+        XCTAssertFalse(laneDetector.isInsideForwardLaneROI(boundingBox: boxAtRightTop), "midX=0.65 > 0.59 top edge")
+
+        // Vehicle at midX=0.8, yFromTop=0.95 (bottom boundary) -> midX=0.8 > 0.74 -> OUTSIDE
+        // Vision y = 1.0 - 0.95 = 0.05 (y=0 at bottom)
+        let boxAtRightBottom = CGRect(x: 0.75, y: 0.05, width: 0.1, height: 0.1) // midX=0.8, yFromTop=0.95
+        XCTAssertFalse(laneDetector.isInsideForwardLaneROI(boundingBox: boxAtRightBottom), "midX=0.8 > 0.74 bottom edge")
     }
 
     // MARK: - Locks Ego-Lane Leads (Target Switching)
@@ -273,31 +282,59 @@ extension TrafficSignDetector {
 }
 
 extension LaneDetector {
-    // Expose ROI parameters for testing
+    // Expose ROI parameters for testing (matching CameraManager.isInsideForwardLaneROI)
+    // Normalized [0.0...1.0] coordinates: center = 0.5 + roiCenterOffsetX (0.52), topY=0.38, bottomY=0.95
     var roiCenterOffsetX: CGFloat { return 0.02 }
     var roiTopWidth: CGFloat { return 0.14 }
     var roiBottomWidth: CGFloat { return 0.44 }
+    var roiTopY: CGFloat { return 0.38 }
+    var roiBottomY: CGFloat { return 0.95 }
 
     func isInsideForwardLaneROI(boundingBox: CGRect) -> Bool {
         let centerX = boundingBox.midX
-        let centerY = boundingBox.midY
+        let yFromTop = 1.0 - boundingBox.midY  // Convert from bottom-origin to top-origin
 
-        let topLeft = roiCenterOffsetX - roiTopWidth / 2
-        let topRight = roiCenterOffsetX + roiTopWidth / 2
-        let bottomLeft = roiCenterOffsetX - roiBottomWidth / 2
-        let bottomRight = roiCenterOffsetX + roiBottomWidth / 2
+        let topY = roiTopY
+        let bottomY = roiBottomY
+        let centerXNormalized = 0.5 + roiCenterOffsetX  // 0.52
+        let halfTopWidth = roiTopWidth / 2
+        let halfBottomWidth = roiBottomWidth / 2
 
-        // Linear interpolation of ROI edges at box's Y position
-        let leftEdge = bottomLeft + (topLeft - bottomLeft) * (1 - centerY)
-        let rightEdge = bottomRight + (topRight - bottomRight) * (1 - centerY)
+        guard yFromTop >= topY && yFromTop <= bottomY else { return false }
 
-        return centerX >= leftEdge && centerX <= rightEdge
+        let progress = (yFromTop - topY) / (bottomY - topY)
+        let left = centerXNormalized - (halfTopWidth + (halfBottomWidth - halfTopWidth) * progress)
+        let right = centerXNormalized + (halfTopWidth + (halfBottomWidth - halfTopWidth) * progress)
+
+        return centerX >= left && centerX <= right
     }
 
     func hasSufficientBottomEdgeOverlap(boundingBox: CGRect) -> Bool {
-        let bottomY = boundingBox.maxY
-        guard bottomY > 0.6 else { return false } // Must be in lower portion
-        return isInsideForwardLaneROI(boundingBox: boundingBox)
+        let boxBottomY = boundingBox.maxY
+        let yFromTop = 1.0 - boxBottomY  // Convert from bottom-origin to top-origin
+
+        let topY = roiTopY
+        let bottomY = roiBottomY
+        let centerXNormalized = 0.5 + roiCenterOffsetX  // 0.52
+        let halfTopWidth = roiTopWidth / 2
+        let halfBottomWidth = roiBottomWidth / 2
+
+        guard yFromTop >= topY && yFromTop <= bottomY else { return false }
+
+        let progress = (yFromTop - topY) / (bottomY - topY)
+        let trapLeft = centerXNormalized - (halfTopWidth + (halfBottomWidth - halfTopWidth) * progress)
+        let trapRight = centerXNormalized + (halfTopWidth + (halfBottomWidth - halfTopWidth) * progress)
+
+        let boxLeft = boundingBox.minX
+        let boxRight = boundingBox.maxX
+        let boxWidth = boxRight - boxLeft
+        guard boxWidth > 0 else { return false }
+
+        let overlapLeft = max(boxLeft, trapLeft)
+        let overlapRight = min(boxRight, trapRight)
+        let overlapWidth = max(0, overlapRight - overlapLeft)
+
+        return overlapWidth / boxWidth >= 0.40
     }
 
     func fitLinear(points: [CGPoint]) -> (CGFloat, CGFloat) {

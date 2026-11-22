@@ -856,7 +856,7 @@ final class DriveAssistantModel: ObservableObject {
         applyTT38StatutoryLimit()
     }
 
-    /// Evaluate dual precedence (time > 5 min OR distance > 2 km) to clear camera override
+    /// Evaluate dual precedence (time > 5 min AND distance > 2 km) to clear camera override
     func evaluateCameraPrecedence() {
         guard hasReceivedCameraSignOverride,
               lastCameraResidentialSignTime != .distantPast,
@@ -869,7 +869,7 @@ final class DriveAssistantModel: ObservableObject {
         let timeElapsed = Date().timeIntervalSince(lastCameraResidentialSignTime)
         let distanceTraveled = currentLoc.distance(from: signLoc)
 
-        if timeElapsed > 300 || distanceTraveled > 2000 {
+        if timeElapsed > 300 && distanceTraveled > 2000 {
             hasReceivedCameraSignOverride = false
             // Clear camera residential state so OSM can take over
             // Apply OSM residential status immediately (don't wait for subscriber which requires AND)

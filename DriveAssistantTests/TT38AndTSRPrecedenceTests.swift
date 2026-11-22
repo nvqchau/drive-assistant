@@ -102,7 +102,8 @@ final class TT38AndTSRPrecedenceTests: XCTestCase {
         XCTAssertTrue(model.hasReceivedCameraSignOverride)
     }
 
-    func testCameraResidentialSign_DoesNotOverride_WhenTimeElapsed_Over5Min() {
+    func testCameraResidentialSign_DoesNotOverride_WhenTimeElapsed_Over5Min_ButDistanceClose() {
+        // With AND condition: time > 5 min but distance < 2km -> camera override REMAINS
         model.location.roadMetadata.osmIsInResidentialArea = false
         model.isDividedRoad = false
 
@@ -114,16 +115,14 @@ final class TT38AndTSRPrecedenceTests: XCTestCase {
 
         model.handleCameraResidentialSign(isResidential: true, location: signLocation, timestamp: signTime)
 
-        // Simulate OSM taking over after dual precedence check
+        // With AND: time FAIL (>5 min) but distance PASS (<2km) -> camera override should REMAIN
         model.evaluateCameraPrecedence()
-        model.applyTT38StatutoryLimit()
 
-        let limit = model.currentSpeedLimit
-        XCTAssertEqual(limit, 80, "OSM rural should apply when camera sign older than 5 min")
-        XCTAssertFalse(model.hasReceivedCameraSignOverride)
+        XCTAssertTrue(model.hasReceivedCameraSignOverride, "Camera override should remain: time > 5min but distance < 2km")
     }
 
-    func testCameraResidentialSign_DoesNotOverride_WhenDistance_Over2km() {
+    func testCameraResidentialSign_DoesNotOverride_WhenDistance_Over2km_ButTimeRecent() {
+        // With AND condition: distance > 2km but time < 5min -> camera override REMAINS
         model.location.roadMetadata.osmIsInResidentialArea = false
         model.isDividedRoad = false
 
@@ -134,12 +133,10 @@ final class TT38AndTSRPrecedenceTests: XCTestCase {
         let signTime = Date()
         model.handleCameraResidentialSign(isResidential: true, location: signLocation, timestamp: signTime)
 
+        // With AND: distance FAIL (>2km) but time PASS (<5min) -> camera override should REMAIN
         model.evaluateCameraPrecedence()
-        model.applyTT38StatutoryLimit()
 
-        let limit = model.currentSpeedLimit
-        XCTAssertEqual(limit, 80, "OSM rural should apply when camera sign > 2 km away")
-        XCTAssertFalse(model.hasReceivedCameraSignOverride)
+        XCTAssertTrue(model.hasReceivedCameraSignOverride, "Camera override should remain: distance > 2km but time < 5min")
     }
 
     func testCameraClearLimit_DP135_ClearsLimit_ButPreservesResidentialStatus() {
@@ -242,16 +239,16 @@ final class TT38AndTSRPrecedenceTests: XCTestCase {
         model.location.roadMetadata.osmIsInResidentialArea = false
         model.isDividedRoad = false
 
-        // Case 1: Time OK (< 5 min), Distance FAIL (> 2 km) -> OSM wins
+        // Case 1: Time OK (< 5 min), Distance FAIL (> 2 km) -> Camera wins (AND requires BOTH)
         model.lastCameraResidentialSignTime = Date().addingTimeInterval(-100) // 1:40 ago
         model.lastCameraResidentialSignLocation = CLLocation(latitude: 10.775, longitude: 106.701)
         model.location.lastValidLocation = CLLocation(latitude: 10.800, longitude: 106.730) // ~3 km
         model.hasReceivedCameraSignOverride = true
 
         model.evaluateCameraPrecedence()
-        XCTAssertFalse(model.hasReceivedCameraSignOverride, "Distance > 2km should invalidate camera override")
+        XCTAssertTrue(model.hasReceivedCameraSignOverride, "Camera override should remain: time OK but distance FAIL (AND requires both)")
 
-        // Case 2: Time FAIL (> 5 min), Distance OK (< 2 km) -> OSM wins
+        // Case 2: Time FAIL (> 5 min), Distance OK (< 2 km) -> Camera wins (AND requires BOTH)
         model.location.roadMetadata.osmIsInResidentialArea = false
         model.isDividedRoad = false
         model.lastCameraResidentialSignTime = Date().addingTimeInterval(-400) // 6:40 ago
@@ -260,7 +257,7 @@ final class TT38AndTSRPrecedenceTests: XCTestCase {
         model.hasReceivedCameraSignOverride = true
 
         model.evaluateCameraPrecedence()
-        XCTAssertFalse(model.hasReceivedCameraSignOverride, "Time > 5min should invalidate camera override")
+        XCTAssertTrue(model.hasReceivedCameraSignOverride, "Camera override should remain: time FAIL but distance OK (AND requires both)")
 
         // Case 3: Both OK -> Camera wins
         model.location.roadMetadata.osmIsInResidentialArea = false
@@ -272,6 +269,17 @@ final class TT38AndTSRPrecedenceTests: XCTestCase {
 
         model.evaluateCameraPrecedence()
         XCTAssertTrue(model.hasReceivedCameraSignOverride, "Both time and distance OK -> camera wins")
+
+        // Case 4: Both FAIL -> OSM wins (override cleared)
+        model.location.roadMetadata.osmIsInResidentialArea = false
+        model.isDividedRoad = false
+        model.lastCameraResidentialSignTime = Date().addingTimeInterval(-400) // 6:40 ago
+        model.lastCameraResidentialSignLocation = CLLocation(latitude: 10.775, longitude: 106.701)
+        model.location.lastValidLocation = CLLocation(latitude: 10.800, longitude: 106.730) // ~3 km
+        model.hasReceivedCameraSignOverride = true
+
+        model.evaluateCameraPrecedence()
+        XCTAssertFalse(model.hasReceivedCameraSignOverride, "Both time and distance FAIL -> OSM wins")
     }
 }
 
