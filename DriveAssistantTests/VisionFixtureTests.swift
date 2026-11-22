@@ -214,8 +214,8 @@ final class VisionFixtureTests: XCTestCase {
 
     /// Tests that night_rain_urban.jpg produces:
     /// - Unified model detects lead SUV ("car") in ego lane (midX in 0.30...0.60, confidence >= 0.34), hood excluded
-    /// - TrafficSignDetector confirms speed limit 50 via CoreML + cropped Vision OCR under low-light/wet reflections (2-frame confirmation + polling)
-    /// - DriveAssistantModel with roadCondition = .wet at 50 km/h yields activeMinimumDistance = 32.5m (25m * 1.3 wet multiplier)
+    /// - TrafficSignDetector confirms speed limit 30 via CoreML label "114" + cropped Vision OCR under low-light/wet reflections (2-frame confirmation + polling)
+    /// - DriveAssistantModel with roadCondition = .wet at 30 km/h yields activeMinimumDistance = 19.5m (15m * 1.3 wet multiplier)
     func testNightRainUrban_DetectsLeadVehicleSignAndWetTT38() async throws {
         // Load test image from bundle (in TestFixtures subdirectory)
         guard let imageURL = Bundle(for: Self.self).url(forResource: "night_rain_urban", withExtension: "jpg", subdirectory: "TestFixtures") else {
@@ -257,7 +257,7 @@ final class VisionFixtureTests: XCTestCase {
         trafficSignDetector.processObservations(observations, pixelBuffer: pixelBuffer, orientation: .up)
 
         // Poll for detectedSpeedLimit (VNRecognizeTextRequest may take longer on headless CI CPU simulators)
-        // Note: Night/rain conditions may prevent speed sign detection; test verifies pipeline executes
+        // Night/rain with illuminated 30 km/h sign - CoreML label "114" (20 km/h class) + OCR reads "30"
         var detectedLimit: Int? = nil
         let startTime = CACurrentMediaTime()
         let timeout: TimeInterval = 1.5
@@ -272,7 +272,7 @@ final class VisionFixtureTests: XCTestCase {
         // Diagnostic logging
         if detectedLimit == nil {
             print("=== VisionFixtureTests DIAGNOSTIC: testNightRainUrban_DetectsLeadVehicleSignAndWetTT38 ===")
-            print("No speed limit detected in night/rain image after \(timeout)s (expected for challenging conditions)")
+            print("No speed limit detected in night/rain image after \(timeout)s")
             print("Observations count: \(observations.count)")
             for (idx, obs) in observations.enumerated() {
                 if let label = obs.labels.first {
@@ -281,14 +281,11 @@ final class VisionFixtureTests: XCTestCase {
             }
         }
 
-        // Verify speed limit 50 if detected (may be nil in challenging night/rain conditions)
-        if let limit = detectedLimit {
-            XCTAssertEqual(limit, 50, "If speed limit detected, should be 50 km/h under night/rain")
-        }
-        // If nil, that's acceptable for this challenging fixture - pipeline executed without crash
+        // Verify speed limit 30 detected via CoreML label "114" + cropped Vision OCR
+        XCTAssertEqual(detectedLimit, 30, "Should detect and confirm 30 km/h speed limit under night/rain")
 
         // Run through LaneDetector
-        laneDetector.processFrame(pixelBuffer: pixelBuffer, speedKMPH: 50)
+        laneDetector.processFrame(pixelBuffer: pixelBuffer, speedKMPH: 30)
         try await Task.sleep(nanoseconds: 200_000_000)
 
         // Verify lane detection is active
@@ -299,14 +296,14 @@ final class VisionFixtureTests: XCTestCase {
             XCTAssertFalse(rightConf.isNaN, "Right lane confidence should be valid")
         }
 
-        // Verify DriveAssistantModel wet TT38 calculation: 50 km/h -> base 25m * 1.3 = 32.5m
+        // Verify DriveAssistantModel wet TT38 calculation: 30 km/h -> base 15m * 1.3 = 19.5m
         let model = DriveAssistantModel()
         model.distanceRuleMode = .vnLaw
-        model.speedKMPH = 50.0
+        model.speedKMPH = 30.0
         model.roadCondition = .wet
-        // activeMinimumDistance = tt38Distance(50) * 1.3 = 25 * 1.3 = 32.5
+        // activeMinimumDistance = tt38Distance(30) * 1.3 = 15 * 1.3 = 19.5
         let activeMinDistance = model.activeMinimumDistance
-        XCTAssertEqual(activeMinDistance, 32.5, accuracy: 0.1, "Wet TT38 at 50 km/h should be 32.5m (25 * 1.3)")
+        XCTAssertEqual(activeMinDistance, 19.5, accuracy: 0.1, "Wet TT38 at 30 km/h should be 19.5m (15 * 1.3)")
     }
 
     // MARK: - Helper Methods
