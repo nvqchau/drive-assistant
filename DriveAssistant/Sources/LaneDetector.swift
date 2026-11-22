@@ -206,26 +206,40 @@ final class LaneDetector: ObservableObject {
     
     private func detectContours(_ image: CIImage, extent: CGRect) -> [VNContour] {
         var contours: [VNContour] = []
-        
+
         let request = VNDetectContoursRequest { request, error in
             if let error = error {
                 self.logger.error("Contour detection failed: \(error.localizedDescription, privacy: .public)")
                 return
             }
-            contours = request.results as? [VNContour] ?? []
+            // Flatten top-level contours and their child contours to capture
+            // both solid white lane stripes and dashed/yellow center lines
+            let topLevel = request.results as? [VNContour] ?? []
+            for contour in topLevel {
+                contours.append(contour)
+                self.flattenChildContours(contour, into: &contours)
+            }
         }
-        
+
         request.contrastAdjustment = 1.0
         request.detectDarkOnLight = false
-        
+
         let handler = VNImageRequestHandler(ciImage: image, orientation: .up, options: [:])
         do {
             try handler.perform([request])
         } catch {
             logger.error("VN handler failed: \(error.localizedDescription, privacy: .public)")
         }
-        
+
         return contours
+    }
+
+    /// Recursively collect child contours from a VNContour hierarchy
+    private func flattenChildContours(_ contour: VNContour, into array: inout [VNContour]) {
+        for child in contour.childContours {
+            array.append(child)
+            flattenChildContours(child, into: &array)
+        }
     }
     
     private func classifyLaneLines(_ contours: [VNContour], cropRect: CGRect, imageSize: CGSize) -> (left: [VNContour], right: [VNContour]) {
@@ -256,7 +270,8 @@ final class LaneDetector: ObservableObject {
             let maxY = ys.max() ?? 1
             let width = maxX - minX
             let height = maxY - minY
-            let aspectRatio = width / max(height, 1)
+            // width and height are normalized [0.0...1.0], so use epsilon not 1.0
+            let aspectRatio = width / max(height, 0.0001)
 
             guard aspectRatio > 1.5 || (1/aspectRatio) > 1.5 else { continue }
 
