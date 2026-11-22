@@ -22,6 +22,16 @@ final class TrafficSignDetector: ObservableObject {
         detectedSpeedLimit = limit
     }
 
+    /// Test helper to set detected end of all restrictions directly
+    func setDetectedEndOfAllRestrictionsForTest(_ detected: Bool) {
+        detectedEndOfAllRestrictions = detected
+    }
+
+    /// Test helper to set didClearSpeedLimitEvent directly
+    func setDidClearSpeedLimitEventForTest(_ date: Date?) {
+        didClearSpeedLimitEvent = date
+    }
+
     // MARK: - Configuration
     private var processInterval: TimeInterval = 0.15  // ~6.6 Hz guard (adjusted by thermal state)
     private let baseProcessInterval: TimeInterval = 0.15

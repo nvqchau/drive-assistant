@@ -36,8 +36,8 @@ final class DriveAssistantModel: ObservableObject {
     @Published private(set) var gpsAccuracy: CLLocationAccuracy = .infinity
     @Published var isDangerous = false
     @Published var alertState: ADASAlertState = .normal
-    @Published private(set) var closingSpeedMPS: Double = 0
-    @Published private(set) var timeToCollision: Double?
+    @Published var closingSpeedMPS: Double = 0
+    @Published var timeToCollision: Double?
     @Published var isSettingsPresented = false
     @Published var ecoBlackHUD: Bool {
         didSet { UserDefaults.standard.set(ecoBlackHUD, forKey: "ecoBlackHUD") }
@@ -649,6 +649,11 @@ final class DriveAssistantModel: ObservableObject {
             diagnostics.record(type: "oncoming_closing_speed_spike",
                 details: "speedKMPH=\(String(format: "%.1f", speedKMPH)), closingSpeedMPS=\(String(format: "%.1f", closingSpeedMPS)), distanceM=\(String(format: "%.1f", distance)), leadBox=\(camera.leadVehicleBox?.debugDescription ?? "nil")")
         }
+    }
+
+    /// Test helper: expose updateAlertState for unit tests
+    func updateAlertStateForTest() {
+        updateAlertState()
     }
 
     private func updateAlertState() {

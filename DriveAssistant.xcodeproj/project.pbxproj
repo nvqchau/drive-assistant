@@ -29,7 +29,9 @@
 		00000000000000000000005C /* LaneAndMotionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000059 /* LaneAndMotionTests.swift */; };
 		F1A2B3C4D5E6F7A8B9C0D1E2 /* urban_sign_60.jpg in Resources */ = {isa = PBXBuildFile; fileRef = F1A2B3C4D5E6F7A8B9C0D1E5 /* urban_sign_60.jpg */; };
 		F1A2B3C4D5E6F7A8B9C0D1E3 /* highway_sign_40_dp135.jpg in Resources */ = {isa = PBXBuildFile; fileRef = F1A2B3C4D5E6F7A8B9C0D1E6 /* highway_sign_40_dp135.jpg */; };
+		F1A2B3C4D5E6F7A8B9C0D1EA /* night_rain_urban.jpg in Resources */ = {isa = PBXBuildFile; fileRef = F1A2B3C4D5E6F7A8B9C0D1E8 /* night_rain_urban.jpg */; };
 		F1A2B3C4D5E6F7A8B9C0D1E4 /* VisionFixtureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1A2B3C4D5E6F7A8B9C0D1E7 /* VisionFixtureTests.swift */; };
+		F1A2B3C4D5E6F7A8B9C0D1F0 /* FCWAndStopAndGoTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1A2B3C4D5E6F7A8B9C0D1F1 /* FCWAndStopAndGoTests.swift */; };
 		F1A2B3C4D5E6F7A8B9C0D1E9 /* vn_adas_unified_ios16.mlpackage in Resources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000004A /* vn_adas_unified_ios16.mlpackage */; };
 /* End PBXBuildFile section */
 
@@ -58,10 +60,13 @@
 		B4A2F1C9E8D3A7B6C5D4E3F1 /* RoadMetadataService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistant/Sources/RoadMetadataService.swift; sourceTree = SOURCE_ROOT; };
 		F1A2B3C4D5E6F7A8B9C0D1E5 /* urban_sign_60.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; name = urban_sign_60.jpg; path = DriveAssistantTests/TestFixtures/urban_sign_60.jpg; sourceTree = SOURCE_ROOT; };
 		F1A2B3C4D5E6F7A8B9C0D1E6 /* highway_sign_40_dp135.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; name = highway_sign_40_dp135.jpg; path = DriveAssistantTests/TestFixtures/highway_sign_40_dp135.jpg; sourceTree = SOURCE_ROOT; };
+		F1A2B3C4D5E6F7A8B9C0D1E8 /* night_rain_urban.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; name = night_rain_urban.jpg; path = DriveAssistantTests/TestFixtures/night_rain_urban.jpg; sourceTree = SOURCE_ROOT; };
 		F1A2B3C4D5E6F7A8B9C0D1E7 /* VisionFixtureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistantTests/VisionFixtureTests.swift; sourceTree = SOURCE_ROOT; };
+	F1A2B3C4D5E6F7A8B9C0D1F1 /* FCWAndStopAndGoTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistantTests/FCWAndStopAndGoTests.swift; sourceTree = SOURCE_ROOT; };
 		F1A2B3C4D5E6F7A8B9C0D1E8 /* TestFixtures */ = {isa = PBXGroup; children = (
 			F1A2B3C4D5E6F7A8B9C0D1E5 /* urban_sign_60.jpg */,
 			F1A2B3C4D5E6F7A8B9C0D1E6 /* highway_sign_40_dp135.jpg */,
+				F1A2B3C4D5E6F7A8B9C0D1E8 /* night_rain_urban.jpg */,
 		); path = DriveAssistantTests/TestFixtures; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
@@ -216,6 +221,7 @@
 				F1A2B3C4D5E6F7A8B9C0D1E9 /* vn_adas_unified_ios16.mlpackage in Resources */,
 				F1A2B3C4D5E6F7A8B9C0D1E2 /* urban_sign_60.jpg in Resources */,
 				F1A2B3C4D5E6F7A8B9C0D1E3 /* highway_sign_40_dp135.jpg in Resources */,
+					F1A2B3C4D5E6F7A8B9C0D1EA /* night_rain_urban.jpg in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -248,6 +254,7 @@
 			buildActionMask = 0;
 			files = (
 				F1A2B3C4D5E6F7A8B9C0D1E4 /* VisionFixtureTests.swift in Sources */,
+				F1A2B3C4D5E6F7A8B9C0D1F0 /* FCWAndStopAndGoTests.swift in Sources */,
 				00000000000000000000005A /* TT38AndTSRPrecedenceTests.swift in Sources */,
 				00000000000000000000005B /* RoadMetadataParsingTests.swift in Sources */,
 				00000000000000000000005C /* LaneAndMotionTests.swift in Sources */,
