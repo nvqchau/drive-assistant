@@ -56,6 +56,12 @@ final class RoadMetadataService: ObservableObject {
             if let pm = placemarks.first {
                 self.detectedCountryCode = pm.isoCountryCode?.uppercased()
                 self.cachedSubLocality = pm.subLocality
+                // Immediately evaluate residential status from CLGeocoder subLocality
+                // so osmIsInResidentialArea is set even if Overpass is slow/fails
+                let fromGeocoder = evaluateResidentialFromSubLocality(pm.subLocality)
+                if fromGeocoder != nil {
+                    self.osmIsInResidentialArea = fromGeocoder
+                }
             }
         } catch {
             // Ignore geocoder errors; continue with Overpass
@@ -96,6 +102,24 @@ final class RoadMetadataService: ObservableObject {
         }
     }
 
+    /// Evaluate residential/urban status from CLGeocoder subLocality (Apple's administrative name).
+    /// Returns: true = urban (phường/thị trấn), false = rural (xã), nil = unknown/unable to determine.
+    private func evaluateResidentialFromSubLocality(_ subLocality: String?) -> Bool? {
+        guard let sub = subLocality else { return nil }
+        let lower = sub.lowercased()
+        // Urban: contains "phường" or "thị trấn"
+        if lower.contains("phường") || lower.contains("thị trấn") {
+            return true
+        }
+        // Rural: contains "xã " (with space) or is exactly "xã" or ends with " xã"
+        // Note: "xã" alone could be part of a ward name like "xã hội" but that's rare;
+        // rural communes consistently carry "Xã" as prefix or standalone.
+        if lower.hasPrefix("xã ") || lower == "xã" || lower.hasSuffix(" xã") {
+            return false
+        }
+        return nil  // ambiguous (e.g., some towns without clear marker)
+    }
+
     /// Parse Overpass JSON response for oneway, dual_carriageway, lanes, maxspeed tags,
     /// and residential/urban area detection.
     private func parseOverpassResponse(_ data: Data) throws -> (isDivided: Bool, maxSpeed: Int?, isInResidentialArea: Bool) {
@@ -114,15 +138,16 @@ final class RoadMetadataService: ObservableObject {
         var bestDualCarriageway: String? = nil
         var foundResidentialArea = false
         var foundUrbanArea = false
-        var foundVietnamWardOrTownship = false  // Phường / Thị trấn from admin_level 6/8
+        let isVN = detectedCountryCode == "VN"
+        // Initialize from CLGeocoder subLocality BEFORE loop so positive urban match
+        // is never overwritten if Overpass omits admin_level=8 polygon
+        var foundVietnamWardOrTownship = (isVN && evaluateResidentialFromSubLocality(cachedSubLocality) == true)
 
         // Priority: primary > secondary > tertiary > unclassified > residential > service
         let highwayPriority: [String: Int] = [
             "motorway": 7, "trunk": 6, "primary": 5, "secondary": 4,
             "tertiary": 3, "unclassified": 2, "residential": 1, "service": 0
         ]
-
-        let isVN = detectedCountryCode == "VN"
 
         for element in response.elements {
             guard let tags = element.tags else { continue }
@@ -139,16 +164,25 @@ final class RoadMetadataService: ObservableObject {
             }
 
             // 3) Admin boundaries: only admin_level 6 (district/huyện) and 8 (ward/commune/township)
-            // For Vietnam: check if name contains "Phường" or "Thị trấn" (exclude rural "Xã")
+            // For Vietnam: check if name contains "Phường" or "Thị trấn" (urban), OR if admin_level 8
+            // boundary name does NOT contain "Xã" (rural commune marker).
+            // Also cross-check with cachedSubLocality from CLGeocoder.
             if let adminLevel = tags["admin_level"],
                let level = Int(adminLevel),
-               (level == 6 || level == 8),
-               let name = tags["name"] {
+               (level == 6 || level == 8) {
+                let name = tags["name"] ?? ""
                 if isVN {
-                    // Case-insensitive match for "Phường" or "Thị trấn" anywhere in name
-                    // Explicitly exclude "Xã" (rural commune)
                     let lower = name.lowercased()
-                    if (lower.contains("phường") || lower.contains("thị trấn")) && !lower.contains("xã") {
+                    // Direct urban markers
+                    let hasUrbanMarker = lower.contains("phường") || lower.contains("thị trấn")
+                    // Rural marker exclusion: admin_level 8 without "xã" implies urban ward
+                    // (Vietnam OSM: rural communes consistently have "Xã" in name; urban wards often omit "Phường")
+                    let isRuralCommune = lower.hasPrefix("xã ") || lower == "xã" || lower.hasSuffix(" xã")
+                    let isAdminLevel8 = level == 8
+                    let looksUrban = hasUrbanMarker || (isAdminLevel8 && !isRuralCommune && !name.isEmpty)
+                    // Also check cachedSubLocality from CLGeocoder for this location
+                    let geocoderUrban = evaluateResidentialFromSubLocality(cachedSubLocality) == true
+                    if looksUrban || geocoderUrban {
                         foundVietnamWardOrTownship = true
                     }
                 } else {
@@ -183,7 +217,8 @@ final class RoadMetadataService: ObservableObject {
 
         // Determine residential/urban area:
         // - Universal: residential landuse OR urban place (town/suburb/quarter/neighbourhood/village) OR highway=residential/living_street
-        // - Vietnam: additionally, admin_level 6/8 with name containing "Phường" or "Thị trấn" (exclude "Xã")
+        // - Vietnam: additionally, admin_level 6/8 with name containing "Phường" or "Thị trấn" (exclude "Xã"),
+        //   OR admin_level 8 boundary without "Xã" marker, OR CLGeocoder subLocality indicates urban
         let isInResidentialArea = foundResidentialArea
             || foundUrbanArea
             || (bestHighway == "residential" || bestHighway == "living_street")
