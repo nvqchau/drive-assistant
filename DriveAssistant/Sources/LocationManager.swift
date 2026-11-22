@@ -6,6 +6,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     @Published private(set) var horizontalAccuracy: CLLocationAccuracy = .infinity
     @Published private(set) var weatherRoadCondition: RoadCondition = .dry
     @Published private(set) var isAstronomicalNight: Bool? = nil
+    @Published private(set) var lastValidLocation: CLLocation? = nil
     @MainActor let roadMetadata = RoadMetadataService()
     private let manager = CLLocationManager()
     private let weatherService = WeatherService()
@@ -54,6 +55,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
             return
         }
         speedKMPH = location.speed * 3.6
+        lastValidLocation = location
         startStallTimer()
         computeIsAstronomicalNight(for: location)
         weatherService.update(for: location) { [weak self] condition in

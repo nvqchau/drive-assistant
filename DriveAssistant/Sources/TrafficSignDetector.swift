@@ -103,6 +103,7 @@ final class TrafficSignDetector: ObservableObject {
     private var lastAdvisoryText: String?
     private var endResidentialConsecutiveCount = 0  // for R.421 exit confirmation
     private var lastEndResidentialTriggerTime: TimeInterval = 0  // 6s cooldown for R.421
+    private var lastClearLimitTriggerTime: TimeInterval = 0  // 6s cooldown for DP.134/DP.135
 
     // Diagnostics
     private weak var diagnostics: DiagnosticsLogStore?
@@ -365,12 +366,20 @@ final class TrafficSignDetector: ObservableObject {
             stateLock.unlock()
 
             if shouldConfirm {
-                DispatchQueue.main.async { [weak self] in
-                    self?.detectedSpeedLimit = nil
-                    self?.didClearSpeedLimitEvent = Date()
-                    self?.detectedEndOfAllRestrictions = true
+                let now = CACurrentMediaTime()
+                stateLock.lock()
+                if now - lastClearLimitTriggerTime >= 6.0 {
+                    lastClearLimitTriggerTime = now
+                    stateLock.unlock()
+                    DispatchQueue.main.async { [weak self] in
+                        self?.detectedSpeedLimit = nil
+                        self?.didClearSpeedLimitEvent = Date()
+                        self?.detectedEndOfAllRestrictions = true
+                    }
+                    diagnostics?.record(type: "tsr_state", details: "action=clear_limit_confirmed cleared_limit")
+                } else {
+                    stateLock.unlock()
                 }
-                diagnostics?.record(type: "tsr_state", details: "action=clear_limit_confirmed cleared_limit")
                 stateLock.lock()
                 endSignConsecutiveCount = 0
                 lastMatchedLimit = nil

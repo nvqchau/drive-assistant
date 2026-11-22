@@ -120,6 +120,7 @@ final class DriveAssistantModel: ObservableObject {
     @Published private(set) var isDividedRoad: Bool = false  // from OSM or dual carriageway sign
     private var isCurrentLimitStatutory = false  // true if detectedSpeedLimit came from TT38, false if from P.127 sign
     private var lastCameraResidentialSignTime: Date = .distantPast  // for 5-min camera precedence over OSM
+    private var lastCameraResidentialSignLocation: CLLocation? = nil  // for 2km camera precedence over OSM
     private var hasReceivedCameraSignOverride = false  // true after any camera sign confirmed or manual clear
 
     // Display Theme & Mirror Mode
@@ -455,14 +456,16 @@ final class DriveAssistantModel: ObservableObject {
             }
             .store(in: &cancellables)
 
-        // TSR: Residential area state (R.420/R.421/DP.135) — apply TT38 statutory limits
+        // TSR: Residential area state (R.420/R.421) — apply TT38 statutory limits
         camera.trafficSignDetector.$isInResidentialArea
             .receive(on: DispatchQueue.main)
             .sink { [weak self] inResidential in
                 self?.isInResidentialArea = inResidential
-                // Record timestamp when camera sees explicit R.420/R.421 (non-nil) for 5-min precedence over OSM
+                // Record timestamp + location when camera sees explicit R.420/R.421 (non-nil)
+                // for dual time (>300s) + distance (>2000m) precedence over OSM
                 if inResidential != nil {
                     self?.lastCameraResidentialSignTime = Date()
+                    self?.lastCameraResidentialSignLocation = self?.location.lastValidLocation
                     self?.isCurrentLimitStatutory = true
                 }
                 self?.applyTT38StatutoryLimit()
@@ -501,14 +504,24 @@ final class DriveAssistantModel: ObservableObject {
             .store(in: &cancellables)
 
         // OSM Residential area detection: auto-activate "Khu dân cư" badge + TT38 50/60 km/h
-        // when no explicit R.420/R.421 camera sign has been seen recently (5-min precedence)
+        // when no explicit R.420/R.421 camera sign has been seen recently
+        // Dual precedence: BOTH >300s elapsed AND >2000m traveled since camera sign
         location.roadMetadata.$osmIsInResidentialArea
             .receive(on: DispatchQueue.main)
             .sink { [weak self] osmInResidential in
                 guard let self else { return }
-                // Only apply OSM if camera hasn't seen explicit R.420/R.421 within last 5 minutes
-                let cameraPrecedenceElapsed = Date().timeIntervalSince(self.lastCameraResidentialSignTime)
-                if self.camera.trafficSignDetector.isInResidentialArea == nil && cameraPrecedenceElapsed > 300 {
+                // Only apply OSM if camera hasn't seen explicit R.420/R.421
+                guard self.camera.trafficSignDetector.isInResidentialArea == nil else { return }
+                let timeElapsed = Date().timeIntervalSince(self.lastCameraResidentialSignTime)
+                let distanceTraveled: CLLocationDistance
+                if let lastLoc = self.lastCameraResidentialSignLocation,
+                   let currentLoc = self.location.lastValidLocation {
+                    distanceTraveled = currentLoc.distance(from: lastLoc)
+                } else {
+                    distanceTraveled = .infinity
+                }
+                // OSM overrides only if BOTH conditions met
+                if timeElapsed > 300 && distanceTraveled > 2000 {
                     if let osmInResidential {
                         self.isInResidentialArea = osmInResidential
                         self.applyTT38StatutoryLimit()
