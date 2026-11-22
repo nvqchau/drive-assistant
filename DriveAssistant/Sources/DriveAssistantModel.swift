@@ -105,7 +105,7 @@ final class DriveAssistantModel: ObservableObject {
     @Published var overspeedToleranceKmh: Double = 3.0 {
         didSet { UserDefaults.standard.set(overspeedToleranceKmh, forKey: "overspeedToleranceKmh") }
     }
-    @Published private(set) var detectedSpeedLimit: Int?
+    @Published var detectedSpeedLimit: Int?
     @Published private(set) var isOverspeeding: Bool = false
     @Published private(set) var showSpeedLimitCleared: Bool = false
     @Published private(set) var showEndOfAllRestrictions: Bool = false  // DP.135 indicator
@@ -116,12 +116,15 @@ final class DriveAssistantModel: ObservableObject {
     @Published var enableDefaultOutsideResidentialLimit: Bool = true {
         didSet { UserDefaults.standard.set(enableDefaultOutsideResidentialLimit, forKey: "enableDefaultOutsideResidentialLimit") }
     }
-    @Published private(set) var isInResidentialArea: Bool? = nil  // nil=unknown, true=inside, false=outside
-    @Published private(set) var isDividedRoad: Bool = false  // from OSM or dual carriageway sign
-    private var isCurrentLimitStatutory = false  // true if detectedSpeedLimit came from TT38, false if from P.127 sign
-    private var lastCameraResidentialSignTime: Date = .distantPast  // for 5-min camera precedence over OSM
-    private var lastCameraResidentialSignLocation: CLLocation? = nil  // for 2km camera precedence over OSM
-    private var hasReceivedCameraSignOverride = false  // true after any camera sign confirmed or manual clear
+    @Published var isInResidentialArea: Bool? = nil  // nil=unknown, true=inside, false=outside
+    @Published var isDividedRoad: Bool = false  // from OSM or dual carriageway sign
+    var isCurrentLimitStatutory = false  // true if detectedSpeedLimit came from TT38, false if from P.127 sign
+    var lastCameraResidentialSignTime: Date = .distantPast  // for 5-min camera precedence over OSM
+    var lastCameraResidentialSignLocation: CLLocation? = nil  // for 2km camera precedence over OSM
+    var hasReceivedCameraSignOverride = false  // true after any camera sign confirmed or manual clear
+
+    /// Computed current speed limit (TT38 statutory or camera-detected)
+    var currentSpeedLimit: Int? { detectedSpeedLimit }
 
     // Display Theme & Mirror Mode
     @Published var displayThemeMode: DisplayThemeMode = .auto {
@@ -174,10 +177,10 @@ final class DriveAssistantModel: ObservableObject {
     private let maxClosingSpeedMPS: Double = 25.0
     
     // For dynamic horizon calibration
-    private var lastTrackedBox: CGRect?
-    private var previousLeadBoxForSwitch: CGRect?  // separate tracker for target-switch detection
-    private var lastTrackedConfidence: Float = 0
-    private var horizonCalibrationFrames = 0
+    var lastTrackedBox: CGRect?
+    var previousLeadBoxForSwitch: CGRect?  // separate tracker for target-switch detection
+    var lastTrackedConfidence: Float = 0
+    var horizonCalibrationFrames = 0
 
     // Stop-and-Go (Lead Vehicle Departure) state machine
     @Published var isLeadVehicleMovingAlertActive: Bool = false
@@ -827,6 +830,56 @@ final class DriveAssistantModel: ObservableObject {
             isCurrentLimitStatutory = true
             diagnostics.record(type: "tsr_tt38_statutory", details: "limit=\(newLimit) inResidential=\(inResidential) divided=\(isDividedRoad) source=\(isDividedRoad ? (camera.trafficSignDetector.isDividedRoadFromSign ? "sign" : "osm") : "osm")")
             updateOverspeedState()
+        }
+    }
+
+    /// Handle camera-detected residential sign (R.420 enter / R.421 exit)
+    /// Sets camera override with time+location for dual precedence over OSM
+    func handleCameraResidentialSign(isResidential: Bool, location: CLLocation, timestamp: Date) {
+        isInResidentialArea = isResidential
+        isCurrentLimitStatutory = true
+        lastCameraResidentialSignTime = timestamp
+        lastCameraResidentialSignLocation = location
+        hasReceivedCameraSignOverride = true
+        applyTT38StatutoryLimit()
+    }
+
+    /// Handle camera-detected clear limit sign (DP.134 / DP.135)
+    /// Clears camera override but preserves residential status from OSM
+    func handleCameraClearLimitSign(location: CLLocation, timestamp: Date) {
+        hasReceivedCameraSignOverride = false  // Clear the camera override
+        lastCameraResidentialSignTime = timestamp
+        lastCameraResidentialSignLocation = location
+        // Clear detected speed limit to trigger statutory fallback
+        detectedSpeedLimit = nil
+        isCurrentLimitStatutory = true
+        applyTT38StatutoryLimit()
+    }
+
+    /// Evaluate dual precedence (time > 5 min OR distance > 2 km) to clear camera override
+    func evaluateCameraPrecedence() {
+        guard hasReceivedCameraSignOverride,
+              lastCameraResidentialSignTime != .distantPast,
+              let signLoc = lastCameraResidentialSignLocation,
+              let currentLoc = location.lastValidLocation else {
+            hasReceivedCameraSignOverride = false
+            return
+        }
+
+        let timeElapsed = Date().timeIntervalSince(lastCameraResidentialSignTime)
+        let distanceTraveled = currentLoc.distance(from: signLoc)
+
+        if timeElapsed > 300 || distanceTraveled > 2000 {
+            hasReceivedCameraSignOverride = false
+            // Clear camera residential state so OSM can take over
+            // Apply OSM residential status immediately (don't wait for subscriber which requires AND)
+            if let osmInResidential = location.roadMetadata.osmIsInResidentialArea {
+                isInResidentialArea = osmInResidential
+            } else {
+                isInResidentialArea = nil
+            }
+            isCurrentLimitStatutory = true
+            applyTT38StatutoryLimit()
         }
     }
 

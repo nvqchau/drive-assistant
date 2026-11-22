@@ -3,11 +3,31 @@ name: Build DriveAssistant IPA
 on:
   push:
     branches: [ "main" ]
-  workflow_dispatch: # Cho phép bấm nút chạy thủ công bất cứ lúc nào
+  workflow_dispatch:
 
 jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Select latest Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Run Unit Tests
+        run: |
+          xcodebuild test -project DriveAssistant.xcodeproj \
+            -scheme DriveAssistant \
+            -destination 'platform=iOS Simulator,name=iPhone 14' \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
   build-unsigned-ipa:
-    runs-on: macos-latest # Máy ảo Apple Silicon tốc độ cao
+    needs: test
+    runs-on: macos-latest
 
     steps:
       - name: Checkout repository

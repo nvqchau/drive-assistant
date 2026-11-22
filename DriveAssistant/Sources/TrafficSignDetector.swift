@@ -14,8 +14,13 @@ final class TrafficSignDetector: ObservableObject {
     @Published private(set) var didClearSpeedLimitEvent: Date?
     @Published private(set) var detectedEndOfAllRestrictions: Bool = false
     @Published private(set) var activeAdvisorySignText: String?  // e.g., "No Overtaking", "No Cars", "Residential Area"
-    @Published private(set) var isInResidentialArea: Bool? = nil  // true = R.420 seen, false = R.421/DP.135 seen
+    @Published var isInResidentialArea: Bool? = nil  // true = R.420 seen, false = R.421/DP.135 seen
     @Published private(set) var isDividedRoadFromSign: Bool = false  // set when class "142" (dual carriageway) detected
+
+    /// Test helper to set detected speed limit directly
+    func setDetectedSpeedLimitForTest(_ limit: Int?) {
+        detectedSpeedLimit = limit
+    }
 
     // MARK: - Configuration
     private var processInterval: TimeInterval = 0.15  // ~6.6 Hz guard (adjusted by thermal state)
@@ -43,7 +48,7 @@ final class TrafficSignDetector: ObservableObject {
     // Clear speed limit (DP.134): "141"=ID78 (End of 50km/h speed limit)
     // Dual carriageway (sets divided road): "142"=ID73
     // Prohibitory advisory: "572"=ID0->no_entry, "279"=ID6->no_cars, "123"=ID45->no_overtaking
-    private let labelToSign: [String: SignInfo] = [
+    let labelToSign: [String: SignInfo] = [
         // Speed limits (Count string -> speed value)
         "124": .speedLimit(10),   // ID 57: Speed limit 10km/h
         "114": .speedLimit(20),   // ID 61: Speed limit 20km/h
@@ -70,7 +75,7 @@ final class TrafficSignDetector: ObservableObject {
         "123": .advisory("no_overtaking"), // ID 45: No Overtaking
     ]
 
-    private enum SignInfo: Equatable {
+    public enum SignInfo: Equatable {
         case speedLimit(Int)
         case residential50  // sets detectedSpeedLimit = 50 AND activeAdvisorySignText = "residential_area"
         case endResidentialArea  // R.421 "117" or DP.135 "190" - exit residential area

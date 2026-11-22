@@ -38,9 +38,9 @@ final class MotionManager: ObservableObject {
 
     // Mount shift detection
     @Published var isMountShifted: Bool = false
-    private var mountShiftStartTime: TimeInterval?
-    private let mountShiftThreshold: TimeInterval = 3.0  // seconds
-    private let mountShiftAngleThreshold: Double = 5.5  // degrees
+    var mountShiftStartTime: TimeInterval?
+    let mountShiftThreshold: TimeInterval = 3.0  // seconds
+    let mountShiftAngleThreshold: Double = 5.5  // degrees
 
     private let verticalFOV: Double = 41.0  // iPhone 1x landscape vertical FOV
     private let baseHorizonY: Double = 0.45  // Base normalized horizon (45% from top)
@@ -198,7 +198,15 @@ final class MotionManager: ObservableObject {
         motionManager.stopDeviceMotionUpdates()
         isActive = false
     }
-    
+
+    // Test helper to simulate motion updates
+    func simulateMotion(roll: Double, pitch: Double, yaw: Double) {
+        rollDegrees = roll
+        pitchDegrees = pitch
+        // yaw is not used in current implementation but kept for API compatibility
+        computeDeltasAndHorizon()
+    }
+
     deinit {
         stop()
     }

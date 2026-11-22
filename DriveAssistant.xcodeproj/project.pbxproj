@@ -23,10 +23,18 @@
 		00000000000000000000003A /* LaneDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000039 /* LaneDetector.swift */; };
 		5F5E8E7F6FDA2B0BB2974CF7 /* TrafficSignDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF21CE15F0E014781C9BBA0F /* TrafficSignDetector.swift */; };
 		B4A2F1C9E8D3A7B6C5D4E3F2 /* RoadMetadataService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4A2F1C9E8D3A7B6C5D4E3F1 /* RoadMetadataService.swift */; };
+		000000000000000000000055 /* PBXTargetDependency */ = {isa = PBXBuildFile; fileRef = 000000000000000000000021 /* DriveAssistant */; };
+		00000000000000000000005A /* TT38AndTSRPrecedenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000057 /* TT38AndTSRPrecedenceTests.swift */; };
+		00000000000000000000005B /* RoadMetadataParsingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000058 /* RoadMetadataParsingTests.swift */; };
+		00000000000000000000005C /* LaneAndMotionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000059 /* LaneAndMotionTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		000000000000000000000001 /* DriveAssistant.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; path = DriveAssistant.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		000000000000000000000056 /* DriveAssistantTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = DriveAssistantTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		000000000000000000000057 /* TT38AndTSRPrecedenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistantTests/TT38AndTSRPrecedenceTests.swift; sourceTree = SOURCE_ROOT; };
+		000000000000000000000058 /* RoadMetadataParsingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistantTests/RoadMetadataParsingTests.swift; sourceTree = SOURCE_ROOT; };
+		000000000000000000000059 /* LaneAndMotionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistantTests/LaneAndMotionTests.swift; sourceTree = SOURCE_ROOT; };
 		000000000000000000000007 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = DriveAssistant/Info.plist; sourceTree = SOURCE_ROOT; };
 		000000000000000000000008 /* DriveAssistantApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistant/Sources/DriveAssistantApp.swift; sourceTree = SOURCE_ROOT; };
 		000000000000000000000009 /* DriveAssistantModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistant/Sources/DriveAssistantModel.swift; sourceTree = SOURCE_ROOT; };
@@ -48,6 +56,13 @@
 
 /* Begin PBXFrameworksBuildPhase section */
 		000000000000000000000024 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 0;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		000000000000000000000054 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 0;
 			files = (
@@ -102,6 +117,9 @@
 				000000000000000000000004 /* DriveAssistant */,
 				000000000000000000000001 /* DriveAssistant.app */,
 				AF21CE15F0E014781C9BBA0F /* TrafficSignDetector.swift */,
+				000000000000000000000057 /* TT38AndTSRPrecedenceTests.swift */,
+				000000000000000000000058 /* RoadMetadataParsingTests.swift */,
+				000000000000000000000059 /* LaneAndMotionTests.swift */,
 			);
 			sourceTree = GROUP;
 		};
@@ -125,6 +143,24 @@
 			productReference = 000000000000000000000001 /* DriveAssistant.app */;
 			productType = "com.apple.product-type.application";
 		};
+		000000000000000000000050 /* DriveAssistantTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 000000000000000000000051 /* Build configuration list for PBXNativeTarget "DriveAssistantTests" */;
+			buildPhases = (
+				000000000000000000000052 /* Sources */,
+				000000000000000000000053 /* Resources */,
+				000000000000000000000054 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				000000000000000000000055 /* PBXTargetDependency */,
+			);
+			name = DriveAssistantTests;
+			productName = DriveAssistantTests;
+			productReference = 000000000000000000000056 /* DriveAssistantTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -146,6 +182,7 @@
 			projectRoot = "";
 			targets = (
 				000000000000000000000021 /* DriveAssistant */,
+				000000000000000000000050 /* DriveAssistantTests */,
 			);
 		};
 /* End PBXProject section */
@@ -157,6 +194,13 @@
 			files = (
 				00000000000000000000002A /* Assets.xcassets in Resources */,
 				00000000000000000000004B /* vn_adas_unified_ios16.mlpackage in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		000000000000000000000053 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 0;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -184,6 +228,16 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		000000000000000000000052 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 0;
+			files = (
+				00000000000000000000005A /* TT38AndTSRPrecedenceTests.swift in Sources */,
+				00000000000000000000005B /* RoadMetadataParsingTests.swift in Sources */,
+				00000000000000000000005C /* LaneAndMotionTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin XCBuildConfiguration section */
@@ -192,13 +246,15 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				DEVELOPMENT_TEAM = NQZUDVV3YM;
+				ENABLE_TESTING = YES;
 				EXECUTABLE_NAME = "$(PRODUCT_NAME)";
 				INFOPLIST_FILE = DriveAssistant/Info.plist;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				OTHER_SWIFT_FLAGS = "-enable-testing";
 				PRODUCT_BUNDLE_IDENTIFIER = vn.ai.driveassistant;
 				PRODUCT_NAME = DriveAssistant;
-				SDKROOT = iphoneos;
+				SDKROOT = iphonesimulator;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 1;
 			};
@@ -241,6 +297,39 @@
 		};
 /* End XCBuildConfiguration section */
 
+		00000000000000000000005D /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				SWIFT_VERSION = 5.0;
+				PRODUCT_BUNDLE_IDENTIFIER = vn.ai.driveassistant.tests;
+				PRODUCT_NAME = DriveAssistantTests;
+				SDKROOT = iphonesimulator;
+				TARGETED_DEVICE_FAMILY = 1;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_IDENTITY = "";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/DriveAssistant.app/DriveAssistant";
+				BUNDLE_LOADER = "$(TEST_HOST)";
+			};
+			name = Debug;
+		};
+		00000000000000000000005E /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				SWIFT_VERSION = 5.0;
+				PRODUCT_BUNDLE_IDENTIFIER = vn.ai.driveassistant.tests;
+				PRODUCT_NAME = DriveAssistantTests;
+				SDKROOT = iphonesimulator;
+				TARGETED_DEVICE_FAMILY = 1;
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				CODE_SIGN_IDENTITY = "";
+			};
+			name = Release;
+		};
+
 /* Begin XCConfigurationList section */
 		000000000000000000000031 /* Build configuration list for PBXNativeTarget "DriveAssistant" */ = {
 			isa = XCConfigurationList;
@@ -260,7 +349,29 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		000000000000000000000051 /* Build configuration list for PBXNativeTarget "DriveAssistantTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				00000000000000000000005D /* Debug */,
+				00000000000000000000005E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
+
+		000000000000000000000055 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 000000000000000000000021 /* DriveAssistant */;
+			targetProxy = 00000000000000000000005F /* PBXContainerItemProxy */;
+		};
+		00000000000000000000005F /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 000000000000000000000030 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 000000000000000000000021;
+			remoteInfo = DriveAssistant;
+		};
 	};
 	rootObject = 000000000000000000000030 /* Project object */;
 }
