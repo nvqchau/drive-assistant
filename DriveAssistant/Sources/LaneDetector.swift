@@ -107,22 +107,30 @@ final class LaneDetector: ObservableObject {
         let image = CIImage(cvPixelBuffer: pixelBuffer)
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
-        
+
         // Crop to lower road region (ROI trapezoid area)
         let cropRect = calculateROICropRect(imageExtent: image.extent)
         let croppedImage = image.cropped(to: cropRect)
-        
+
+        // Translate cropped image back to origin (0,0) so VNDetectContoursRequest
+        // processes the exact road region cleanly without coordinate offset
+        let normalizedCrop = croppedImage.transformed(by: CGAffineTransform(translationX: -cropRect.origin.x, y: -cropRect.origin.y))
+
+        // The normalized crop has extent at origin (0,0) with cropRect's size
+        // Use this for Vision coordinate mapping
+        let normalizedCropRect = CGRect(origin: .zero, size: cropRect.size)
+
         // Enhance lane markings: white + yellow color filter
-        let enhancedImage = enhanceLaneMarkings(croppedImage)
-        
+        let enhancedImage = enhanceLaneMarkings(normalizedCrop)
+
         // Detect contours on enhanced image
-        let contours = detectContours(enhancedImage, extent: cropRect)
-        
-        // Filter for lane-like line segments (pass cropRect for coordinate mapping)
-        let (leftLines, rightLines) = classifyLaneLines(contours, cropRect: cropRect, imageSize: CGSize(width: width, height: height))
-        
-        // Fit polynomial curves to lane lines
-        let (leftFit, rightFit) = fitLaneCurves(leftLines: leftLines, rightLines: rightLines, imageSize: CGSize(width: width, height: height))
+        let contours = detectContours(enhancedImage, extent: normalizedCropRect)
+
+        // Filter for lane-like line segments (pass normalizedCropRect for coordinate mapping)
+        let (leftLines, rightLines) = classifyLaneLines(contours, cropRect: normalizedCropRect, imageSize: CGSize(width: width, height: height))
+
+        // Fit polynomial curves to lane lines (pass normalizedCropRect for consistent coordinate mapping)
+        let (leftFit, rightFit) = fitLaneCurves(leftLines: leftLines, rightLines: rightLines, cropRect: normalizedCropRect, imageSize: CGSize(width: width, height: height))
         
         // Apply EMA smoothing with grace window
         let (smoothedLeft, smoothedRight, leftConf, rightConf) = applyEMAWithGrace(leftFit: leftFit, rightFit: rightFit)
@@ -266,9 +274,9 @@ final class LaneDetector: ObservableObject {
         return (leftLines, rightLines)
     }
     
-    private func fitLaneCurves(leftLines: [VNContour], rightLines: [VNContour], imageSize: CGSize) -> (left: [CGPoint]?, right: [CGPoint]?) {
-        let leftPoints = sampleContourPoints(leftLines, cropRect: calculateROICropRect(imageExtent: CGRect(origin: .zero, size: imageSize)), imageSize: imageSize, isLeft: true)
-        let rightPoints = sampleContourPoints(rightLines, cropRect: calculateROICropRect(imageExtent: CGRect(origin: .zero, size: imageSize)), imageSize: imageSize, isLeft: false)
+    private func fitLaneCurves(leftLines: [VNContour], rightLines: [VNContour], cropRect: CGRect, imageSize: CGSize) -> (left: [CGPoint]?, right: [CGPoint]?) {
+        let leftPoints = sampleContourPoints(leftLines, cropRect: cropRect, imageSize: imageSize, isLeft: true)
+        let rightPoints = sampleContourPoints(rightLines, cropRect: cropRect, imageSize: imageSize, isLeft: false)
 
         let leftFit = fitLinear(points: leftPoints, imageSize: imageSize, isLeft: true)
         let rightFit = fitLinear(points: rightPoints, imageSize: imageSize, isLeft: false)

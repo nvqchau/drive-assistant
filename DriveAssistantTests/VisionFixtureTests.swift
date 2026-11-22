@@ -123,8 +123,8 @@ final class VisionFixtureTests: XCTestCase {
 
     /// Tests that highway_sign_40_dp135.jpg runs through the full vision pipeline:
     /// - Unified model detects a lead vehicle in ego lane (car, midX in 0.35...0.65)
-    /// - TrafficSignDetector confirms speed limit 40 OR DP.135 end-of-restrictions (2-frame confirmation + polling)
-    /// - LaneDetector locks onto visible highway road markings (confidence > 0.5)
+    /// - TrafficSignDetector with pre-seeded 40 km/h limit confirms DP.135 clears it (detectedEndOfAllRestrictions == true)
+    /// - LaneDetector locks onto visible highway road markings (confidence > 0.4)
     func testHighwaySign40DP135_PipelineExecutes() async throws {
         // Load test image from bundle
         guard let imageURL = Bundle(for: Self.self).url(forResource: "highway_sign_40_dp135", withExtension: "jpg") else {
@@ -158,6 +158,10 @@ final class VisionFixtureTests: XCTestCase {
         trafficSignDetector.setVisionOrientation(.up)
         trafficSignDetector.setThermalState(.nominal)
 
+        // Seed active speed limit (40 km/h) so DP.135 (label "190") triggers clear limit event
+        trafficSignDetector.setDetectedSpeedLimitForTest(40)
+        trafficSignDetector.setDetectedEndOfAllRestrictionsForTest(false)
+
         // First pass
         trafficSignDetector.processObservations(observations, pixelBuffer: pixelBuffer, orientation: .up)
         try await Task.sleep(nanoseconds: 200_000_000)
@@ -165,26 +169,22 @@ final class VisionFixtureTests: XCTestCase {
         // Second pass
         trafficSignDetector.processObservations(observations, pixelBuffer: pixelBuffer, orientation: .up)
 
-        // Poll for detectedSpeedLimit OR detectedEndOfAllRestrictions (DP.135)
-        // Note: DP.135 (label "190") at midX=0.83 is on right side but spatial filter only applies to no_entry (572)
-        // Clear limit signs need 2-frame confirmation + processing time
-        var detectedLimit: Int? = nil
+        // Poll for detectedEndOfAllRestrictions (DP.135 clear limit confirmation)
         var detectedEndAll: Bool = false
         let startTime = CACurrentMediaTime()
         let timeout: TimeInterval = 2.5  // increased for clear limit confirmation
         let pollInterval: TimeInterval = 0.05
 
         while CACurrentMediaTime() - startTime < timeout {
-            detectedLimit = trafficSignDetector.detectedSpeedLimit
             detectedEndAll = trafficSignDetector.detectedEndOfAllRestrictions
-            if detectedLimit != nil || detectedEndAll { break }
+            if detectedEndAll { break }
             try await Task.sleep(nanoseconds: UInt64(pollInterval * 1_000_000_000))
         }
 
         // Diagnostic logging on failure
-        if detectedLimit == nil && !detectedEndAll {
+        if !detectedEndAll {
             print("=== VisionFixtureTests DIAGNOSTIC: testHighwaySign40DP135_PipelineExecutes ===")
-            print("Timeout waiting for speed limit or DP.135 after \(timeout)s")
+            print("Timeout waiting for DP.135 clear limit after \(timeout)s")
             print("Observations count: \(observations.count)")
             for (idx, obs) in observations.enumerated() {
                 if let label = obs.labels.first {
@@ -193,26 +193,15 @@ final class VisionFixtureTests: XCTestCase {
             }
         }
 
-        // Assert: detected 40 km/h OR DP.135 end-of-restrictions, never 80 or 100
-        // Note: This test image contains DP.135 (label "190") at right side which may be filtered
-        // or may not confirm within timeout. Accept either outcome but verify no misclassification.
-        if let limit = detectedLimit {
-            XCTAssertNotEqual(limit, 80, "Should not misclassify as 80 km/h")
-            XCTAssertNotEqual(limit, 100, "Should not misclassify as 100 km/h")
-            // If speed limit detected, it should be 40
-            XCTAssertEqual(limit, 40, "If speed limit detected, should be 40 km/h")
-        } else if detectedEndAll {
-            // DP.135 confirmed - valid outcome
-        } else {
-            // Neither confirmed within timeout - acceptable for this fixture
-            // (DP.135 at right side may not confirm in time)
-        }
+        // Assert: DP.135 cleared the pre-seeded 40 km/h limit
+        XCTAssertTrue(detectedEndAll, "DP.135 should clear the pre-seeded 40 km/h limit (detectedEndOfAllRestrictions == true)")
+        XCTAssertNil(trafficSignDetector.detectedSpeedLimit, "Speed limit should be cleared after DP.135 confirmation")
 
         // Run through LaneDetector
         laneDetector.processFrame(pixelBuffer: pixelBuffer, speedKMPH: 80)
         try await Task.sleep(nanoseconds: 200_000_000)
 
-        // Verify lane detection is active (confidence > 0.4 for this test image)
+        // Verify lane detection locks onto highway markings (confidence > 0.4)
         await MainActor.run {
             let leftConf = laneDetector.leftLaneConfidence
             let rightConf = laneDetector.rightLaneConfidence
