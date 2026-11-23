@@ -169,9 +169,12 @@ final class LaneDetector: ObservableObject {
     }
     
     private func calculateROICropRect(imageExtent: CGRect) -> CGRect {
-        let topY = imageExtent.height * roiTopY
-        let bottomY = imageExtent.height * roiBottomY
-        return CGRect(x: 0, y: topY, width: imageExtent.width, height: bottomY - topY)
+        // CIImage extent uses bottom-left origin (y=0 at bottom).
+        // roiTopY/roiBottomY are top-down ratios (0=top, 1=bottom).
+        // Convert: bottom-left y = height * (1 - topDownRatio)
+        let ciMinY = imageExtent.height * (1.0 - roiBottomY)  // 0.05 from bottom
+        let ciMaxY = imageExtent.height * (1.0 - roiTopY)     // 0.62 from bottom
+        return CGRect(x: 0, y: ciMinY, width: imageExtent.width, height: ciMaxY - ciMinY)
     }
     
     private func enhanceLaneMarkings(_ image: CIImage) -> CIImage {

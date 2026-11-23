@@ -199,12 +199,25 @@ final class VisionFixtureTests: XCTestCase {
 
         // Run through LaneDetector
         laneDetector.processFrame(pixelBuffer: pixelBuffer, speedKMPH: 80)
-        try await Task.sleep(nanoseconds: 200_000_000)
+
+        // Poll for lane confidence > 0.4 (headless CI CPU runners need more time)
+        var leftConf: Float = 0
+        var rightConf: Float = 0
+        let lanePollStart = CACurrentMediaTime()
+        let lanePollTimeout: TimeInterval = 1.5
+        let lanePollInterval: TimeInterval = 0.05
+
+        while CACurrentMediaTime() - lanePollStart < lanePollTimeout {
+            await MainActor.run {
+                leftConf = laneDetector.leftLaneConfidence
+                rightConf = laneDetector.rightLaneConfidence
+            }
+            if leftConf > 0.4 && rightConf > 0.4 { break }
+            try await Task.sleep(nanoseconds: UInt64(lanePollInterval * 1_000_000_000))
+        }
 
         // Verify lane detection locks onto highway markings (confidence > 0.4)
         await MainActor.run {
-            let leftConf = laneDetector.leftLaneConfidence
-            let rightConf = laneDetector.rightLaneConfidence
             XCTAssertGreaterThan(leftConf, 0.4, "Left lane confidence should be > 0.4 on highway markings")
             XCTAssertGreaterThan(rightConf, 0.4, "Right lane confidence should be > 0.4 on highway markings")
         }
@@ -332,6 +345,7 @@ final class VisionFixtureTests: XCTestCase {
         defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
 
         let context = CIContext()
+        // Render ciImage into the full buffer bounds - CIContext scales to fit bounds
         context.render(ciImage, to: buffer, bounds: CGRect(x: 0, y: 0, width: width, height: height), colorSpace: CGColorSpaceCreateDeviceRGB())
 
         return buffer
