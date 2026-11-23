@@ -18,6 +18,9 @@ final class RoadMetadataService: ObservableObject {
     private weak var diagnostics: DiagnosticsLogStore?
     private var lastLoggedResidential: Bool? = nil
     private var lastLoggedDivided: Bool? = nil
+    // Track if we've logged the first geocoder/overpass result for visibility
+    private var hasLoggedFirstGeocoder = false
+    private var hasLoggedFirstOverpass = false
 
     // Throttling: max once per 20s or 150m travel
     private let minQueryInterval: TimeInterval = 20.0
@@ -37,6 +40,8 @@ final class RoadMetadataService: ObservableObject {
 
     // Cached subLocality from CLGeocoder (e.g., "Phường X", "Thị trấn Y", "Xã Z") for Vietnam admin boundary resolution
     var cachedSubLocality: String? = nil
+    // Cached urban/rural result from full CLPlacemark evaluation (never nil after first geocoder success)
+    var cachedUrbanFromGeocoder: Bool? = nil
 
     /// Attach diagnostics store for road metadata update logging
     func attachDiagnostics(_ diagnostics: DiagnosticsLogStore) {
@@ -60,26 +65,30 @@ final class RoadMetadataService: ObservableObject {
         isQuerying = true
         defer { isQuerying = false; lastQueryDate = Date() }
 
-        // 1. CLGeocoder first: get country code + subLocality (ward/commune/township name)
+        // 1. CLGeocoder first: get country code + full placemark for Vietnam urban/rural detection
         do {
             let placemarks = try await geocoder.reverseGeocodeLocation(location)
             if let pm = placemarks.first {
                 self.detectedCountryCode = pm.isoCountryCode?.uppercased()
                 self.cachedSubLocality = pm.subLocality
-                // Immediately evaluate residential status from CLGeocoder subLocality
-                // so osmIsInResidentialArea is set even if Overpass is slow/fails
+                // Evaluate residential status from full CLPlacemark context (handles nil subLocality in Hue)
                 let oldResidential = self.osmIsInResidentialArea
-                let fromGeocoder = evaluateResidentialFromSubLocality(pm.subLocality)
+                let fromGeocoder = evaluateResidentialFromPlacemark(pm)
                 if fromGeocoder != nil {
                     self.osmIsInResidentialArea = fromGeocoder
+                    self.cachedUrbanFromGeocoder = fromGeocoder
                 }
-                // Diagnostic logging for positive CLGeocoder urban match
-                if fromGeocoder != oldResidential, let residential = fromGeocoder {
-                    let country = self.detectedCountryCode ?? "unknown"
-                    let locality = pm.locality ?? "unknown"
+                // Always log first CLGeocoder result for full visibility
+                let country = self.detectedCountryCode ?? "unknown"
+                let locality = pm.locality ?? "unknown"
+                let subLocality = pm.subLocality ?? "nil"
+                let thoroughfare = pm.thoroughfare ?? "nil"
+                let adminArea = pm.administrativeArea ?? "nil"
+                if !hasLoggedFirstGeocoder || fromGeocoder != oldResidential {
                     diagnostics?.record(type: "road_metadata_updated",
-                        details: "country=\(country) locality=\(locality) subLocality=\(pm.subLocality ?? "nil") inResidential=\(residential) isDivided=\(isDividedRoad) source=geocoder")
-                    lastLoggedResidential = residential
+                        details: "country=\(country) adminArea=\(adminArea) locality=\(locality) subLocality=\(subLocality) thoroughfare=\(thoroughfare) inResidential=\(fromGeocoder?.description ?? "nil") isDivided=\(isDividedRoad) source=geocoder")
+                    lastLoggedResidential = fromGeocoder
+                    hasLoggedFirstGeocoder = true
                 }
             }
         } catch {
@@ -118,18 +127,18 @@ final class RoadMetadataService: ObservableObject {
             self.roadMaxSpeed = result.maxSpeed
             self.osmIsInResidentialArea = result.isInResidentialArea
 
-            // Diagnostic logging when residential area or divided road changes
+            // Always log first Overpass result for full visibility
             let country = detectedCountryCode ?? "unknown"
             let locality = self.cachedSubLocality ?? "unknown"
-            if result.isDivided != oldDivided {
+            let subLocality = cachedSubLocality ?? "nil"
+            let thoroughfare = "nil"
+            let adminArea = "nil"
+            if !hasLoggedFirstOverpass || result.isDivided != oldDivided || result.isInResidentialArea != oldResidential {
                 diagnostics?.record(type: "road_metadata_updated",
-                    details: "country=\(country) locality=\(locality) subLocality=\(cachedSubLocality ?? "nil") inResidential=\(result.isInResidentialArea) isDivided=\(result.isDivided) source=overpass")
+                    details: "country=\(country) adminArea=\(adminArea) locality=\(locality) subLocality=\(subLocality) thoroughfare=\(thoroughfare) inResidential=\(result.isInResidentialArea) isDivided=\(result.isDivided) source=overpass")
                 lastLoggedDivided = result.isDivided
-            }
-            if result.isInResidentialArea != oldResidential {
-                diagnostics?.record(type: "road_metadata_updated",
-                    details: "country=\(country) locality=\(locality) subLocality=\(cachedSubLocality ?? "nil") inResidential=\(result.isInResidentialArea) isDivided=\(result.isDivided) source=overpass")
                 lastLoggedResidential = result.isInResidentialArea
+                hasLoggedFirstOverpass = true
             }
         } catch {
             // Offline-safe: silently ignore, keep last known values
@@ -137,7 +146,67 @@ final class RoadMetadataService: ObservableObject {
         }
     }
 
-    /// Evaluate residential/urban status from CLGeocoder subLocality (Apple's administrative name).
+    /// Evaluate residential/urban status from full CLPlacemark context (Apple's administrative names).
+    /// Returns: true = urban (phường/thị trấn/city), false = rural (xã), nil = unknown/unable to determine.
+    func evaluateResidentialFromPlacemark(_ pm: CLPlacemark) -> Bool? {
+        let countryCode = pm.isoCountryCode?.uppercased() ?? detectedCountryCode ?? "XX"
+
+        // Vietnam-specific logic: Apple Maps in Huế puts "Hue"/"Thuan Hoa" in locality,
+        // street names in thoroughfare, and subLocality may be nil
+        if countryCode == "VN" {
+            let sub = (pm.subLocality ?? "").lowercased()
+            let loc = (pm.locality ?? "").lowercased()
+            let thorough = (pm.thoroughfare ?? "").lowercased()
+            let name = (pm.name ?? "").lowercased()
+            let admin = (pm.administrativeArea ?? "").lowercased()
+
+            // Rural markers: "xã " prefix, " xa " infix, " xã" suffix, exact "xã"
+            // Check subLocality, locality, and name fields
+            let allFields = [sub, loc, name, admin]
+            for field in allFields {
+                if field.hasPrefix("xã ") || field.contains(" xa ") || field.hasSuffix(" xã") || field == "xã" {
+                    return false
+                }
+            }
+
+            // Urban markers: "phường", "phuong", "thị trấn", "thi tran", "quận", "quan",
+            // "thành phố", "tp.", "huế", "hue", "đà nẵng", "da nang", "hà nội", "hanoi",
+            // "hồ chí minh", "ho chi minh", "cần thơ", "hải phòng"
+            let urbanMarkers = ["phường", "phuong", "thị trấn", "thi tran", "quận", "quan",
+                                "thành phố", "tp.", "huế", "hue", "đà nẵng", "da nang",
+                                "hà nội", "hanoi", "hồ chí minh", "ho chi minh",
+                                "cần thơ", "can tho", "hải phòng", "hai phong"]
+            for field in allFields {
+                for marker in urbanMarkers {
+                    if field.contains(marker) {
+                        return true
+                    }
+                }
+            }
+
+            // Heuristic: non-empty thoroughfare (urban street name) that is NOT a national/provincial highway
+            // National highways: "QL", "quốc lộ", "cao tốc", "DT", "đt", "TL", "tỉnh lộ"
+            if !thorough.isEmpty {
+                let highwayMarkers = ["ql ", "quốc lộ", "cao tốc", "dt ", "đt ", "tl ", "tỉnh lộ"]
+                let isHighway = highwayMarkers.contains { thorough.contains($0) }
+                if !isHighway {
+                    return true
+                }
+            }
+
+            // If we have locality but no rural/urban markers, assume urban (city center)
+            if !loc.isEmpty {
+                return true
+            }
+
+            return nil
+        }
+
+        // Non-Vietnam: fallback to subLocality only
+        return evaluateResidentialFromSubLocality(pm.subLocality)
+    }
+
+    /// Evaluate residential/urban status from CLGeocoder subLocality only (legacy fallback).
     /// Returns: true = urban (phường/thị trấn), false = rural (xã), nil = unknown/unable to determine.
     func evaluateResidentialFromSubLocality(_ subLocality: String?) -> Bool? {
         guard let sub = subLocality else { return nil }
@@ -193,9 +262,11 @@ final class RoadMetadataService: ObservableObject {
         var foundResidentialArea = false
         var foundUrbanArea = false
         let isVN = detectedCountryCode == "VN"
-        // Initialize from CLGeocoder subLocality BEFORE loop so positive urban match
-        // is never overwritten if Overpass omits admin_level=8 polygon
-        var foundVietnamWardOrTownship = (isVN && evaluateResidentialFromSubLocality(cachedSubLocality) == true)
+        // Initialize from cached CLGeocoder full-placemark evaluation (never overwritten by Overpass).
+        // cachedUrbanFromGeocoder is set in queryRoadMetadata after successful geocoder call.
+        // Fallback to evaluating cachedSubLocality for backward compatibility with direct test calls.
+        let geocoderUrban = cachedUrbanFromGeocoder ?? evaluateResidentialFromSubLocality(cachedSubLocality)
+        var foundVietnamWardOrTownship = (isVN && geocoderUrban == true)
 
         // Priority: primary > secondary > tertiary > unclassified > residential > service > living_street
         let highwayPriority: [String: Int] = [
