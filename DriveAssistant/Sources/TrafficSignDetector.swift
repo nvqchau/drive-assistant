@@ -130,11 +130,7 @@ final class TrafficSignDetector: ObservableObject {
 
     private func setupOCRRequest() {
         let request = VNRecognizeTextRequest()
-#if targetEnvironment(simulator)
-        request.recognitionLevel = .fast
-#else
         request.recognitionLevel = .accurate
-#endif
         request.usesLanguageCorrection = false
         request.recognitionLanguages = ["vi-VN", "en-US"]
         request.minimumTextHeight = 0.02
@@ -442,6 +438,7 @@ final class TrafficSignDetector: ObservableObject {
         guard cropRect.width > 10, cropRect.height > 10 else { return nil }
 
         let croppedImage = ciImage.cropped(to: cropRect)
+            .transformed(by: CGAffineTransform(translationX: -cropRect.origin.x, y: -cropRect.origin.y))
 
         // Pass orientation directly to VNImageRequestHandler (not croppedImage.oriented)
         // so coordinates stay aligned for landscapeRight / down orientations
