@@ -14,6 +14,11 @@ final class RoadMetadataService: ObservableObject {
     @Published private(set) var lastQueryDate: Date?
     @Published var detectedCountryCode: String? = nil  // ISO country code from CLGeocoder
 
+    // Diagnostics for road metadata updates
+    private weak var diagnostics: DiagnosticsLogStore?
+    private var lastLoggedResidential: Bool? = nil
+    private var lastLoggedDivided: Bool? = nil
+
     // Throttling: max once per 20s or 150m travel
     private let minQueryInterval: TimeInterval = 20.0
     private let minDistanceMeters: Double = 150.0
@@ -32,6 +37,11 @@ final class RoadMetadataService: ObservableObject {
 
     // Cached subLocality from CLGeocoder (e.g., "Phường X", "Thị trấn Y", "Xã Z") for Vietnam admin boundary resolution
     var cachedSubLocality: String? = nil
+
+    /// Attach diagnostics store for road metadata update logging
+    func attachDiagnostics(_ diagnostics: DiagnosticsLogStore) {
+        self.diagnostics = diagnostics
+    }
 
     /// Call from LocationManager when location updates significantly.
     func maybeQueryRoadMetadata(for location: CLLocation) {
@@ -58,9 +68,18 @@ final class RoadMetadataService: ObservableObject {
                 self.cachedSubLocality = pm.subLocality
                 // Immediately evaluate residential status from CLGeocoder subLocality
                 // so osmIsInResidentialArea is set even if Overpass is slow/fails
+                let oldResidential = self.osmIsInResidentialArea
                 let fromGeocoder = evaluateResidentialFromSubLocality(pm.subLocality)
                 if fromGeocoder != nil {
                     self.osmIsInResidentialArea = fromGeocoder
+                }
+                // Diagnostic logging for positive CLGeocoder urban match
+                if fromGeocoder != oldResidential, let residential = fromGeocoder {
+                    let country = self.detectedCountryCode ?? "unknown"
+                    let locality = pm.locality ?? "unknown"
+                    diagnostics?.record(type: "road_metadata_updated",
+                        details: "country=\(country) locality=\(locality) subLocality=\(pm.subLocality ?? "nil") inResidential=\(residential) isDivided=\(isDividedRoad) source=geocoder")
+                    lastLoggedResidential = residential
                 }
             }
         } catch {
@@ -93,9 +112,25 @@ final class RoadMetadataService: ObservableObject {
         do {
             let (data, _) = try await session.data(for: request)
             let result = try parseOverpassResponse(data)
+            let oldDivided = self.isDividedRoad
+            let oldResidential = self.osmIsInResidentialArea
             self.isDividedRoad = result.isDivided
             self.roadMaxSpeed = result.maxSpeed
             self.osmIsInResidentialArea = result.isInResidentialArea
+
+            // Diagnostic logging when residential area or divided road changes
+            let country = detectedCountryCode ?? "unknown"
+            let locality = self.cachedSubLocality ?? "unknown"
+            if result.isDivided != oldDivided {
+                diagnostics?.record(type: "road_metadata_updated",
+                    details: "country=\(country) locality=\(locality) subLocality=\(cachedSubLocality ?? "nil") inResidential=\(result.isInResidentialArea) isDivided=\(result.isDivided) source=overpass")
+                lastLoggedDivided = result.isDivided
+            }
+            if result.isInResidentialArea != oldResidential {
+                diagnostics?.record(type: "road_metadata_updated",
+                    details: "country=\(country) locality=\(locality) subLocality=\(cachedSubLocality ?? "nil") inResidential=\(result.isInResidentialArea) isDivided=\(result.isDivided) source=overpass")
+                lastLoggedResidential = result.isInResidentialArea
+            }
         } catch {
             // Offline-safe: silently ignore, keep last known values
             print("RoadMetadataService: Overpass query failed: \(error)")
@@ -107,17 +142,36 @@ final class RoadMetadataService: ObservableObject {
     func evaluateResidentialFromSubLocality(_ subLocality: String?) -> Bool? {
         guard let sub = subLocality else { return nil }
         let lower = sub.lowercased()
-        // Urban: contains "phường" or "thị trấn"
+        let countryCode = detectedCountryCode ?? "XX"
+
+        // Vietnam-specific logic: CLGeocoder often returns subLocality WITHOUT "Phường" prefix
+        // e.g., "Thuan Hoa", "Thuận Hóa", "Phu Hoi" instead of "Phường Thuận Hóa"
+        // Rural communes consistently include "Xã" or "Xa " prefix/suffix.
+        if countryCode == "VN" {
+            // Rural markers: "xã " prefix, " xa " infix, " xã" suffix, exact "xã"
+            if lower.hasPrefix("xã ") || lower.contains(" xa ") || lower.hasSuffix(" xã") || lower == "xã" {
+                return false
+            }
+            // Urban markers: "phường", "phuong", "thị trấn", "thi tran"
+            if lower.contains("phường") || lower.contains("phuong") || lower.contains("thị trấn") || lower.contains("thi tran") {
+                return true
+            }
+            // Heuristic: non-empty subLocality inside a city (locality non-empty) without rural marker -> urban
+            // Note: caller must ensure locality context is available; we assume urban if not rural
+            if !lower.isEmpty {
+                return true
+            }
+            return nil
+        }
+
+        // Non-Vietnam: original logic
         if lower.contains("phường") || lower.contains("thị trấn") {
             return true
         }
-        // Rural: contains "xã " (with space) or is exactly "xã" or ends with " xã"
-        // Note: "xã" alone could be part of a ward name like "xã hội" but that's rare;
-        // rural communes consistently carry "Xã" as prefix or standalone.
         if lower.hasPrefix("xã ") || lower == "xã" || lower.hasSuffix(" xã") {
             return false
         }
-        return nil  // ambiguous (e.g., some towns without clear marker)
+        return nil
     }
 
     /// Parse Overpass JSON response for oneway, dual_carriageway, lanes, maxspeed tags,

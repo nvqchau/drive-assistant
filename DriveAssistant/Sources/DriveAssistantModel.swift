@@ -274,6 +274,7 @@ final class DriveAssistantModel: ObservableObject {
         laneDetector.setROIOffset(laneCenterOffsetX)
         laneDetector.setMinSpeedForDepartureAlert(ldwsMinSpeedKmh)
         laneDetector.attachDiagnostics(diagnostics)
+        location.roadMetadata.attachDiagnostics(diagnostics)
 
         // Forward camera, location & motion changes to trigger reactive theme & calibration updates
         camera.objectWillChange
