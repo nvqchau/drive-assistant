@@ -49,21 +49,28 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let location = locations.last else { return }
         horizontalAccuracy = location.horizontalAccuracy
-        guard location.speed >= 0,
-              location.horizontalAccuracy >= 0,
-              location.horizontalAccuracy <= 50 else {
-            return
+
+        // Accept any valid coordinate fix for location-based services (night, weather, OSM)
+        // iOS reports speed < 0 when stationary indoors; only gate speedKMPH on it
+        let isValidCoordinate = location.horizontalAccuracy >= 0 && location.horizontalAccuracy <= 100
+        if isValidCoordinate {
+            lastValidLocation = location
+            startStallTimer()
+            computeIsAstronomicalNight(for: location)
+            weatherService.update(for: location) { [weak self] condition in
+                self?.weatherRoadCondition = condition
+            }
+            // Query OSM road metadata (throttled) - call on MainActor
+            Task { @MainActor in
+                roadMetadata.maybeQueryRoadMetadata(for: location)
+            }
         }
-        speedKMPH = location.speed * 3.6
-        lastValidLocation = location
-        startStallTimer()
-        computeIsAstronomicalNight(for: location)
-        weatherService.update(for: location) { [weak self] condition in
-            self?.weatherRoadCondition = condition
-        }
-        // Query OSM road metadata (throttled) - call on MainActor
-        Task { @MainActor in
-            roadMetadata.maybeQueryRoadMetadata(for: location)
+
+        // Speed only valid when location.speed >= 0
+        if location.speed >= 0 {
+            speedKMPH = location.speed * 3.6
+        } else {
+            speedKMPH = 0
         }
     }
 
