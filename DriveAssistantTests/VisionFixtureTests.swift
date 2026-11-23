@@ -345,8 +345,12 @@ final class VisionFixtureTests: XCTestCase {
         defer { CVPixelBufferUnlockBaseAddress(buffer, []) }
 
         let context = CIContext()
-        // Render ciImage into the full buffer bounds - CIContext scales to fit bounds
-        context.render(ciImage, to: buffer, bounds: CGRect(x: 0, y: 0, width: width, height: height), colorSpace: CGColorSpaceCreateDeviceRGB())
+        // Scale ciImage to fill the target CVPixelBuffer (1280x720) so right-edge
+        // signs (e.g., 30 km/h in night_rain_urban.jpg at x=0.814) are not clipped
+        let scaleX = CGFloat(width) / ciImage.extent.width
+        let scaleY = CGFloat(height) / ciImage.extent.height
+        let scaledImage = ciImage.transformed(by: CGAffineTransform(scaleX: scaleX, y: scaleY))
+        context.render(scaledImage, to: buffer, bounds: CGRect(x: 0, y: 0, width: width, height: height), colorSpace: CGColorSpaceCreateDeviceRGB())
 
         return buffer
     }
