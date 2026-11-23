@@ -130,7 +130,12 @@ final class TrafficSignDetector: ObservableObject {
 
     private func setupOCRRequest() {
         let request = VNRecognizeTextRequest()
+        // Use .accurate on device for low-light/night reliability; .fast on Simulator (CPU-only) for test speed
+        #if targetEnvironment(simulator)
         request.recognitionLevel = .fast
+        #else
+        request.recognitionLevel = .accurate
+        #endif
         request.usesLanguageCorrection = false
         request.recognitionLanguages = ["vi-VN", "en-US"]
         request.minimumTextHeight = 0.02
