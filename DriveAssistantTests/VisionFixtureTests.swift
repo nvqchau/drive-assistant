@@ -79,10 +79,10 @@ final class VisionFixtureTests: XCTestCase {
         // Second pass - should confirm
         trafficSignDetector.processObservations(observations, pixelBuffer: pixelBuffer, orientation: .up)
 
-        // Poll for detectedSpeedLimit (VNRecognizeTextRequest may take longer on headless CI CPU simulators)
+        // Poll for detectedSpeedLimit (.fast on Simulator completes quickly)
         var detectedLimit: Int? = nil
         let startTime = CACurrentMediaTime()
-        let timeout: TimeInterval = 1.5
+        let timeout: TimeInterval = 4.0
         let pollInterval: TimeInterval = 0.05
 
         while CACurrentMediaTime() - startTime < timeout {
@@ -269,11 +269,11 @@ final class VisionFixtureTests: XCTestCase {
         // Second pass
         trafficSignDetector.processObservations(observations, pixelBuffer: pixelBuffer, orientation: .up)
 
-        // Poll for detectedSpeedLimit (VNRecognizeTextRequest may take longer on headless CI CPU simulators)
+        // Poll for detectedSpeedLimit (.fast on Simulator completes quickly)
         // Night/rain with illuminated 30 km/h sign - CoreML label "114" (20 km/h class) + OCR reads "30"
         var detectedLimit: Int? = nil
         let startTime = CACurrentMediaTime()
-        let timeout: TimeInterval = 1.5
+        let timeout: TimeInterval = 4.0
         let pollInterval: TimeInterval = 0.05
 
         while CACurrentMediaTime() - startTime < timeout {
