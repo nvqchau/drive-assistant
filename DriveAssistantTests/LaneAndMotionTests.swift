@@ -371,3 +371,93 @@ extension MotionManager {
         deltaPitch = 0
     }
 }
+
+// MARK: - Single-Line Lane Synthesis Tests
+
+extension LaneAndMotionTests {
+    func testSingleLineSynthesis_SynthesizeRightLaneFromLeft_PerspectiveWidth() {
+        let detector = LaneDetector()
+
+        // Create left lane points spanning ROI top (0.38) to bottom (0.95)
+        // Left lane at x=0.26 (top) to x=0.14 (bottom) - typical left edge
+        let leftPoints = [
+            CGPoint(x: 0.26, y: 0.38), // top
+            CGPoint(x: 0.22, y: 0.50),
+            CGPoint(x: 0.18, y: 0.65),
+            CGPoint(x: 0.16, y: 0.80),
+            CGPoint(x: 0.14, y: 0.95)  // bottom
+        ]
+
+        let synthesized = detector.synthesizeRightLaneFromLeft(leftPoints)
+
+        // At top (y=0.38): w = 0.14 -> synthesized x = 0.26 + 0.14 = 0.40
+        XCTAssertEqual(synthesized[0].x, 0.40, accuracy: 0.001, "Top y=0.38: w=0.14 -> x=0.40")
+        XCTAssertEqual(synthesized[0].y, 0.38, accuracy: 0.001)
+
+        // At bottom (y=0.95): w = 0.44 -> synthesized x = 0.14 + 0.44 = 0.58
+        XCTAssertEqual(synthesized[4].x, 0.58, accuracy: 0.001, "Bottom y=0.95: w=0.44 -> x=0.58")
+        XCTAssertEqual(synthesized[4].y, 0.95, accuracy: 0.001)
+
+        // All points clamped within [0.02, 0.98]
+        for pt in synthesized {
+            XCTAssertGreaterThanOrEqual(pt.x, 0.02, "x >= 0.02")
+            XCTAssertLessThanOrEqual(pt.x, 0.98, "x <= 0.98")
+            XCTAssertGreaterThanOrEqual(pt.y, 0.38, "y >= 0.38")
+            XCTAssertLessThanOrEqual(pt.y, 0.95, "y <= 0.95")
+        }
+    }
+
+    func testSingleLineSynthesis_SynthesizeLeftLaneFromRight_PerspectiveWidth() {
+        let detector = LaneDetector()
+
+        // Create right lane points spanning ROI top (0.38) to bottom (0.95)
+        // Right lane at x=0.40 (top) to x=0.58 (bottom) - typical right edge
+        let rightPoints = [
+            CGPoint(x: 0.40, y: 0.38), // top
+            CGPoint(x: 0.44, y: 0.50),
+            CGPoint(x: 0.48, y: 0.65),
+            CGPoint(x: 0.52, y: 0.80),
+            CGPoint(x: 0.58, y: 0.95)  // bottom
+        ]
+
+        let synthesized = detector.synthesizeLeftLaneFromRight(rightPoints)
+
+        // At top (y=0.38): w = 0.14 -> synthesized x = 0.40 - 0.14 = 0.26
+        XCTAssertEqual(synthesized[0].x, 0.26, accuracy: 0.001, "Top y=0.38: w=0.14 -> x=0.26")
+        XCTAssertEqual(synthesized[0].y, 0.38, accuracy: 0.001)
+
+        // At bottom (y=0.95): w = 0.44 -> synthesized x = 0.58 - 0.44 = 0.14
+        XCTAssertEqual(synthesized[4].x, 0.14, accuracy: 0.001, "Bottom y=0.95: w=0.44 -> x=0.14")
+        XCTAssertEqual(synthesized[4].y, 0.95, accuracy: 0.001)
+
+        // All points clamped within [0.02, 0.98]
+        for pt in synthesized {
+            XCTAssertGreaterThanOrEqual(pt.x, 0.02, "x >= 0.02")
+            XCTAssertLessThanOrEqual(pt.x, 0.98, "x <= 0.98")
+            XCTAssertGreaterThanOrEqual(pt.y, 0.38, "y >= 0.38")
+            XCTAssertLessThanOrEqual(pt.y, 0.95, "y <= 0.95")
+        }
+    }
+
+    func testSingleLineSynthesis_ClampsAtBounds() {
+        let detector = LaneDetector()
+
+        // Left lane very close to right edge - synthesis should clamp at 0.98
+        let leftPointsNearRight = [
+            CGPoint(x: 0.90, y: 0.38),
+            CGPoint(x: 0.90, y: 0.95)
+        ]
+        let synthesizedRight = detector.synthesizeRightLaneFromLeft(leftPointsNearRight)
+        XCTAssertEqual(synthesizedRight[0].x, 0.98, accuracy: 0.001, "Clamped at 0.98 max")
+        XCTAssertEqual(synthesizedRight[1].x, 0.98, accuracy: 0.001, "Clamped at 0.98 max")
+
+        // Right lane very close to left edge - synthesis should clamp at 0.02
+        let rightPointsNearLeft = [
+            CGPoint(x: 0.10, y: 0.38),
+            CGPoint(x: 0.10, y: 0.95)
+        ]
+        let synthesizedLeft = detector.synthesizeLeftLaneFromRight(rightPointsNearLeft)
+        XCTAssertEqual(synthesizedLeft[0].x, 0.02, accuracy: 0.001, "Clamped at 0.02 min")
+        XCTAssertEqual(synthesizedLeft[1].x, 0.02, accuracy: 0.001, "Clamped at 0.02 min")
+    }
+}

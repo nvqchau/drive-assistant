@@ -410,8 +410,8 @@ final class DriveAssistantModel: ObservableObject {
                 } else {
                     // Manual clear (tap on badge), DP.134, or DP.135 — ALWAYS revert to TT38 statutory limit
                     // Preserve isInResidentialArea (only R.421 or GPS/OSM leaving urban area clears it)
+                    // Do NOT set hasReceivedCameraSignOverride = true — OSM roadMaxSpeed fallback must remain active
                     self?.isCurrentLimitStatutory = true
-                    self?.hasReceivedCameraSignOverride = true
                     self?.applyTT38StatutoryLimit()
                 }
                 self?.updateOverspeedState()
@@ -566,6 +566,9 @@ final class DriveAssistantModel: ObservableObject {
         if showHorizonGuide {
             motion.start()
         }
+
+        // Initialize default TT38 speed limit on startup so badge shows 50 km/h immediately
+        applyTT38StatutoryLimit()
     }
 
     private func applySpeedRateLimit(_ newSpeedKMPH: Double) {

@@ -169,7 +169,7 @@ final class LaneDetector: ObservableObject {
             self.isSpeedGated = speedKMPH < minSpeed
 
             // Lane-mode transition logging (throttled to 5s)
-            let dynamicMode = leftConf > 0.5 && rightConf > 0.5
+            let dynamicMode = finalLeftConf > 0.5 && finalRightConf > 0.5
             if dynamicMode != self.lastDynamicMode {
                 let now = CACurrentMediaTime()
                 if now - self.lastModeChangeTime >= 5.0 {
@@ -621,7 +621,7 @@ final class LaneDetector: ObservableObject {
     /// Perspective lane width: w(y) = 0.14 + 0.30 * ((y - 0.38) / (0.95 - 0.38))
     /// At top (roiTopY=0.38): w = 0.14 (narrow)
     /// At bottom (roiBottomY=0.95): w = 0.44 (wide)
-    private func laneWidthAtY(_ y: CGFloat) -> CGFloat {
+    func laneWidthAtY(_ y: CGFloat) -> CGFloat {
         let t = (y - roiTopY) / (roiBottomY - roiTopY)
         let clampedT = max(0, min(1, t))
         return 0.14 + 0.30 * clampedT
@@ -629,7 +629,7 @@ final class LaneDetector: ObservableObject {
 
     /// Synthesize right lane points from left lane by adding perspective width w(y) at each y
     /// Clamped to <= 0.98 to stay within image bounds
-    private func synthesizeRightLaneFromLeft(_ leftPoints: [CGPoint]) -> [CGPoint] {
+    func synthesizeRightLaneFromLeft(_ leftPoints: [CGPoint]) -> [CGPoint] {
         return leftPoints.map { pt in
             let w = laneWidthAtY(pt.y)
             let synthX = min(0.98, pt.x + w)
@@ -639,7 +639,7 @@ final class LaneDetector: ObservableObject {
 
     /// Synthesize left lane points from right lane by subtracting perspective width w(y) at each y
     /// Clamped to >= 0.02 to stay within image bounds
-    private func synthesizeLeftLaneFromRight(_ rightPoints: [CGPoint]) -> [CGPoint] {
+    func synthesizeLeftLaneFromRight(_ rightPoints: [CGPoint]) -> [CGPoint] {
         return rightPoints.map { pt in
             let w = laneWidthAtY(pt.y)
             let synthX = max(0.02, pt.x - w)
