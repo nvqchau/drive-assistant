@@ -215,7 +215,7 @@ final class LaneDetector: ObservableObject {
             "inputThreshold": 0.38
         ])
 
-        let combined = whiteMask.applyingFilter("CISourceOverCompositing", parameters: [
+        let combined = whiteMask.applyingFilter("CIMaximumCompositing", parameters: [
             kCIInputBackgroundImageKey: yellowMask
         ])
 
@@ -292,12 +292,13 @@ final class LaneDetector: ObservableObject {
             let width = maxX - minX
             let height = maxY - minY
             // width and height are normalized [0.0...1.0], so use epsilon not 1.0
-            let aspectRatio = width / max(height, 0.0001)
 
-            guard aspectRatio > 1.5 || (1/aspectRatio) > 1.5 else { continue }
+            // Require minimum line length (max dimension >= 0.04) instead of aspectRatio
+            // Perspective lane markings at ~45° have nearly square bbox (aspectRatio ~0.7–1.4)
+            guard max(width, height) >= 0.04 else { continue }
 
             let area = width * height
-            guard area > 0.0001 && area < 0.15 else { continue }
+            guard area > 0.0001 && area < 0.20 else { continue }
 
             let contourCenterX = (minX + maxX) / 2
             if contourCenterX < normalizedRoiCenterX {
