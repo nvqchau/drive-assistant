@@ -55,17 +55,18 @@ private struct VietnamAdvisorySign: View {
                     .frame(width: 34, height: 3.5)
                     .rotationEffect(.degrees(-45))
             }
-        case "residential_area":  // R.420 — Khu dân cư
+        case "residential_area":  // R.420 — Khu dân cư (authentic vertical blue rectangle 34x42)
             ZStack {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color.blue)
-                    .frame(width: size, height: size)
-                RoundedRectangle(cornerRadius: 6)
+                // Outer blue rectangle with rounded corners (34 x 42)
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(Color(red: 0.0, green: 0.35, blue: 0.85))  // Vietnam traffic sign blue
+                    .frame(width: 34, height: 42)
+                // White inner border (inset by 2pt on each side = 30 x 38)
+                RoundedRectangle(cornerRadius: 4)
                     .stroke(Color.white, lineWidth: 2)
-                    .frame(width: size - 4, height: size - 4)
-                Image(systemName: "building.2.fill")
-                    .font(.system(size: size * 0.5, weight: .bold))
-                    .foregroundColor(.white)
+                    .frame(width: 30, height: 38)
+                // Crisp white city skyline / pitched-roof house silhouette
+                VietnamResidentialSilhouette()
             }
         default:
             Circle()
@@ -77,6 +78,66 @@ private struct VietnamAdvisorySign: View {
                         .foregroundColor(.white)
                 )
         }
+    }
+}
+
+// Authentic Vietnam R.420 residential area sign silhouette — city skyline / pitched-roof houses
+private struct VietnamResidentialSilhouette: View {
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width   // 30
+            let h = geo.size.height  // 38
+            // Draw a row of simple house silhouettes with pitched roofs
+            Path { path in
+                let houseCount = 3
+                let houseWidth = w / CGFloat(houseCount)
+                let baseY = h * 0.72  // Houses sit on bottom portion
+                let roofHeight = h * 0.35
+
+                for i in 0..<houseCount {
+                    let xStart = CGFloat(i) * houseWidth
+                    let xMid = xStart + houseWidth * 0.5
+                    let xEnd = xStart + houseWidth
+
+                    // House body (rectangle)
+                    let bodyTopY = baseY
+                    let bodyBottomY = h * 0.95
+                    let bodyLeft = xStart + houseWidth * 0.15
+                    let bodyRight = xEnd - houseWidth * 0.15
+
+                    // Roof peak
+                    let peakY = baseY - roofHeight
+
+                    // Draw house: roof (triangle) + body (rect)
+                    path.move(to: CGPoint(x: bodyLeft, y: bodyTopY))
+                    path.addLine(to: CGPoint(x: xMid, y: peakY))
+                    path.addLine(to: CGPoint(x: bodyRight, y: bodyTopY))
+                    path.addLine(to: CGPoint(x: bodyRight, y: bodyBottomY))
+                    path.addLine(to: CGPoint(x: bodyLeft, y: bodyBottomY))
+                    path.closeSubpath()
+                }
+            }
+            .fill(Color.white)
+            // Add small window dots for detail
+            Path { path in
+                let houseCount = 3
+                let houseWidth = w / CGFloat(houseCount)
+                let baseY = h * 0.72
+                let windowY = baseY + h * 0.12
+
+                for i in 0..<houseCount {
+                    let xStart = CGFloat(i) * houseWidth
+                    let xMid = xStart + houseWidth * 0.5
+
+                    // Single centered window per house
+                    let windowSize: CGFloat = 2.5
+                    let rect = CGRect(x: xMid - windowSize/2, y: windowY - windowSize/2, width: windowSize, height: windowSize)
+                    path.addRect(rect)
+                }
+            }
+            .fill(Color(red: 0.0, green: 0.2, blue: 0.6))  // Dark blue windows
+        }
+        .frame(width: 30, height: 38)
     }
 }
 
@@ -279,8 +340,7 @@ struct ContentView: View {
                                         // TT38 Statutory Road-Type Pill (shown when residential area state is known and a limit is displayed)
                                         if let inResidential = model.isInResidentialArea,
                                            model.detectedSpeedLimit != nil,
-                                           !model.showSpeedLimitCleared,
-                                           !model.showEndOfAllRestrictions {
+                                           !model.showSpeedLimitCleared {
                                             // Show pill whenever we're in/out of residential area with a limit displayed
                                             // The limit may be statutory (TT38) or explicit P.127; pill reflects current divided state
                                             Button(action: { model.location.roadMetadata.toggleDividedRoad() }) {
@@ -297,32 +357,7 @@ struct ContentView: View {
                                             .transition(.opacity.combined(with: .scale))
                                         }
                                     }
-                                    // DP.135 (End of All Restrictions) indicator
-                                    if model.showEndOfAllRestrictions {
-                                        VStack(spacing: 2) {
-                                            ZStack {
-                                                Circle()
-                                                    .fill(Color.white)
-                                                    .frame(width: 38, height: 38)
-                                                Circle()
-                                                    .stroke(Color.gray, lineWidth: 4)
-                                                    .frame(width: 38, height: 38)
-                                                Image(systemName: "slash.circle.fill")
-                                                    .font(.system(size: 18, weight: .bold))
-                                                    .foregroundColor(.gray)
-                                            }
-                                            .frame(width: 38, height: 38)
-                                            .shadow(color: Color.black.opacity(0.3), radius: 4)
-                                            Text(model.usesVietnamese ? "Hết tất cả" : "All ended")
-                                                .font(.system(size: 8, weight: .bold, design: .rounded))
-                                                .foregroundColor(.gray)
-                                                .padding(.horizontal, 4)
-                                                .padding(.vertical, 1)
-                                                .background(Color.black.opacity(0.5), in: Capsule())
-                                        }
-                                        .transition(.opacity.combined(with: .scale))
-                                    }
-                                    // Secondary advisory sign (localized from canonical keys) — authentic Vietnam sign graphics
+                                                                        // Secondary advisory sign (localized from canonical keys) — authentic Vietnam sign graphics
                                     // Residential area badge ("Khu dân cư") stays visible while isInResidentialArea==true; others auto-hide after 5.0s
                                     if let advisoryKey = model.activeAdvisorySignText ?? (model.isInResidentialArea == true ? "residential_area" : nil) {
                                         let isProhibitory = advisoryKey == "no_entry" || advisoryKey == "no_cars" || advisoryKey == "no_overtaking"
@@ -344,12 +379,15 @@ struct ContentView: View {
                                         VStack(spacing: 2) {
                                             VietnamAdvisorySign(advisoryKey: advisoryKey)
                                                 .shadow(color: Color.black.opacity(0.3), radius: 4)
-                                            Text(advisoryText)
-                                                .font(.system(size: 8, weight: .bold, design: .rounded))
-                                                .foregroundColor(badgeColor)
-                                                .padding(.horizontal, 4)
-                                                .padding(.vertical, 1)
-                                                .background(Color.black.opacity(0.5), in: Capsule())
+                                            // Hide caption for residential_area (R.420) — sign is self-explanatory
+                                            if advisoryKey != "residential_area" {
+                                                Text(advisoryText)
+                                                    .font(.system(size: 8, weight: .bold, design: .rounded))
+                                                    .foregroundColor(badgeColor)
+                                                    .padding(.horizontal, 4)
+                                                    .padding(.vertical, 1)
+                                                    .background(Color.black.opacity(0.5), in: Capsule())
+                                            }
                                         }
                                         .transition(.opacity.combined(with: .scale))
                                     }
