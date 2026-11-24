@@ -462,14 +462,6 @@ struct ContentView: View {
                     }
 
                     Spacer()
-                    // Top-center timestamp
-                    Text(timestampString)
-                        .font(.system(size: 11, weight: .regular, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.8))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(Color.black.opacity(0.35), in: Capsule())
-                    Spacer()
 
                     // RIGHT: Consolidated status pill
                     RuleWeatherPill(model: model, nightDim: model.isNightThemeActive && !model.hudMirrorMode)
@@ -482,27 +474,37 @@ struct ContentView: View {
                 HStack(alignment: .bottom) {
                     DistanceCard(model: model, color: activeStateColor, nightDim: model.isNightThemeActive && !model.hudMirrorMode)
                     Spacer()
-                    HStack(spacing: 10) {
-                        Button { takeScreenshot() } label: {
-                            Image(systemName: "camera.fill")
-                                .foregroundColor(.white)
-                                .font(.system(size: 20, weight: .semibold))
-                                .frame(width: 50, height: 50)
-                                .glassCircle(enabled: model.glassHUD)
-                        }
-                        Button { model.ecoBlackHUD.toggle() } label: {
-                            Image(systemName: model.ecoBlackHUD ? "leaf.fill" : "flame.fill")
-                                .foregroundColor(model.ecoBlackHUD ? .green : .white)
-                                .font(.system(size: 20, weight: .semibold))
-                                .frame(width: 50, height: 50)
-                                .glassCircle(enabled: model.glassHUD)
-                        }
-                        Button { model.isSettingsPresented = true } label: {
-                            Image(systemName: "gearshape.fill")
-                                .foregroundColor(.white)
-                                .font(.system(size: 20, weight: .semibold))
-                                .frame(width: 50, height: 50)
-                                .glassCircle(enabled: model.glassHUD)
+                    VStack(alignment: .trailing, spacing: 8) {
+                        // Live timestamp capsule
+                        Text(timestampString)
+                            .font(.system(size: 11, weight: .regular, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.8))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(Color.black.opacity(0.35), in: Capsule())
+                        // 3 circular action buttons
+                        HStack(spacing: 10) {
+                            Button { takeScreenshot() } label: {
+                                Image(systemName: "camera.fill")
+                                    .foregroundColor(.white)
+                                    .font(.system(size: 20, weight: .semibold))
+                                    .frame(width: 50, height: 50)
+                                    .glassCircle(enabled: model.glassHUD)
+                            }
+                            Button { model.ecoBlackHUD.toggle() } label: {
+                                Image(systemName: model.ecoBlackHUD ? "leaf.fill" : "flame.fill")
+                                    .foregroundColor(model.ecoBlackHUD ? .green : .white)
+                                    .font(.system(size: 20, weight: .semibold))
+                                    .frame(width: 50, height: 50)
+                                    .glassCircle(enabled: model.glassHUD)
+                            }
+                            Button { model.isSettingsPresented = true } label: {
+                                Image(systemName: "gearshape.fill")
+                                    .foregroundColor(.white)
+                                    .font(.system(size: 20, weight: .semibold))
+                                    .frame(width: 50, height: 50)
+                                    .glassCircle(enabled: model.glassHUD)
+                            }
                         }
                     }
                 }
