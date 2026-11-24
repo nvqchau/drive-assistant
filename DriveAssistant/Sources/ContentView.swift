@@ -598,25 +598,15 @@ private struct RuleWeatherPill: View {
 
             Divider().frame(height: 20).overlay(Color.white.opacity(nightDim ? 0.27 : 0.35))
 
-            // R.420 sign when in residential area
-            if model.isInResidentialArea == true {
-                VietnamAdvisorySign(advisoryKey: "residential_area")
-                    .frame(width: 24, height: 18)
-                    .padding(.horizontal, 4)
-                Divider().frame(height: 20).overlay(Color.white.opacity(nightDim ? 0.27 : 0.35))
-            }
-
             // 2-line TT38 stack
             VStack(alignment: .leading, spacing: 0) {
                 // Line 1: TT38•MIN Xm
                 Text(model.distanceRuleMode == .vnLaw ? "TT38 • MIN \(String(format: "%.0f", model.displayMinimumDistance))m" : "MIN \(String(format: "%.0f", model.displayMinimumDistance))m")
                     .font(.system(size: 12, weight: .bold, design: .rounded))
                     .foregroundColor(.white.opacity(nightDim ? 0.78 : 1.0))
-                // Line 2: Tappable "2 chiều•50/80" toggle
+                // Line 2: Tappable context-aware road-type toggle
                 Button(action: { model.location.roadMetadata.toggleDividedRoad() }) {
-                    Text(model.usesVietnamese
-                        ? (model.isDividedRoad ? "Đôi • 60/90" : "2 chiều • 50/80")
-                        : (model.isDividedRoad ? "Divided • 60/90" : "2-Way • 50/80"))
+                    Text(line2Label)
                         .font(.system(size: 10, weight: .semibold, design: .rounded))
                         .foregroundColor(.white.opacity(nightDim ? 0.65 : 0.85))
                         .padding(.horizontal, 6)
@@ -659,6 +649,26 @@ private struct RuleWeatherPill: View {
         }
         .padding(.vertical, 7)
         .glassCapsule(enabled: model.glassHUD, nightDim: nightDim)
+    }
+
+    private var line2Label: String {
+        let isDivided = model.isDividedRoad
+        let detectedLimit = model.detectedSpeedLimit ?? 0
+        let inResidential = model.isInResidentialArea == true
+
+        if inResidential {
+            return model.usesVietnamese
+                ? (isDivided ? "Khu dân cư • Đôi • 60/90" : "Khu dân cư • 2 chiều • 50/80")
+                : (isDivided ? "Urban • Divided • 60/90" : "Urban • 2-Way • 50/80")
+        } else if detectedLimit >= 100 {
+            return model.usesVietnamese
+                ? (isDivided ? "Cao tốc • Đôi • 60/90" : "Cao tốc • 2 chiều • 50/80")
+                : (isDivided ? "Expressway • Divided • 60/90" : "Expressway • 2-Way • 50/80")
+        } else {
+            return model.usesVietnamese
+                ? (isDivided ? "Đôi • 60/90" : "2 chiều • 50/80")
+                : (isDivided ? "Divided • 60/90" : "2-Way • 50/80")
+        }
     }
 
     private var ldwsStatusColor: Color {
