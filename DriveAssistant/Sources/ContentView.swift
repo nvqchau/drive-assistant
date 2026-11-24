@@ -164,7 +164,7 @@ private struct TwoHousesView: View {
         let houseRegionWidth = houseRegionRight - houseRegionLeft
         let houseWidth = houseRegionWidth / 2.0
 
-        HStack(spacing: 0) {
+        ZStack {
             PitchedRoofHouseView(
                 xStart: houseRegionLeft,
                 houseWidth: houseWidth,
@@ -405,71 +405,36 @@ struct ContentView: View {
         GeometryReader { proxy in
             VStack {
                 HStack(alignment: .top) {
+                    // LEFT: Circular speedometer + SpeedLimitSignBadge (44x44) + transient prohibitory advisories
                     VStack(alignment: .leading, spacing: 8) {
-                        HStack(spacing: 8) {
+                        HStack(spacing: 10) {
+                            // Circular speedometer (64x64)
                             GPSSpeedPill(speed: model.speedKMPH, accuracy: model.gpsAccuracy, glassEnabled: model.glassHUD, nightDim: model.isNightThemeActive && !model.hudMirrorMode, isOverspeeding: model.isOverspeeding)
+
                             if model.enableSpeedSignRecognition {
                                 HStack(spacing: 6) {
-                                    VStack(spacing: 2) {
-                                        SpeedLimitSignBadge(
-                                            limit: model.detectedSpeedLimit,
-                                            isOverspeeding: model.isOverspeeding,
-                                            onTap: { model.camera.trafficSignDetector.clearDetectedLimit() }
-                                        )
-                                        // Speed limit cleared micro-badge (DP.134 / DP.135)
-                                        if model.showSpeedLimitCleared {
-                                            Text(model.usesVietnamese ? "Hết hạn chế" : "Limit ended")
-                                                .font(.system(size: 10, weight: .bold, design: .rounded))
-                                                .foregroundColor(Color(red: 0.0, green: 0.902, blue: 0.463))  // Emerald
-                                                .padding(.horizontal, 6)
-                                                .padding(.vertical, 2)
-                                                .background(Color.black.opacity(0.6), in: Capsule())
-                                                .transition(.opacity.combined(with: .move(edge: .top)))
-                                        }
-                                        // TT38 Statutory Road-Type Pill (shown when residential area state is known and a limit is displayed)
-                                        if let inResidential = model.isInResidentialArea,
-                                           model.detectedSpeedLimit != nil,
-                                           !model.showSpeedLimitCleared {
-                                            // Show pill whenever we're in/out of residential area with a limit displayed
-                                            // The limit may be statutory (TT38) or explicit P.127; pill reflects current divided state
-                                            Button(action: { model.location.roadMetadata.toggleDividedRoad() }) {
-                                                Text(model.usesVietnamese
-                                                    ? (model.isDividedRoad ? "Đôi • 60/90" : "2 chiều • 50/80")
-                                                    : (model.isDividedRoad ? "Divided • 60/90" : "2-Way • 50/80"))
-                                                    .font(.system(size: 9, weight: .bold, design: .rounded))
-                                                    .foregroundColor(.white)
-                                                    .padding(.horizontal, 8)
-                                                    .padding(.vertical, 2)
-                                                    .background(Color.blue.opacity(0.7), in: Capsule())
-                                            }
-                                            .buttonStyle(.plain)
-                                            .transition(.opacity.combined(with: .scale))
-                                        }
-                                    }
-                                                                        // Secondary advisory sign (localized from canonical keys) — authentic Vietnam sign graphics
-                                    // Residential area badge ("Khu dân cư") stays visible while isInResidentialArea==true; others auto-hide after 5.0s
-                                    if let advisoryKey = model.activeAdvisorySignText ?? (model.isInResidentialArea == true ? "residential_area" : nil) {
+                                    // Speed limit sign badge (44x44)
+                                    SpeedLimitSignBadge(
+                                        limit: model.detectedSpeedLimit,
+                                        isOverspeeding: model.isOverspeeding,
+                                        onTap: { model.camera.trafficSignDetector.clearDetectedLimit() }
+                                    )
+                                    // Transient prohibitory advisory signs only (no_entry, no_cars, no_overtaking)
+                                    if let advisoryKey = model.activeAdvisorySignText {
                                         let isProhibitory = advisoryKey == "no_entry" || advisoryKey == "no_cars" || advisoryKey == "no_overtaking"
-                                        let badgeColor: Color = isProhibitory ? .red : .blue
-                                        let advisoryText: String = {
-                                            switch advisoryKey {
-                                            case "no_entry":
-                                                return model.usesVietnamese ? "Cấm ngược chiều" : "No Entry"
-                                            case "no_cars":
-                                                return model.usesVietnamese ? "Cấm ô tô" : "No Cars"
-                                            case "no_overtaking":
-                                                return model.usesVietnamese ? "Cấm vượt" : "No Overtaking"
-                                            case "residential_area":
-                                                return model.usesVietnamese ? "Khu dân cư" : "Residential Area"
-                                            default:
-                                                return advisoryKey
-                                            }
-                                        }()
-                                        VStack(spacing: 2) {
-                                            VietnamAdvisorySign(advisoryKey: advisoryKey)
-                                                .shadow(color: Color.black.opacity(0.3), radius: 4)
-                                            // Hide caption for residential_area (R.420) — sign is self-explanatory
-                                            if advisoryKey != "residential_area" {
+                                        if isProhibitory {
+                                            let badgeColor: Color = .red
+                                            let advisoryText: String = {
+                                                switch advisoryKey {
+                                                case "no_entry": return model.usesVietnamese ? "Cấm ngược chiều" : "No Entry"
+                                                case "no_cars": return model.usesVietnamese ? "Cấm ô tô" : "No Cars"
+                                                case "no_overtaking": return model.usesVietnamese ? "Cấm vượt" : "No Overtaking"
+                                                default: return advisoryKey
+                                                }
+                                            }()
+                                            VStack(spacing: 2) {
+                                                VietnamAdvisorySign(advisoryKey: advisoryKey)
+                                                    .shadow(color: Color.black.opacity(0.3), radius: 4)
                                                 Text(advisoryText)
                                                     .font(.system(size: 8, weight: .bold, design: .rounded))
                                                     .foregroundColor(badgeColor)
@@ -477,14 +442,25 @@ struct ContentView: View {
                                                     .padding(.vertical, 1)
                                                     .background(Color.black.opacity(0.5), in: Capsule())
                                             }
+                                            .transition(.opacity.combined(with: .scale))
                                         }
-                                        .transition(.opacity.combined(with: .scale))
                                     }
                                 }
                             }
                         }
+                        // Speed limit cleared micro-badge (DP.134 / DP.135)
+                        if model.showSpeedLimitCleared {
+                            Text(model.usesVietnamese ? "Hết hạn chế" : "Limit ended")
+                                .font(.system(size: 10, weight: .bold, design: .rounded))
+                                .foregroundColor(Color(red: 0.0, green: 0.902, blue: 0.463))  // Emerald
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Color.black.opacity(0.6), in: Capsule())
+                                .transition(.opacity.combined(with: .move(edge: .top)))
+                        }
                         ThermalBadge(state: model.camera.thermalState)
                     }
+
                     Spacer()
                     // Top-center timestamp
                     Text(timestampString)
@@ -494,6 +470,8 @@ struct ContentView: View {
                         .padding(.vertical, 4)
                         .background(Color.black.opacity(0.35), in: Capsule())
                     Spacer()
+
+                    // RIGHT: Consolidated status pill
                     RuleWeatherPill(model: model, nightDim: model.isNightThemeActive && !model.hudMirrorMode)
                 }
                 .padding(.horizontal, 28)
@@ -575,25 +553,33 @@ private struct GPSSpeedPill: View {
     let isOverspeeding: Bool
 
     private var signalColor: Color { accuracy >= 0 && accuracy < 20 ? .cyan : .gray }
-    private var speedColor: Color { isOverspeeding ? Color(red: 1.0, green: 0.2, blue: 0.0) : .white }  // Red-orange when overspeeding
+    private var speedColor: Color { isOverspeeding ? Color(red: 1.0, green: 0.2, blue: 0.0) : .white }
+    private var borderColor: Color { isOverspeeding ? .red : .white.opacity(0.35) }
 
     var body: some View {
-        HStack(spacing: 10) {
+        ZStack {
+            // Subtle border
+            Circle()
+                .stroke(borderColor, lineWidth: isOverspeeding ? 3 : 1.5)
+                .frame(width: 64, height: 64)
 
-            Image(systemName: "antenna.radiowaves.left.and.right")
-                .font(.system(size: 21, weight: .bold))
-                .foregroundColor(signalColor)
-            Text(String(format: "%.0f", speed))
-                .font(.system(size: 28, weight: .bold, design: .rounded))
-                .monospacedDigit()
-                .foregroundColor(speedColor)
-            Text("km/h")
-                .font(.system(size: 16, weight: .semibold, design: .rounded))
-                .foregroundColor(speedColor.opacity(nightDim ? 0.78 : 0.82))
+            VStack(spacing: -2) {
+                // Speed digits
+                Text(String(format: "%.0f", speed))
+                    .font(.system(size: 24, weight: .black, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundColor(speedColor)
+                    .minimumScaleFactor(0.75)
+                    .lineLimit(1)
+                    .frame(width: 52)
+                // "km/h" label
+                Text("km/h")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .foregroundColor(speedColor.opacity(nightDim ? 0.78 : 0.82))
+            }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .glassCapsule(enabled: glassEnabled, nightDim: nightDim)
+        .frame(width: 64, height: 64)
+        .glassCircle(enabled: glassEnabled, nightDim: nightDim)
     }
 }
 
@@ -603,38 +589,76 @@ private struct RuleWeatherPill: View {
     let nightDim: Bool
 
     var body: some View {
-        Button(action: model.cycleRoadCondition) {
-            HStack(spacing: 10) {
-                Text(model.distanceRuleMode == .vnLaw ? "TT38 • MIN \(String(format: "%.0f", model.displayMinimumDistance))m" : "MIN \(String(format: "%.0f", model.displayMinimumDistance))m")
-                    .font(.system(size: 16, weight: .bold, design: .rounded))
+        HStack(spacing: 0) {
+            // GPS antenna icon
+            Image(systemName: "antenna.radiowaves.left.and.right")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(.white.opacity(nightDim ? 0.78 : 1.0))
+                .padding(.horizontal, 10)
+
+            Divider().frame(height: 20).overlay(Color.white.opacity(nightDim ? 0.27 : 0.35))
+
+            // R.420 sign when in residential area
+            if model.isInResidentialArea == true {
+                VietnamAdvisorySign(advisoryKey: "residential_area")
+                    .frame(width: 24, height: 18)
+                    .padding(.horizontal, 4)
                 Divider().frame(height: 20).overlay(Color.white.opacity(nightDim ? 0.27 : 0.35))
-                
-                // LDWS status indicator (compact)
-                if model.enableLaneDetection && (model.laneDetector.isLaneDetectionActive || model.laneDetector.isSpeedGated) {
-                    VStack(spacing: 1) {
-                        Image(systemName: "road.lanes")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundColor(ldwsStatusColor)
-                        Text("LDWS")
-                            .font(.system(size: 9, weight: .medium, design: .rounded))
-                            .foregroundColor(ldwsStatusColor)
-                    }
-                    Divider().frame(height: 20).overlay(Color.white.opacity(nightDim ? 0.27 : 0.35))
+            }
+
+            // 2-line TT38 stack
+            VStack(alignment: .leading, spacing: 0) {
+                // Line 1: TT38•MIN Xm
+                Text(model.distanceRuleMode == .vnLaw ? "TT38 • MIN \(String(format: "%.0f", model.displayMinimumDistance))m" : "MIN \(String(format: "%.0f", model.displayMinimumDistance))m")
+                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                    .foregroundColor(.white.opacity(nightDim ? 0.78 : 1.0))
+                // Line 2: Tappable "2 chiều•50/80" toggle
+                Button(action: { model.location.roadMetadata.toggleDividedRoad() }) {
+                    Text(model.usesVietnamese
+                        ? (model.isDividedRoad ? "Đôi • 60/90" : "2 chiều • 50/80")
+                        : (model.isDividedRoad ? "Divided • 60/90" : "2-Way • 50/80"))
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .foregroundColor(.white.opacity(nightDim ? 0.65 : 0.85))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(Color.blue.opacity(0.4), in: Capsule())
                 }
-                
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 8)
+
+            Divider().frame(height: 28).overlay(Color.white.opacity(nightDim ? 0.27 : 0.35))
+
+            // LDWS indicator
+            if model.enableLaneDetection && (model.laneDetector.isLaneDetectionActive || model.laneDetector.isSpeedGated) {
+                VStack(spacing: 1) {
+                    Image(systemName: "road.lanes")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(ldwsStatusColor)
+                    Text("LDWS")
+                        .font(.system(size: 8, weight: .medium, design: .rounded))
+                        .foregroundColor(ldwsStatusColor)
+                }
+                .padding(.horizontal, 8)
+                Divider().frame(height: 28).overlay(Color.white.opacity(nightDim ? 0.27 : 0.35))
+            }
+
+            // Weather button wrapping only weather VStack
+            Button(action: model.cycleRoadCondition) {
                 VStack(spacing: 1) {
                     Image(systemName: weatherIcon)
                         .font(.system(size: 13, weight: .semibold))
                     Text(weatherText)
-                        .font(.system(size: 9, weight: .medium, design: .rounded))
+                        .font(.system(size: 8, weight: .medium, design: .rounded))
                 }
+                .foregroundColor(.white.opacity(nightDim ? 0.78 : 1.0))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
             }
-            .foregroundColor(.white.opacity(nightDim ? 0.78 : 1.0))
-            .padding(.horizontal, 16)
-            .padding(.vertical, 11)
-            .glassCapsule(enabled: model.glassHUD, nightDim: nightDim)
+            .buttonStyle(.plain)
         }
-        .buttonStyle(.plain)
+        .padding(.vertical, 7)
+        .glassCapsule(enabled: model.glassHUD, nightDim: nightDim)
     }
 
     private var ldwsStatusColor: Color {
