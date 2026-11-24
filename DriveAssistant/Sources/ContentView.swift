@@ -55,17 +55,17 @@ private struct VietnamAdvisorySign: View {
                     .frame(width: 34, height: 3.5)
                     .rotationEffect(.degrees(-45))
             }
-        case "residential_area":  // R.420 — Khu dân cư (authentic vertical blue rectangle 34x42)
+        case "residential_area":  // R.420 — Khu dân cư (authentic landscape blue rectangle 52x38)
             ZStack {
-                // Outer blue rectangle with rounded corners (34 x 42)
+                // Outer blue landscape rectangle (52 x 38) matching SpeedLimitSignBadge height
                 RoundedRectangle(cornerRadius: 5)
                     .fill(Color(red: 0.0, green: 0.35, blue: 0.85))  // Vietnam traffic sign blue
-                    .frame(width: 34, height: 42)
-                // White inner border (inset by 2pt on each side = 30 x 38)
+                    .frame(width: 52, height: 38)
+                // White inner border (inset by 2pt on each side = 48 x 34)
                 RoundedRectangle(cornerRadius: 4)
                     .stroke(Color.white, lineWidth: 2)
-                    .frame(width: 30, height: 38)
-                // Crisp white city skyline / pitched-roof house silhouette
+                    .frame(width: 48, height: 34)
+                // Authentic QCVN 41:2019 R.420 skyline silhouette
                 VietnamResidentialSilhouette()
             }
         default:
@@ -81,63 +81,152 @@ private struct VietnamAdvisorySign: View {
     }
 }
 
-// Authentic Vietnam R.420 residential area sign silhouette — city skyline / pitched-roof houses
+// Authentic QCVN 41:2019 R.420 residential area sign silhouette — landscape 48x34 inner frame
 private struct VietnamResidentialSilhouette: View {
     var body: some View {
         GeometryReader { geo in
-            let w = geo.size.width   // 30
-            let h = geo.size.height  // 38
-            // Draw a row of simple house silhouettes with pitched roofs
+            let w = geo.size.width   // 48
+            let h = geo.size.height  // 34
+            let groundY = h * 0.84   // Continuous ground baseline
+
+            ZStack {
+                ApartmentBuildingView(w: w, h: h, groundY: groundY)
+                TwoHousesView(w: w, h: h, groundY: groundY)
+                GroundBaselineView(w: w, h: h, groundY: groundY)
+            }
+        }
+        .frame(width: 48, height: 34)
+    }
+}
+
+// MARK: - VietnamResidentialSilhouette Sub-Views
+
+private struct ApartmentBuildingView: View {
+    let w: CGFloat
+    let h: CGFloat
+    let groundY: CGFloat
+
+    var body: some View {
+        let aptLeft = w * 0.14
+        let aptRight = w * 0.38
+        let aptTopY = h * 0.18
+        let aptBottomY = groundY
+
+        ZStack {
+            // Building body (flat roof)
             Path { path in
-                let houseCount = 3
-                let houseWidth = w / CGFloat(houseCount)
-                let baseY = h * 0.72  // Houses sit on bottom portion
-                let roofHeight = h * 0.35
-
-                for i in 0..<houseCount {
-                    let xStart = CGFloat(i) * houseWidth
-                    let xMid = xStart + houseWidth * 0.5
-                    let xEnd = xStart + houseWidth
-
-                    // House body (rectangle)
-                    let bodyTopY = baseY
-                    let bodyBottomY = h * 0.95
-                    let bodyLeft = xStart + houseWidth * 0.15
-                    let bodyRight = xEnd - houseWidth * 0.15
-
-                    // Roof peak
-                    let peakY = baseY - roofHeight
-
-                    // Draw house: roof (triangle) + body (rect)
-                    path.move(to: CGPoint(x: bodyLeft, y: bodyTopY))
-                    path.addLine(to: CGPoint(x: xMid, y: peakY))
-                    path.addLine(to: CGPoint(x: bodyRight, y: bodyTopY))
-                    path.addLine(to: CGPoint(x: bodyRight, y: bodyBottomY))
-                    path.addLine(to: CGPoint(x: bodyLeft, y: bodyBottomY))
-                    path.closeSubpath()
-                }
+                path.addRect(CGRect(x: aptLeft, y: aptTopY, width: aptRight - aptLeft, height: aptBottomY - aptTopY))
             }
             .fill(Color.white)
-            // Add small window dots for detail
-            Path { path in
-                let houseCount = 3
-                let houseWidth = w / CGFloat(houseCount)
-                let baseY = h * 0.72
-                let windowY = baseY + h * 0.12
 
-                for i in 0..<houseCount {
-                    let xStart = CGFloat(i) * houseWidth
-                    let xMid = xStart + houseWidth * 0.5
-
-                    // Single centered window per house
-                    let windowSize: CGFloat = 2.5
-                    let rect = CGRect(x: xMid - windowSize/2, y: windowY - windowSize/2, width: windowSize, height: windowSize)
-                    path.addRect(rect)
-                }
-            }
-            .fill(Color(red: 0.0, green: 0.2, blue: 0.6))  // Dark blue windows
+            // 4 dark-blue rectangular windows in 2x2 grid
+            ApartmentWindowsView(aptLeft: aptLeft, aptRight: aptRight, aptTopY: aptTopY, aptBottomY: aptBottomY)
         }
-        .frame(width: 30, height: 38)
+    }
+}
+
+private struct ApartmentWindowsView: View {
+    let aptLeft: CGFloat
+    let aptRight: CGFloat
+    let aptTopY: CGFloat
+    let aptBottomY: CGFloat
+
+    var body: some View {
+        let windowW = (aptRight - aptLeft) * 0.25
+        let windowH = (aptBottomY - aptTopY) * 0.20
+        let startX = aptLeft + (aptRight - aptLeft) * 0.15
+        let startY = aptTopY + (aptBottomY - aptTopY) * 0.20
+        let gapX = (aptRight - aptLeft) * 0.35
+        let gapY = (aptBottomY - aptTopY) * 0.40
+
+        Path { path in
+            // Row 0, Col 0
+            path.addRect(CGRect(x: startX, y: startY, width: windowW, height: windowH))
+            // Row 0, Col 1
+            path.addRect(CGRect(x: startX + gapX, y: startY, width: windowW, height: windowH))
+            // Row 1, Col 0
+            path.addRect(CGRect(x: startX, y: startY + gapY, width: windowW, height: windowH))
+            // Row 1, Col 1
+            path.addRect(CGRect(x: startX + gapX, y: startY + gapY, width: windowW, height: windowH))
+        }
+        .fill(Color(red: 0.0, green: 0.15, blue: 0.55))
+    }
+}
+
+private struct TwoHousesView: View {
+    let w: CGFloat
+    let h: CGFloat
+    let groundY: CGFloat
+
+    var body: some View {
+        let houseRegionLeft = w * 0.41
+        let houseRegionRight = w * 0.86
+        let houseRegionWidth = houseRegionRight - houseRegionLeft
+        let houseWidth = houseRegionWidth / 2.0
+
+        HStack(spacing: 0) {
+            PitchedRoofHouseView(
+                xStart: houseRegionLeft,
+                houseWidth: houseWidth,
+                groundY: groundY,
+                h: h
+            )
+            PitchedRoofHouseView(
+                xStart: houseRegionLeft + houseWidth,
+                houseWidth: houseWidth,
+                groundY: groundY,
+                h: h
+            )
+        }
+    }
+}
+
+private struct PitchedRoofHouseView: View {
+    let xStart: CGFloat
+    let houseWidth: CGFloat
+    let groundY: CGFloat
+    let h: CGFloat
+
+    var body: some View {
+        let xMid = xStart + houseWidth * 0.5
+        let xEnd = xStart + houseWidth
+        let wallLeft = xStart + houseWidth * 0.12
+        let wallRight = xEnd - houseWidth * 0.12
+        let wallTopY = groundY - (groundY - h * 0.18) * 0.75
+        let wallBottomY = groundY
+        let peakY = wallTopY - houseWidth * 0.35
+        let winSize = houseWidth * 0.18
+
+        ZStack {
+            // House: roof triangle + rectangular wall
+            Path { path in
+                path.move(to: CGPoint(x: wallLeft, y: wallTopY))
+                path.addLine(to: CGPoint(x: xMid, y: peakY))
+                path.addLine(to: CGPoint(x: wallRight, y: wallTopY))
+                path.closeSubpath()
+                path.addRect(CGRect(x: wallLeft, y: wallTopY, width: wallRight - wallLeft, height: wallBottomY - wallTopY))
+            }
+            .fill(Color.white)
+
+            // Small dark-blue window (centered)
+            Path { path in
+                path.addRect(CGRect(x: xMid - winSize / 2, y: wallTopY + (wallBottomY - wallTopY) * 0.25 - winSize / 2, width: winSize, height: winSize))
+            }
+            .fill(Color(red: 0.0, green: 0.15, blue: 0.55))
+        }
+    }
+}
+
+private struct GroundBaselineView: View {
+    let w: CGFloat
+    let h: CGFloat
+    let groundY: CGFloat
+
+    var body: some View {
+        Path { path in
+            path.addRect(CGRect(x: 0, y: groundY, width: w, height: h - groundY))
+        }
+        .fill(Color.white)
     }
 }
 
