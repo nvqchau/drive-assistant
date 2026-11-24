@@ -22,16 +22,18 @@
 
 ### Lane detection & LDWS (Lane Departure Warning System)
 - **CoreImage + Vision contours** pipeline (no second CoreML model): enhances white/yellow lane markings in the lower road ROI, detects contours, classifies left/right by ROI center, fits **linear perspective lines** (`x = m*y + c`) via least-squares, and applies EMA smoothing (`α = 0.25`) with a 15-frame grace window.
-- **Slope validation:** Left lane must converge right toward horizon (`-1.8 ≤ m ≤ -0.15`), right lane must converge left (`0.15 ≤ m ≤ 1.8`) since Y decreases upward. Crossover guard ensures fitted top X at `roiTopY` stays on its side: left `topX < centerX - 0.02`, right `topX > centerX + 0.02`.
-- **ROI geometry:** Static trapezoid in normalized video space (top `0.38`, bottom `0.95`, top width `0.16`, bottom width `0.54`, center offset `laneCenterOffsetX`) — shared by CameraManager static ROI, LaneDetector, and ContentView static fallback.
-- **Dashed-line support:** `classifyLaneLines` min aspect ratio lowered to `1.5`; `whiteMask` threshold lowered to `0.58` so dashed left-lane stripes are reliably locked onto the road surface.
+- **Local-contrast edge enhancement (fixes daytime asphalt over-saturation):** `enhanceLaneMarkings` replaces absolute brightness thresholding with local-contrast extraction — paint stripes brighter than surrounding asphalt. White: grayscale (`contrast=1.4`) → `CIUnsharpMask(radius=5, intensity=3)` → `CIColorThreshold(0.68)`. Yellow center: high-sat warm (`sat=3.0, contrast=1.6`) → `CIUnsharpMask(radius=5, intensity=2.5)` → `CIColorThreshold(0.56)`. Combined with `CIMaximumCompositing` + `CIMorphologyMaximum(radius=1.5)`.
+- **Slope validation:** Left lane must converge right toward horizon (`-2.2 ≤ m ≤ -0.10`), right lane must converge left (`0.10 ≤ m ≤ 2.2`) since Y decreases upward. Crossover guard ensures fitted top X at `roiTopY` stays on its side: left `topX < centerX - 0.02`, right `topX > centerX + 0.02`.
+- **ROI geometry:** Static trapezoid in normalized video space (top `0.38`, bottom `0.95`, top width `0.14`, bottom width `0.44`, center offset `laneCenterOffsetX`) — shared by CameraManager static ROI, LaneDetector, and ContentView static fallback.
+- **Single-line lane synthesis:** When only one side is detected with confidence > 0.5, the missing side is synthesized using perspective lane width `w(y) = 0.14 + 0.30 * ((y - 0.38) / (0.95 - 0.38))`, clamped to `[0.02, 0.98]`.
+- **Dashed-line support:** `classifyLaneLines` uses `max(width, height) >= 0.04` instead of aspect ratio; perspective lanes at ~45° have near-square bbox (aspectRatio ~0.7–1.4).
 - **Departure state machine:** `none` → `driftingLeft`/`driftingRight` (orange) when vehicle center is within 8% of a lane edge for `≥ 0.4 s`, or crosses it. Alert fires only on actual crossing with persistence + 3 s cooldown.
 - **Speed gating:** LDWS only arms when GPS speed ≥ configurable threshold (default `50 km/h`, range `40–70 km/h`).
 - **HUD visualization:** Dynamic straight lane carpet fading toward horizon; color shifts cyan → orange → red on drift/alert with pulsing dashed red on departure.
 - **Lane carpet clipping:** Static fallback trapezoid clipped at lead vehicle rear bumper (`vehicleRect.maxY`) with perspective-preserving linear interpolation of top width. Dynamic rails clipped at same boundary via exact Y-interpolation.
 - **Static fallback projection:** When dynamic lanes unavailable, static trapezoid defined in normalized video coordinates (`0...1` top-left origin) and projected through exact same `aspectFill` transform (`scale`, `xOffset`, `yOffset` using `cameraFrameSize`) as dynamic lanes — pixel-perfect alignment with CameraManager's lane filter boundaries on 19.5:9 screen.
 - **Out-of-ROI vehicles:** Subtle gray boxes for vehicles detected outside the lane polygon (no alerts).
-- **Diagnostics:** Emits `ldws_departure_alert` (on rising edge) and `ldws_mode_changed` (dynamic↔static, throttled to 5 s) events.
+- **Diagnostics:** Emits `ldws_departure_alert` (on rising edge), `ldws_mode_changed` (dynamic↔static, throttled to 5 s), and **periodic `ldws_debug` every 2.0 s** (`contours=X leftPts=Y rightPts=Z leftConf=A rightConf=B dynamic=C`).
 - **Thread-safety:** `NSLock` (`configLock`) protects `roiCenterOffsetX`, `isLDWSEnabled`, `minSpeedForDepartureAlert` accessed from main thread setters and background detection queue.
 
 ### Traffic Sign Recognition (TSR) — Vietnam Speed Limits & Advisory Signs
@@ -94,23 +96,22 @@
 - **Speed Limit Cleared Alert (DP.134/DP.135):** Descending `E5 → C5` (0.12 s gap) + success haptic + "Speed limit ended". Shows emerald micro-badge "Limit ended" under badge for 2.5 s.
 
 ### HUD, settings & diagnostics
-- Landscape dark HUD shows GPS speed and accuracy, distance, safe-gap progress, thermal state, detected/target vehicle, and weather/road-condition pill.
-- **GPSSpeedPill:** Speed text turns red-orange (`1.0, 0.2, 0.0`) when overspeeding (pulsing glow + scale animation).
-- **SpeedLimitSignBadge:** 38 pt white circle with 4 pt red border, bold number (or dimmed `"--"`). Tap clears limit. Red glow pulse when overspeeding.
-- **Secondary Advisory Badge:** Authentic Vietnam sign graphics (red circle for prohibitory, blue rect for residential) + localized text rendered next to speed limit badge; auto-clears after 3.5 s (residential persists while `isInResidentialArea == true`).
-- **Calibration status** (in Distance card): Shows "Auto-calibrating X%" (cyan) while auto-calibrating, "⚠ Mount shifted" (amber) on mount shift, hidden when calibrated.
+- **Top-left:** 64×64 circular **GPSSpeedPill** speedometer (VStack `speed` + `km/h`, red-orange when overspeeding with pulsing glow). Next to it: 38×38 **SpeedLimitSignBadge** (white circle, 4 pt red border, bold number or dimmed `"--"` — tap clears limit). Transient prohibitory advisories (`no_entry`, `no_cars`, `no_overtaking`) render as authentic Vietnam sign graphics next to badge.
+- **Top-center:** Completely unobstructed (timestamp moved to bottom-right).
+- **Top-right:** Consolidated **RuleWeatherPill** — GPS antenna icon → Divider → 2-line TT38 stack (Line 1: `TT38 • MIN Xm`, Line 2: tappable context-aware road-type toggle — e.g., `Khu dân cư • 2 chiều • 50/80` residential, `Cao tốc • Đôi • 60/90` expressway, `2 chiều • 50/80` normal) → Divider → LDWS indicator (cyan/orange/red/gray) → Divider → Weather button (`sun.max.fill` / `cloud.rain.fill`, localized, cycles Auto/Dry/Wet).
+- **Bottom-left:** Distance card (progress bar, state text, calibration status).
+- **Bottom-right:** `VStack(alignment: .trailing)` — live `dd/MM/yyyy HH:mm:ss` timestamp capsule (11 pt monospaced) above 3 circular action buttons: Screenshot (`camera.fill`), Eco Black HUD toggle (`leaf.fill`/`flame.fill`), Settings (`gearshape.fill`).
 - **Display Theme:** Auto (3-tier: camera luminance → GPS astronomical sunrise/sunset → clock fallback), Day, Night.
 - **HUD Mirror Mode:** Vertically flips the view for windshield reflection; sets screen brightness to maximum, restores on exit.
 - **Eco Black HUD:** Replaces live video with black background to reduce power and heat.
 - **Glass effect:** Ultra-thin material cards/pills with night-dim variant.
 - **Screenshot capture:** Flash animation + composites live camera frame + HUD overlay into Photos library. **Fixed black background:** Captures HUD layer into transparent `UIImage` (`format.opaque = false`) via `UIGraphicsImageRendererFormat`, saves/restores `window.backgroundColor` and `rootViewController?.view.backgroundColor = .clear`, then composites `cameraImage` (aspectFill) + `hudImage`. **Silent auto-capture** (no flash/alert) on critical alerts and anomaly events via `debugCaptureTrigger`.
-- **Live timestamp:** Bottom-center HUD label `dd/MM/yyyy HH:mm:ss` (11 pt monospaced), updates via 1 s timer.
 - Settings expose: Distance rule, calibration factor, hood offset, lane center offset, time headway, road condition, language (VI/EN), voice alerts, LDWS enable + speed threshold, display theme, mirror mode, Eco HUD, glass effect, horizon guide, out-of-lane vehicles, mount calibration save/reset.
 - **TSR Settings:** "Speed Sign Recognition" toggle (default on) + "Overspeed tolerance" slider `0–10 km/h`.
 - **Stop-and-Go Settings:** "Lead Vehicle Departure Alert" toggle (default on).
 - **Diagnostics Settings:** "Auto-Capture Debug Snapshots" toggle (default on, persisted) — auto-captures silent screenshots on `oncoming_lane_suspect`, `oncoming_closing_speed_spike`, and critical alerts (shared 5 s cooldown).
 - **DiagnosticsLogStore:** Persistent daily JSONL logging to `Documents/DriveAssistantLogs/DriveAssistant-yyyy-MM-dd.jsonl` (async append on serial background queue). In-memory ring buffer (5000 events) + `eventPublisher` PassthroughSubject for real-time observers. Export reads today's daily log if in-memory empty. `clear()` deletes all `.jsonl` files.
-- **Anomaly event types:** `target_switched_iou`, `oncoming_lane_suspect`, `oncoming_closing_speed_spike`, `ldws_departure_alert`, `ldws_mode_changed`, `overspeed_alert`, `stop_and_go_alert`, `mount_shifted`, `alert_state_changed` (with `state=warning/critical/clear` + `reason=ttc|distance_below_3.5m`), `tsr_yolo_detect`, `tsr_state`.
+- **Anomaly event types:** `target_switched_iou`, `oncoming_lane_suspect`, `oncoming_closing_speed_spike`, `ldws_departure_alert`, `ldws_mode_changed`, `ldws_debug`, `overspeed_alert`, `stop_and_go_alert`, `mount_shifted`, `alert_state_changed` (with `state=warning/critical/clear` + `reason=ttc|distance_below_3.5m`), `tsr_yolo_detect`, `tsr_state`.
 
 ---
 
@@ -128,13 +129,13 @@ DriveAssistant/
         ├── DriveAssistantModel.swift   # Observable state, rule engine, EMA/TTC, alert decisions, theme, TSR/stop-and-go logic
         ├── CameraManager.swift         # Capture session, Vision inference, tracking, thermal guard, brightness, TSR gate
         ├── CameraPreview.swift         # AVCaptureVideoPreviewLayer-backed SwiftUI view
-        ├── ContentView.swift           # HUD, overlays, lane carpet, horizon, screenshot, progress, thermal badge, controls
+        ├── ContentView.swift           # HUD (GPSSpeedPill 64×64 circular, SpeedLimitSignBadge 38×38, RuleWeatherPill consolidated), lane carpet, horizon, TwoHousesView (ZStack), screenshot, timestamp bottom-right, controls
         ├── SettingsView.swift          # Runtime settings, mount calibration, diagnostics export/clear
         ├── LocationManager.swift       # When-in-use GPS speed/accuracy, astronomical night, weather trigger
         ├── WeatherService.swift        # Rate-limited Open-Meteo dry/wet lookup
         ├── AlertManager.swift          # Cooldowns, system sounds, Vietnamese speech, synthesized chimes (AVAudioEngine)
         ├── DiagnosticsLogStore.swift   # Persistent daily JSONL logging + in-memory ring buffer (5000), eventPublisher, export/clear
-        ├── LaneDetector.swift          # CoreImage/Vision contour lane detection, linear fit, EMA, LDWS state machine, departure/mode diagnostics
+        ├── LaneDetector.swift          # CoreImage/Vision contour lane detection, local-contrast edge enhancement (CIUnsharpMask), linear fit, EMA, single-line synthesis, LDWS state machine, periodic ldws_debug
         ├── MotionManager.swift         # CMMotionManager gravity-vector attitude, mount profile, horizon calibration, mount-shift (2 s @ 3.5°)
         ├── RoadMetadataService.swift   # Overpass API (OSM) road-type lookup for TT38: oneway, dual_carriageway, lanes, maxspeed, landuse, admin_level=8
         └── TrafficSignDetector.swift   # Shared observations from unified model, hybrid YOLO+OCR, confirmation state, advisory badge
