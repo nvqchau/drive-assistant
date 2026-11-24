@@ -13,6 +13,7 @@ final class LaneAndMotionTests: XCTestCase {
         super.setUp()
         laneDetector = LaneDetector()
         motionManager = MotionManager()
+        motionManager.resetMountProfile() // clear persisted @AppStorage from other tests (e.g., BusinessLogicCoverageTests.testTC07)
     }
 
     // MARK: - Forward Lane ROI Rejects Oncoming Vehicles (Normalized [0.0...1.0] coordinates)
