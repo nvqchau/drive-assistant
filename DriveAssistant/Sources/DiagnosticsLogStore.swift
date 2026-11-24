@@ -122,6 +122,9 @@ final class DiagnosticsLogStore {
         events.removeAll()
         lock.unlock()
 
+        // Close active FileHandle BEFORE deleting files to avoid leaking open fd on deleted inode
+        closeCurrentDailyLog()
+
         // Delete all .jsonl files in the logs directory
         dailyLogQueue.async { [weak self] in
             self?.deleteAllDailyLogs()

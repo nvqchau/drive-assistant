@@ -443,6 +443,10 @@ final class BusinessLogicCoverageTests: XCTestCase {
     func testTC09_DiagnosticsLogStore_RecordExportAndClear() async throws {
         let store = DiagnosticsLogStore()
 
+        // ISOLATION: clear any shared daily-log events from BusinessLogicCoverageTests.setUp() (DriveAssistantModel writes session_started)
+        store.clear()
+        try await Task.sleep(nanoseconds: 200_000_000)
+
         // Record various event types
         store.record(type: "test_event_1", speedKMPH: 50.0, distanceMeters: 10.0, isDangerous: false, orientation: "landscapeLeft", details: "test detail 1")
         store.record(type: "test_event_2", speedKMPH: 60.0, distanceMeters: 5.0, isDangerous: true, orientation: "landscapeRight", details: "test detail 2")
@@ -478,10 +482,10 @@ final class BusinessLogicCoverageTests: XCTestCase {
         // Clear and verify
         store.clear()
 
-        // Allow async clear to complete
+        // Allow async clear to complete (close FileHandle + delete .jsonl files)
         try await Task.sleep(nanoseconds: 200_000_000)
 
-        // Export again - should have empty events array (or only daily log if any)
+        // Export again - should have empty events array
         let exportURLAfterClear = store.exportURL()
         let dataAfterClear = try Data(contentsOf: exportURLAfterClear)
         let payloadAfterClear = try decoder.decode(ExportPayload.self, from: dataAfterClear)

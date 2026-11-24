@@ -1,5 +1,7 @@
 # DriveAssistant
 
+[![Build DriveAssistant IPA](https://github.com/nvqchau/drive-assistant/actions/workflows/build-ipa.yml/badge.svg)](https://github.com/nvqchau/drive-assistant/actions/workflows/build-ipa.yml)
+
 **DriveAssistant** is an experimental native iOS ADAS prototype built with **Swift**, **SwiftUI**, **AVFoundation**, **Vision**, **CoreML**, **CoreImage**, and **CoreMotion**. It uses the rear camera and GPS speed to estimate the distance to the closest detected vehicle ahead, visualize a dynamic forward-lane carpet with lane-departure warnings, warn when the gap falls below the configured threshold, and recognizes Vietnam traffic signs via a custom CoreML model to alert on overspeed and auto-clear stale limits.
 
 > **Important:** This is not a certified or production-ready safety system. Monocular distance estimates can be wrong in low light, curves, hills, camera movement, occlusion, and when vehicle size changes. Use it only as a supplemental prototype while parked or during carefully supervised testing.
