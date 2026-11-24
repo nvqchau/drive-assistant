@@ -32,6 +32,11 @@ final class TrafficSignDetector: ObservableObject {
         didClearSpeedLimitEvent = date
     }
 
+    /// Test helper to set divided road from sign directly
+    func setDividedRoadFromSignForTest(_ value: Bool) {
+        isDividedRoadFromSign = value
+    }
+
     // MARK: - Configuration
     private var processInterval: TimeInterval = 0.15  // ~6.6 Hz guard (adjusted by thermal state)
     private let baseProcessInterval: TimeInterval = 0.15

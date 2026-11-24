@@ -19,28 +19,34 @@
 		000000000000000000000027 /* WeatherService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000028 /* WeatherService.swift */; };
 		00000000000000000000002A /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000029 /* Assets.xcassets */; };
 		00000000000000000000002C /* MotionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000002B /* MotionManager.swift */; };
-		00000000000000000000004B /* vn_adas_unified_ios16.mlpackage in Resources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000004A /* vn_adas_unified_ios16.mlpackage */; };
 		00000000000000000000003A /* LaneDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000039 /* LaneDetector.swift */; };
-		5F5E8E7F6FDA2B0BB2974CF7 /* TrafficSignDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF21CE15F0E014781C9BBA0F /* TrafficSignDetector.swift */; };
-		B4A2F1C9E8D3A7B6C5D4E3F2 /* RoadMetadataService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4A2F1C9E8D3A7B6C5D4E3F1 /* RoadMetadataService.swift */; };
-		000000000000000000000055 /* PBXTargetDependency */ = {isa = PBXBuildFile; fileRef = 000000000000000000000021 /* DriveAssistant */; };
+		00000000000000000000004B /* vn_adas_unified_ios16.mlpackage in Resources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000004A /* vn_adas_unified_ios16.mlpackage */; };
 		00000000000000000000005A /* TT38AndTSRPrecedenceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000057 /* TT38AndTSRPrecedenceTests.swift */; };
 		00000000000000000000005B /* RoadMetadataParsingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000058 /* RoadMetadataParsingTests.swift */; };
 		00000000000000000000005C /* LaneAndMotionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000059 /* LaneAndMotionTests.swift */; };
+		357059DEE8352D5C368240BC /* BusinessLogicCoverageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = ECF3FE2FE2C533E3DC6FBF77 /* BusinessLogicCoverageTests.swift */; };
+		5F5E8E7F6FDA2B0BB2974CF7 /* TrafficSignDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF21CE15F0E014781C9BBA0F /* TrafficSignDetector.swift */; };
+		B4A2F1C9E8D3A7B6C5D4E3F2 /* RoadMetadataService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4A2F1C9E8D3A7B6C5D4E3F1 /* RoadMetadataService.swift */; };
 		F1A2B3C4D5E6F7A8B9C0D1E2 /* urban_sign_60.jpg in Resources */ = {isa = PBXBuildFile; fileRef = F1A2B3C4D5E6F7A8B9C0D1E5 /* urban_sign_60.jpg */; };
 		F1A2B3C4D5E6F7A8B9C0D1E3 /* highway_sign_40_dp135.jpg in Resources */ = {isa = PBXBuildFile; fileRef = F1A2B3C4D5E6F7A8B9C0D1E6 /* highway_sign_40_dp135.jpg */; };
-		F1A2B3C4D5E6F7A8B9C0D1EA /* night_rain_urban.jpg in Resources */ = {isa = PBXBuildFile; fileRef = F1A2B3C4D5E6F7A8B9C0D1E8 /* night_rain_urban.jpg */; };
 		F1A2B3C4D5E6F7A8B9C0D1E4 /* VisionFixtureTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1A2B3C4D5E6F7A8B9C0D1E7 /* VisionFixtureTests.swift */; };
-		F1A2B3C4D5E6F7A8B9C0D1F0 /* FCWAndStopAndGoTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1A2B3C4D5E6F7A8B9C0D1F1 /* FCWAndStopAndGoTests.swift */; };
 		F1A2B3C4D5E6F7A8B9C0D1E9 /* vn_adas_unified_ios16.mlpackage in Resources */ = {isa = PBXBuildFile; fileRef = 00000000000000000000004A /* vn_adas_unified_ios16.mlpackage */; };
+		F1A2B3C4D5E6F7A8B9C0D1EA /* TestFixtures in Resources */ = {isa = PBXBuildFile; fileRef = F1A2B3C4D5E6F7A8B9C0D1E8 /* TestFixtures */; };
+		F1A2B3C4D5E6F7A8B9C0D1F0 /* FCWAndStopAndGoTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1A2B3C4D5E6F7A8B9C0D1F1 /* FCWAndStopAndGoTests.swift */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		00000000000000000000005F /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 000000000000000000000030 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 000000000000000000000021;
+			remoteInfo = DriveAssistant;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		000000000000000000000001 /* DriveAssistant.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; path = DriveAssistant.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		000000000000000000000056 /* DriveAssistantTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = DriveAssistantTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		000000000000000000000057 /* TT38AndTSRPrecedenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistantTests/TT38AndTSRPrecedenceTests.swift; sourceTree = SOURCE_ROOT; };
-		000000000000000000000058 /* RoadMetadataParsingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistantTests/RoadMetadataParsingTests.swift; sourceTree = SOURCE_ROOT; };
-		000000000000000000000059 /* LaneAndMotionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistantTests/LaneAndMotionTests.swift; sourceTree = SOURCE_ROOT; };
 		000000000000000000000007 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = DriveAssistant/Info.plist; sourceTree = SOURCE_ROOT; };
 		000000000000000000000008 /* DriveAssistantApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistant/Sources/DriveAssistantApp.swift; sourceTree = SOURCE_ROOT; };
 		000000000000000000000009 /* DriveAssistantModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistant/Sources/DriveAssistantModel.swift; sourceTree = SOURCE_ROOT; };
@@ -54,20 +60,19 @@
 		000000000000000000000028 /* WeatherService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistant/Sources/WeatherService.swift; sourceTree = SOURCE_ROOT; };
 		000000000000000000000029 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = DriveAssistant/Assets.xcassets; sourceTree = SOURCE_ROOT; };
 		00000000000000000000002B /* MotionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistant/Sources/MotionManager.swift; sourceTree = SOURCE_ROOT; };
-		00000000000000000000004A /* vn_adas_unified_ios16.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = wrapper.coreml; path = vn_adas_unified_ios16.mlpackage; sourceTree = SOURCE_ROOT; };
 		000000000000000000000039 /* LaneDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistant/Sources/LaneDetector.swift; sourceTree = SOURCE_ROOT; };
+		00000000000000000000004A /* vn_adas_unified_ios16.mlpackage */ = {isa = PBXFileReference; lastKnownFileType = wrapper.coreml; path = vn_adas_unified_ios16.mlpackage; sourceTree = SOURCE_ROOT; };
+		000000000000000000000056 /* DriveAssistantTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = DriveAssistantTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		000000000000000000000057 /* TT38AndTSRPrecedenceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistantTests/TT38AndTSRPrecedenceTests.swift; sourceTree = SOURCE_ROOT; };
+		000000000000000000000058 /* RoadMetadataParsingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistantTests/RoadMetadataParsingTests.swift; sourceTree = SOURCE_ROOT; };
+		000000000000000000000059 /* LaneAndMotionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistantTests/LaneAndMotionTests.swift; sourceTree = SOURCE_ROOT; };
 		AF21CE15F0E014781C9BBA0F /* TrafficSignDetector.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = TrafficSignDetector.swift; path = ../DriveAssistant/Sources/TrafficSignDetector.swift; sourceTree = "<group>"; };
 		B4A2F1C9E8D3A7B6C5D4E3F1 /* RoadMetadataService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistant/Sources/RoadMetadataService.swift; sourceTree = SOURCE_ROOT; };
+		ECF3FE2FE2C533E3DC6FBF77 /* BusinessLogicCoverageTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = BusinessLogicCoverageTests.swift; path = ../DriveAssistantTests/BusinessLogicCoverageTests.swift; sourceTree = "<group>"; };
 		F1A2B3C4D5E6F7A8B9C0D1E5 /* urban_sign_60.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; name = urban_sign_60.jpg; path = DriveAssistantTests/TestFixtures/urban_sign_60.jpg; sourceTree = SOURCE_ROOT; };
 		F1A2B3C4D5E6F7A8B9C0D1E6 /* highway_sign_40_dp135.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; name = highway_sign_40_dp135.jpg; path = DriveAssistantTests/TestFixtures/highway_sign_40_dp135.jpg; sourceTree = SOURCE_ROOT; };
-		F1A2B3C4D5E6F7A8B9C0D1E8 /* night_rain_urban.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; name = night_rain_urban.jpg; path = DriveAssistantTests/TestFixtures/night_rain_urban.jpg; sourceTree = SOURCE_ROOT; };
 		F1A2B3C4D5E6F7A8B9C0D1E7 /* VisionFixtureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistantTests/VisionFixtureTests.swift; sourceTree = SOURCE_ROOT; };
-	F1A2B3C4D5E6F7A8B9C0D1F1 /* FCWAndStopAndGoTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistantTests/FCWAndStopAndGoTests.swift; sourceTree = SOURCE_ROOT; };
-		F1A2B3C4D5E6F7A8B9C0D1E8 /* TestFixtures */ = {isa = PBXGroup; children = (
-			F1A2B3C4D5E6F7A8B9C0D1E5 /* urban_sign_60.jpg */,
-			F1A2B3C4D5E6F7A8B9C0D1E6 /* highway_sign_40_dp135.jpg */,
-				F1A2B3C4D5E6F7A8B9C0D1E8 /* night_rain_urban.jpg */,
-		); path = DriveAssistantTests/TestFixtures; sourceTree = SOURCE_ROOT; };
+		F1A2B3C4D5E6F7A8B9C0D1F1 /* FCWAndStopAndGoTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DriveAssistantTests/FCWAndStopAndGoTests.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -114,7 +119,7 @@
 				000000000000000000000028 /* WeatherService.swift */,
 				00000000000000000000002B /* MotionManager.swift */,
 				000000000000000000000039 /* LaneDetector.swift */,
-						B4A2F1C9E8D3A7B6C5D4E3F1 /* RoadMetadataService.swift */,
+				B4A2F1C9E8D3A7B6C5D4E3F1 /* RoadMetadataService.swift */,
 			);
 			path = Sources;
 			sourceTree = SOURCE_ROOT;
@@ -137,8 +142,27 @@
 				000000000000000000000057 /* TT38AndTSRPrecedenceTests.swift */,
 				000000000000000000000058 /* RoadMetadataParsingTests.swift */,
 				000000000000000000000059 /* LaneAndMotionTests.swift */,
+				A85699ACC15762FFDFE2CD81 /* DriveAssistantTests */,
 			);
 			sourceTree = GROUP;
+		};
+		A85699ACC15762FFDFE2CD81 /* DriveAssistantTests */ = {
+			isa = PBXGroup;
+			children = (
+				ECF3FE2FE2C533E3DC6FBF77 /* BusinessLogicCoverageTests.swift */,
+			);
+			name = DriveAssistantTests;
+			sourceTree = "<group>";
+		};
+		F1A2B3C4D5E6F7A8B9C0D1E8 /* TestFixtures */ = {
+			isa = PBXGroup;
+			children = (
+				F1A2B3C4D5E6F7A8B9C0D1E5 /* urban_sign_60.jpg */,
+				F1A2B3C4D5E6F7A8B9C0D1E6 /* highway_sign_40_dp135.jpg */,
+				F1A2B3C4D5E6F7A8B9C0D1E8 /* TestFixtures */,
+			);
+			path = DriveAssistantTests/TestFixtures;
+			sourceTree = SOURCE_ROOT;
 		};
 /* End PBXGroup section */
 
@@ -221,7 +245,7 @@
 				F1A2B3C4D5E6F7A8B9C0D1E9 /* vn_adas_unified_ios16.mlpackage in Resources */,
 				F1A2B3C4D5E6F7A8B9C0D1E2 /* urban_sign_60.jpg in Resources */,
 				F1A2B3C4D5E6F7A8B9C0D1E3 /* highway_sign_40_dp135.jpg in Resources */,
-					F1A2B3C4D5E6F7A8B9C0D1EA /* night_rain_urban.jpg in Resources */,
+				F1A2B3C4D5E6F7A8B9C0D1EA /* TestFixtures in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -258,10 +282,19 @@
 				00000000000000000000005A /* TT38AndTSRPrecedenceTests.swift in Sources */,
 				00000000000000000000005B /* RoadMetadataParsingTests.swift in Sources */,
 				00000000000000000000005C /* LaneAndMotionTests.swift in Sources */,
+				357059DEE8352D5C368240BC /* BusinessLogicCoverageTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		000000000000000000000055 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 000000000000000000000021 /* DriveAssistant */;
+			targetProxy = 00000000000000000000005F /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		000000000000000000000033 /* Debug */ = {
@@ -318,40 +351,39 @@
 			};
 			name = Release;
 		};
-/* End XCBuildConfiguration section */
-
 		00000000000000000000005D /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
-				SWIFT_VERSION = 5.0;
-				PRODUCT_BUNDLE_IDENTIFIER = vn.ai.driveassistant.tests;
-				PRODUCT_NAME = DriveAssistantTests;
-				SDKROOT = iphonesimulator;
-				TARGETED_DEVICE_FAMILY = 1;
+				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGNING_REQUIRED = NO;
 				CODE_SIGN_IDENTITY = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				PRODUCT_BUNDLE_IDENTIFIER = vn.ai.driveassistant.tests;
+				PRODUCT_NAME = DriveAssistantTests;
+				SDKROOT = iphonesimulator;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/DriveAssistant.app/DriveAssistant";
-				BUNDLE_LOADER = "$(TEST_HOST)";
 			};
 			name = Debug;
 		};
 		00000000000000000000005E /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
-				SWIFT_VERSION = 5.0;
-				PRODUCT_BUNDLE_IDENTIFIER = vn.ai.driveassistant.tests;
-				PRODUCT_NAME = DriveAssistantTests;
-				SDKROOT = iphonesimulator;
-				TARGETED_DEVICE_FAMILY = 1;
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGNING_REQUIRED = NO;
 				CODE_SIGN_IDENTITY = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				PRODUCT_BUNDLE_IDENTIFIER = vn.ai.driveassistant.tests;
+				PRODUCT_NAME = DriveAssistantTests;
+				SDKROOT = iphonesimulator;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Release;
 		};
+/* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
 		000000000000000000000031 /* Build configuration list for PBXNativeTarget "DriveAssistant" */ = {
@@ -382,19 +414,6 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
-
-		000000000000000000000055 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = 000000000000000000000021 /* DriveAssistant */;
-			targetProxy = 00000000000000000000005F /* PBXContainerItemProxy */;
-		};
-		00000000000000000000005F /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = 000000000000000000000030 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = 000000000000000000000021;
-			remoteInfo = DriveAssistant;
-		};
 	};
 	rootObject = 000000000000000000000030 /* Project object */;
 }

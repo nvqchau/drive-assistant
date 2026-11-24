@@ -33,6 +33,14 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
     @Published private(set) var isLowLightScene: Bool = false
     @Published private(set) var hasValidCameraBrightness: Bool = false
 
+    // Test helpers for camera brightness state
+    func setCameraBrightnessForTest(hasValid: Bool, isLowLight: Bool) {
+        DispatchQueue.main.async {
+            self.hasValidCameraBrightness = hasValid
+            self.isLowLightScene = isLowLight
+        }
+    }
+
     let session = AVCaptureSession()
     private let output = AVCaptureVideoDataOutput()
     @Published var currentSpeedKMPH: Double = 0

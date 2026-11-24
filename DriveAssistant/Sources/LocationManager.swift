@@ -6,6 +6,13 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     @Published private(set) var horizontalAccuracy: CLLocationAccuracy = .infinity
     @Published private(set) var weatherRoadCondition: RoadCondition = .dry
     @Published private(set) var isAstronomicalNight: Bool? = nil
+
+    // Test helper for astronomical night state
+    func setAstronomicalNightForTest(_ value: Bool?) {
+        DispatchQueue.main.async {
+            self.isAstronomicalNight = value
+        }
+    }
     @Published var lastValidLocation: CLLocation? = nil
     @MainActor let roadMetadata = RoadMetadataService()
     private let manager = CLLocationManager()

@@ -664,6 +664,11 @@ final class DriveAssistantModel: ObservableObject {
         updateAlertState()
     }
 
+    /// Test helper: expose updateOverspeedState for unit tests
+    func updateOverspeedStateForTest() {
+        updateOverspeedState()
+    }
+
     private func updateAlertState() {
         guard let distance else {
             criticalFrameCount = 0
