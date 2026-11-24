@@ -15,7 +15,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     }
     @Published var lastValidLocation: CLLocation? = nil
     @MainActor let roadMetadata = RoadMetadataService()
-    private let manager = CLLocationManager()
+    let manager = CLLocationManager()
     private let weatherService = WeatherService()
     private var stallTimer: Timer?
     private let stallThreshold: TimeInterval = 10.0  // increased from 5.0 to avoid urban GPS shading dropouts

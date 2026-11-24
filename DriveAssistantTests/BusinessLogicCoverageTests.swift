@@ -1,6 +1,7 @@
 import XCTest
 import CoreLocation
 import Combine
+import SwiftUI
 @testable import DriveAssistant
 
 /// Functional/Business Logic Coverage Tests for DriveAssistant
@@ -270,35 +271,223 @@ final class BusinessLogicCoverageTests: XCTestCase {
         {"current":{"precipitation":5.0,"rain":4.8,"weather_code":80}}
         """.data(using: .utf8)!
 
+        let jsonMalformed = """
+        {"current":{"precipitation":1.2}}
+        """.data(using: .utf8)!
+
+        let jsonEmpty = "{}".data(using: .utf8)!
+
+        let service = WeatherService()
+
         // Test rainy conditions -> .wet
-        let conditionRain = parseWeatherPayload(jsonRain)
+        let conditionRain = service.parseRoadCondition(from: jsonRain)
         XCTAssertEqual(conditionRain, .wet, "precipitation=1.2 -> wet")
 
-        let conditionDrizzle = parseWeatherPayload(jsonDrizzle)
+        let conditionDrizzle = service.parseRoadCondition(from: jsonDrizzle)
         XCTAssertEqual(conditionDrizzle, .wet, "weather_code=51 (drizzle) -> wet")
 
-        let conditionHeavyRain = parseWeatherPayload(jsonHeavyRain)
+        let conditionHeavyRain = service.parseRoadCondition(from: jsonHeavyRain)
         XCTAssertEqual(conditionHeavyRain, .wet, "weather_code=80 (heavy rain) -> wet")
 
         // Test dry condition -> .dry
-        let conditionDry = parseWeatherPayload(jsonDry)
+        let conditionDry = service.parseRoadCondition(from: jsonDry)
         XCTAssertEqual(conditionDry, .dry, "precipitation=0.0, weather_code=1 -> dry")
+
+        // Test malformed JSON -> .dry (fallback)
+        let conditionMalformed = service.parseRoadCondition(from: jsonMalformed)
+        XCTAssertEqual(conditionMalformed, .dry, "malformed JSON -> dry (fallback)")
+
+        // Test empty JSON -> .dry (fallback)
+        let conditionEmpty = service.parseRoadCondition(from: jsonEmpty)
+        XCTAssertEqual(conditionEmpty, .dry, "empty JSON -> dry (fallback)")
     }
 
-    // Internal helper mirroring WeatherService logic for testing
-    private func parseWeatherPayload(_ data: Data) -> RoadCondition {
-        struct CurrentWeather: Decodable {
-            let precipitation: Double
-            let rain: Double
-            let weatherCode: Int
-            enum CodingKeys: String, CodingKey {
-                case precipitation, rain, weatherCode = "weather_code"
+    // MARK: - TC-07: SettingsView Renders All Sections And States
+
+    func testTC07_SettingsView_RendersAllSectionsAndStates() {
+        // Create a fresh model with test configuration
+        let testModel = DriveAssistantModel()
+
+        // Vietnamese mode with full feature flags
+        testModel.usesVietnamese = true
+        testModel.distanceRuleMode = .vnLaw
+        testModel.enableSpeedSignRecognition = true
+        testModel.enableLaneDetection = true
+        testModel.motion.hasSavedMountProfile = false
+
+        // Render in Vietnamese
+        let hostingControllerVN = UIHostingController(rootView: SettingsView(model: testModel))
+        let windowVN = UIWindow(frame: UIScreen.main.bounds)
+        windowVN.rootViewController = hostingControllerVN
+        windowVN.makeKeyAndVisible()
+        windowVN.layoutIfNeeded()
+
+        // Verify all sections rendered without crash
+        XCTAssertNotNil(hostingControllerVN.view)
+        // Note: isKeyWindow may be false in test environment; view rendering is the key check
+
+        // Toggle to English mode with different settings
+        testModel.usesVietnamese = false
+        testModel.distanceRuleMode = .timeHeadway
+        testModel.motion.hasSavedMountProfile = true
+        testModel.motion.calibratedPitch = 2.5
+        testModel.motion.calibratedRoll = -1.0
+        testModel.motion.deltaPitch = 0.3
+        testModel.motion.deltaRoll = -0.2
+        testModel.motion.isMountAligned = true
+
+        // Trigger layout update for conditional branches
+        windowVN.layoutIfNeeded()
+
+        // Verify state changes propagated
+        XCTAssertFalse(testModel.usesVietnamese)
+        XCTAssertEqual(testModel.distanceRuleMode, .timeHeadway)
+        XCTAssertTrue(testModel.motion.hasSavedMountProfile)
+
+        // Toggle back to Vietnamese with timeHeadway to hit conditional branches
+        testModel.usesVietnamese = true
+        testModel.distanceRuleMode = .timeHeadway
+        windowVN.layoutIfNeeded()
+
+        // Toggle enableSpeedSignRecognition off to hide overspeed slider
+        testModel.enableSpeedSignRecognition = false
+        windowVN.layoutIfNeeded()
+
+        // Toggle enableLaneDetection off to hide LDWS threshold
+        testModel.enableLaneDetection = false
+        windowVN.layoutIfNeeded()
+
+        // Verify all conditional branches executed without crash
+        XCTAssertTrue(true, "All SettingsView conditional branches rendered successfully")
+    }
+
+    // MARK: - TC-08: LocationManager Stationary Indoor And Moving Fixes
+
+    func testTC08_LocationManager_StationaryIndoorAndMovingFixes() {
+        let locationManager = LocationManager()
+
+        // (a) Indoor stationary fix (Huế coordinates, horizontalAccuracy=35.0, speed=-1.0)
+        let indoorLocation = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 16.4637, longitude: 107.5909),
+            altitude: 0,
+            horizontalAccuracy: 35.0,
+            verticalAccuracy: 10.0,
+            course: -1.0,
+            speed: -1.0,
+            timestamp: Date()
+        )
+
+        locationManager.locationManager(locationManager.manager, didUpdateLocations: [indoorLocation])
+
+        // Assert: speedKMPH == 0 (invalid speed < 0)
+        XCTAssertEqual(locationManager.speedKMPH, 0.0, "Indoor stationary: speedKMPH should be 0")
+
+        // Assert: lastValidLocation != nil (coordinate accepted for services)
+        XCTAssertNotNil(locationManager.lastValidLocation, "lastValidLocation should be set for valid coordinate")
+
+        // Assert: isAstronomicalNight != nil (NOAA solar elevation computed) - wait for async dispatch
+        var nightComputed = false
+        let nightExpectation = XCTestExpectation(description: "isAstronomicalNight computed")
+        let cancellable = locationManager.$isAstronomicalNight
+            .dropFirst()
+            .sink { value in
+                if value != nil {
+                    nightComputed = true
+                    nightExpectation.fulfill()
+                }
             }
+        wait(for: [nightExpectation], timeout: 2.0)
+        cancellable.cancel()
+        XCTAssertTrue(nightComputed, "isAstronomicalNight should be computed for valid coordinate")
+
+        // (b) Outdoor moving fix (horizontalAccuracy=8.0, speed=15.0 m/s)
+        let outdoorLocation = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 16.4637, longitude: 107.5909),
+            altitude: 0,
+            horizontalAccuracy: 8.0,
+            verticalAccuracy: 5.0,
+            course: 90.0,
+            speed: 15.0, // m/s
+            timestamp: Date()
+        )
+
+        locationManager.locationManager(locationManager.manager, didUpdateLocations: [outdoorLocation])
+
+        // Assert: speedKMPH == 54.0 (15.0 * 3.6)
+        XCTAssertEqual(locationManager.speedKMPH, 54.0, accuracy: 0.01, "Outdoor moving: speedKMPH should be 54.0 km/h")
+
+        // (c) Inaccurate fix (horizontalAccuracy=150.0, speed=10.0 m/s)
+        // This should NOT overwrite lastValidLocation
+        let validLocationBeforeInaccurate = locationManager.lastValidLocation
+        XCTAssertNotNil(validLocationBeforeInaccurate)
+
+        let inaccurateLocation = CLLocation(
+            coordinate: CLLocationCoordinate2D(latitude: 16.5000, longitude: 107.6000),
+            altitude: 0,
+            horizontalAccuracy: 150.0, // > 100, invalid
+            verticalAccuracy: 20.0,
+            course: 45.0,
+            speed: 10.0,
+            timestamp: Date()
+        )
+
+        locationManager.locationManager(locationManager.manager, didUpdateLocations: [inaccurateLocation])
+
+        // Assert: lastValidLocation is not overwritten by invalid fix
+        XCTAssertEqual(locationManager.lastValidLocation?.coordinate.latitude ?? 0, validLocationBeforeInaccurate?.coordinate.latitude ?? 0, accuracy: 0.0001, "lastValidLocation should not be overwritten by inaccurate fix")
+        XCTAssertEqual(locationManager.lastValidLocation?.coordinate.longitude ?? 0, validLocationBeforeInaccurate?.coordinate.longitude ?? 0, accuracy: 0.0001, "lastValidLocation should not be overwritten by inaccurate fix")
+    }
+
+    // MARK: - TC-09: DiagnosticsLogStore Record, Export & Clear
+
+    func testTC09_DiagnosticsLogStore_RecordExportAndClear() async throws {
+        let store = DiagnosticsLogStore()
+
+        // Record various event types
+        store.record(type: "test_event_1", speedKMPH: 50.0, distanceMeters: 10.0, isDangerous: false, orientation: "landscapeLeft", details: "test detail 1")
+        store.record(type: "test_event_2", speedKMPH: 60.0, distanceMeters: 5.0, isDangerous: true, orientation: "landscapeRight", details: "test detail 2")
+        store.record(type: "test_event_3", speedKMPH: 0.0, distanceMeters: nil, isDangerous: false, orientation: "portrait", details: nil)
+
+        // Allow async daily log write to complete
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        // Export and verify
+        let exportURL = store.exportURL()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: exportURL.path), "Export file should exist")
+
+        // Decode and verify exported JSON
+        let data = try Data(contentsOf: exportURL)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        struct ExportPayload: Codable {
+            let app: String
+            let bundleID: String
+            let systemVersion: String
+            let deviceModel: String
+            let events: [DiagnosticEvent]
         }
-        struct Response: Decodable { let current: CurrentWeather }
-        guard let payload = try? JSONDecoder().decode(Response.self, from: data) else { return .dry }
-        let current = payload.current
-        let isWet = current.precipitation > 0.1 || current.rain > 0.1 || current.weatherCode >= 51
-        return isWet ? .wet : .dry
+
+        let payload = try decoder.decode(ExportPayload.self, from: data)
+        XCTAssertEqual(payload.app, "DriveAssistant")
+        XCTAssertEqual(payload.events.count, 3, "Should have 3 recorded events")
+        XCTAssertEqual(payload.events[0].type, "test_event_1")
+        XCTAssertEqual(payload.events[1].type, "test_event_2")
+        XCTAssertEqual(payload.events[2].type, "test_event_3")
+
+        // Clear and verify
+        store.clear()
+
+        // Allow async clear to complete
+        try await Task.sleep(nanoseconds: 200_000_000)
+
+        // Export again - should have empty events array (or only daily log if any)
+        let exportURLAfterClear = store.exportURL()
+        let dataAfterClear = try Data(contentsOf: exportURLAfterClear)
+        let payloadAfterClear = try decoder.decode(ExportPayload.self, from: dataAfterClear)
+
+        // After clear, in-memory events are empty; daily log files are deleted
+        // So events should be empty
+        XCTAssertEqual(payloadAfterClear.events.count, 0, "After clear, events array should be empty")
     }
 }

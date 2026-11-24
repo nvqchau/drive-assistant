@@ -43,16 +43,25 @@ final class WeatherService {
             self.session.dataTask(with: url) { data, response, _ in
                 guard let httpResponse = response as? HTTPURLResponse,
                       (200...299).contains(httpResponse.statusCode),
-                      let data,
-                      let payload = try? JSONDecoder().decode(OpenMeteoResponse.self, from: data) else {
+                      let data else {
                     DispatchQueue.main.async { completion(.dry) }
                     return
                 }
-                let current = payload.current
-                let isWet = current.precipitation > 0.1 || current.rain > 0.1 || current.weatherCode >= 51
-                DispatchQueue.main.async { completion(isWet ? .wet : .dry) }
+                let condition = self.parseRoadCondition(from: data)
+                DispatchQueue.main.async { completion(condition) }
             }.resume()
         }
+    }
+
+    /// Parse Open-Meteo JSON payload and evaluate road wetness.
+    /// Exposed for unit testing.
+    func parseRoadCondition(from data: Data) -> RoadCondition {
+        guard let payload = try? JSONDecoder().decode(OpenMeteoResponse.self, from: data) else {
+            return .dry
+        }
+        let current = payload.current
+        let isWet = current.precipitation > 0.1 || current.rain > 0.1 || current.weatherCode >= 51
+        return isWet ? .wet : .dry
     }
 }
 
