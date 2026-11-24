@@ -134,15 +134,32 @@ final class LaneDetector: ObservableObject {
         
         // Apply EMA smoothing with grace window
         let (smoothedLeft, smoothedRight, leftConf, rightConf) = applyEMAWithGrace(leftFit: leftFit, rightFit: rightFit)
-        
+
+        // Single-Line Lane Synthesis: if only ONE side detected with good confidence (>0.5),
+        // synthesize the missing side using perspective lane width w(y) = 0.14 + 0.30 * ((y - 0.38) / (0.95 - 0.38))
+        var finalLeft = smoothedLeft
+        var finalRight = smoothedRight
+        var finalLeftConf = leftConf
+        var finalRightConf = rightConf
+
+        if leftConf > 0.5 && rightConf <= 0.5 && !smoothedLeft.isEmpty {
+            // Synthesize right lane from left lane
+            finalRight = synthesizeRightLaneFromLeft(smoothedLeft)
+            finalRightConf = 0.65
+        } else if rightConf > 0.5 && leftConf <= 0.5 && !smoothedRight.isEmpty {
+            // Synthesize left lane from right lane
+            finalLeft = synthesizeLeftLaneFromRight(smoothedRight)
+            finalLeftConf = 0.65
+        }
+
         // Update published properties on main thread
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            self.leftLanePoints = smoothedLeft
-            self.rightLanePoints = smoothedRight
-            self.leftLaneConfidence = leftConf
-            self.rightLaneConfidence = rightConf
-            self.isLaneDetectionActive = leftConf > 0.5 || rightConf > 0.5
+            self.leftLanePoints = finalLeft
+            self.rightLanePoints = finalRight
+            self.leftLaneConfidence = finalLeftConf
+            self.rightLaneConfidence = finalRightConf
+            self.isLaneDetectionActive = finalLeftConf > 0.5 || finalRightConf > 0.5
 
             // Update speed gating status for HUD
             self.configLock.lock()
@@ -184,26 +201,27 @@ final class LaneDetector: ObservableObject {
             kCIInputBrightnessKey: 0.1
         ])
 
+        // Lower white threshold from 0.58 to 0.44 for thin/weathered stripes
         let whiteMask = gray.applyingFilter("CIColorThreshold", parameters: [
-            "inputThreshold": 0.58
+            "inputThreshold": 0.44
         ])
 
+        // Lower yellow threshold from 0.45 to 0.38 for better center line pickup
         let yellowMask = image.applyingFilter("CIColorControls", parameters: [
-            kCIInputSaturationKey: 2.5,  // boosted from 2.0 for stronger yellow center line response
-            kCIInputContrastKey: 1.5,    // boosted from 1.2
+            kCIInputSaturationKey: 2.5,
+            kCIInputContrastKey: 1.5,
             kCIInputBrightnessKey: 0.05
         ]).applyingFilter("CIColorThreshold", parameters: [
-            "inputThreshold": 0.45       // lowered from 0.5 for better yellow line pickup
+            "inputThreshold": 0.38
         ])
-        
+
         let combined = whiteMask.applyingFilter("CISourceOverCompositing", parameters: [
             kCIInputBackgroundImageKey: yellowMask
         ])
-        
-        let cleaned = combined
-            .applyingFilter("CIMorphologyMinimum", parameters: [kCIInputRadiusKey: 1])
-            .applyingFilter("CIMorphologyMaximum", parameters: [kCIInputRadiusKey: 2])
-        
+
+        // Remove CIMorphologyMinimum (erodes thin lines), keep only CIMorphologyMaximum (dilates)
+        let cleaned = combined.applyingFilter("CIMorphologyMaximum", parameters: [kCIInputRadiusKey: 1.5])
+
         return cleaned
     }
     
@@ -319,8 +337,8 @@ final class LaneDetector: ObservableObject {
     }
 
     /// Fit linear perspective line x = slope * y + intercept using least-squares.
-    /// Validate realistic perspective slope: left lane converges right (-1.8 <= m <= -0.15),
-    /// right lane converges left (0.15 <= m <= 1.8). Requires >= 4 points.
+    /// Validate realistic perspective slope: left lane converges right (-2.2 <= m <= -0.10),
+    /// right lane converges left (0.10 <= m <= 2.2). Requires >= 4 points.
     /// Also prevent left/right crossover: top X at roiTopY must stay on correct side of centerX.
     private func fitLinear(points: [CGPoint], imageSize: CGSize, isLeft: Bool) -> [CGPoint]? {
         guard points.count >= 4 else { return nil }
@@ -344,14 +362,14 @@ final class LaneDetector: ObservableObject {
         let slope = (n * sumXY - sumX * sumY) / denom
         let intercept = (sumX * sumY2 - sumY * sumXY) / denom
 
-        // Validate perspective slope
+        // Validate perspective slope (relaxed bounds for more sensitive detection)
         // Y decreases upward (0=top, 1=bottom), so:
         // Left lane: converges RIGHT toward horizon => x decreases as y decreases => negative slope
         // Right lane: converges LEFT toward horizon => x increases as y decreases => positive slope
         if isLeft {
-            guard slope >= -1.8 && slope <= -0.15 else { return nil }
+            guard slope >= -2.2 && slope <= -0.10 else { return nil }
         } else {
-            guard slope >= 0.15 && slope <= 1.8 else { return nil }
+            guard slope >= 0.10 && slope <= 2.2 else { return nil }
         }
 
         var fittedPoints: [CGPoint] = []
@@ -596,6 +614,37 @@ final class LaneDetector: ObservableObject {
         }
         
         return points.first?.x
+    }
+
+    // MARK: - Single-Line Lane Synthesis
+
+    /// Perspective lane width: w(y) = 0.14 + 0.30 * ((y - 0.38) / (0.95 - 0.38))
+    /// At top (roiTopY=0.38): w = 0.14 (narrow)
+    /// At bottom (roiBottomY=0.95): w = 0.44 (wide)
+    private func laneWidthAtY(_ y: CGFloat) -> CGFloat {
+        let t = (y - roiTopY) / (roiBottomY - roiTopY)
+        let clampedT = max(0, min(1, t))
+        return 0.14 + 0.30 * clampedT
+    }
+
+    /// Synthesize right lane points from left lane by adding perspective width w(y) at each y
+    /// Clamped to <= 0.98 to stay within image bounds
+    private func synthesizeRightLaneFromLeft(_ leftPoints: [CGPoint]) -> [CGPoint] {
+        return leftPoints.map { pt in
+            let w = laneWidthAtY(pt.y)
+            let synthX = min(0.98, pt.x + w)
+            return CGPoint(x: synthX, y: pt.y)
+        }
+    }
+
+    /// Synthesize left lane points from right lane by subtracting perspective width w(y) at each y
+    /// Clamped to >= 0.02 to stay within image bounds
+    private func synthesizeLeftLaneFromRight(_ rightPoints: [CGPoint]) -> [CGPoint] {
+        return rightPoints.map { pt in
+            let w = laneWidthAtY(pt.y)
+            let synthX = max(0.02, pt.x - w)
+            return CGPoint(x: synthX, y: pt.y)
+        }
     }
 }
 

@@ -484,6 +484,7 @@ final class TrafficSignDetector: ObservableObject {
     }
 
     /// Manual clear — tap action on HUD badge
+    /// Only clears temporary P.127 speed limit tracking. Preserves residential area state and advisory.
     func clearDetectedLimit() {
         stateLock.lock()
         detectedSpeedLimit = nil
@@ -494,8 +495,11 @@ final class TrafficSignDetector: ObservableObject {
         lastAdvisoryText = nil
         didClearSpeedLimitEvent = nil
         detectedEndOfAllRestrictions = false
-        activeAdvisorySignText = nil
-        isInResidentialArea = nil
+        // Preserve isInResidentialArea and activeAdvisorySignText when residential_area
+        // Only R.421 (endResidentialArea) or GPS/OSM leaving urban area may clear isInResidentialArea
+        if activeAdvisorySignText != "residential_area" {
+            activeAdvisorySignText = nil
+        }
         isDividedRoadFromSign = false
         endResidentialConsecutiveCount = 0
         stateLock.unlock()

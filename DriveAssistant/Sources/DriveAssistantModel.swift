@@ -408,15 +408,17 @@ final class DriveAssistantModel: ObservableObject {
                     }
                     self?.hasReceivedCameraSignOverride = true  // any confirmed camera sign
                 } else {
-                    // Manual clear (tap on badge) resets statutory tracking
-                    self?.isCurrentLimitStatutory = false
+                    // Manual clear (tap on badge), DP.134, or DP.135 — ALWAYS revert to TT38 statutory limit
+                    // Preserve isInResidentialArea (only R.421 or GPS/OSM leaving urban area clears it)
+                    self?.isCurrentLimitStatutory = true
                     self?.hasReceivedCameraSignOverride = true
+                    self?.applyTT38StatutoryLimit()
                 }
                 self?.updateOverspeedState()
             }
             .store(in: &cancellables)
 
-        // Speed limit cleared event (DP.134 / DP.135)
+        // Speed limit cleared event (DP.134 / DP.135) — revert to TT38 statutory limit
         camera.trafficSignDetector.$didClearSpeedLimitEvent
             .receive(on: DispatchQueue.main)
             .sink { [weak self] eventDate in
@@ -425,6 +427,8 @@ final class DriveAssistantModel: ObservableObject {
                 self.isOverspeeding = false
                 self.showSpeedLimitCleared = true
                 self.hasReceivedCameraSignOverride = true  // manual clear counts as camera override
+                self.isCurrentLimitStatutory = true  // revert to statutory
+                self.applyTT38StatutoryLimit()  // apply TT38 fallback immediately
                 self.alerts.playSpeedLimitClearedAlert(speak: self.voiceAlertsEnabled)
 
                 // Auto-hide micro-badge after 2.5s
@@ -816,11 +820,12 @@ final class DriveAssistantModel: ObservableObject {
     /// - If statutory limit is active (isCurrentLimitStatutory == true) or no limit set, update to new TT38 value.
     ///     * isInResidentialArea == true:  50 km/h (2-way) or 60 km/h (divided)
     ///     * isInResidentialArea == false: 80 km/h (2-way) or 90 km/h (divided)  [if enableDefaultOutsideResidentialLimit]
-    ///     * isInResidentialArea == nil:   do nothing (unknown)
+    ///     * isInResidentialArea == nil:   50 km/h (default urban fallback)
     private func applyTT38StatutoryLimit() {
         // If an explicit P.127 speed sign was confirmed by camera, respect it and don't override
         guard isCurrentLimitStatutory || detectedSpeedLimit == nil else { return }
-        guard let inResidential = isInResidentialArea else { return }  // unknown state
+        // Default to residential (50 km/h) if unknown — ensures a valid limit is ALWAYS active
+        let inResidential = isInResidentialArea ?? true
         guard enableDefaultOutsideResidentialLimit || inResidential else { return }  // outside residential but feature disabled
 
         let newLimit: Int
