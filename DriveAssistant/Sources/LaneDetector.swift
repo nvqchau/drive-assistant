@@ -41,6 +41,7 @@ final class LaneDetector: ObservableObject {
     private var lastDepartureAlertActive = false
     private var lastDynamicMode = false
     private var lastModeChangeTime: TimeInterval = 0
+    private var lastLaneDebugLogTime: TimeInterval = 0  // periodic ldws_debug logging every 2.0s
 
     // Thread-safety lock for config accessed from main thread (setROIOffset, setLDWSEnabled, setMinSpeedForDepartureAlert)
     // and background queue (detectLanes, checkLaneDeparture)
@@ -152,6 +153,14 @@ final class LaneDetector: ObservableObject {
             finalLeftConf = 0.65
         }
 
+        // Periodic ldws_debug diagnostic logging (every 2.0s)
+        let now = CACurrentMediaTime()
+        if now - lastLaneDebugLogTime >= 2.0 {
+            lastLaneDebugLogTime = now
+            diagnostics?.record(type: "ldws_debug",
+                details: "contours=\(contours.count) leftPts=\(leftLines.count) rightPts=\(rightLines.count) leftConf=\(String(format: "%.2f", finalLeftConf)) rightConf=\(String(format: "%.2f", finalRightConf)) dynamic=\(finalLeftConf > 0.5 && finalRightConf > 0.5)")
+        }
+
         // Update published properties on main thread
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -195,31 +204,44 @@ final class LaneDetector: ObservableObject {
     }
     
     private func enhanceLaneMarkings(_ image: CIImage) -> CIImage {
-        let gray = image.applyingFilter("CIColorControls", parameters: [
+        // LOCAL-CONTRAST EDGE ENHANCEMENT (fixes daytime asphalt over-saturation)
+        // Extract local contrast: paint stripes brighter than surrounding asphalt
+        // Step 1: Grayscale with boosted contrast, unsharp mask to suppress flat bright asphalt
+        let whiteEnhanced = image.applyingFilter("CIColorControls", parameters: [
             kCIInputSaturationKey: 0,
-            kCIInputContrastKey: 1.8,
-            kCIInputBrightnessKey: 0.1
+            kCIInputContrastKey: 1.4,
+            kCIInputBrightnessKey: 0.0
+        ]).applyingFilter("CIUnsharpMask", parameters: [
+            kCIInputRadiusKey: 5.0,
+            kCIInputIntensityKey: 3.0
         ])
 
-        // Lower white threshold from 0.58 to 0.44 for thin/weathered stripes
-        let whiteMask = gray.applyingFilter("CIColorThreshold", parameters: [
-            "inputThreshold": 0.44
+        // Threshold at 0.68 to isolate crisp painted stripes (not asphalt)
+        let whiteMask = whiteEnhanced.applyingFilter("CIColorThreshold", parameters: [
+            "inputThreshold": 0.68
         ])
 
-        // Lower yellow threshold from 0.45 to 0.38 for better center line pickup
-        let yellowMask = image.applyingFilter("CIColorControls", parameters: [
-            kCIInputSaturationKey: 2.5,
-            kCIInputContrastKey: 1.5,
-            kCIInputBrightnessKey: 0.05
-        ]).applyingFilter("CIColorThreshold", parameters: [
-            "inputThreshold": 0.38
+        // Step 2: Yellow center markings - isolate high-saturation warm pixels
+        let yellowEnhanced = image.applyingFilter("CIColorControls", parameters: [
+            kCIInputSaturationKey: 3.0,
+            kCIInputContrastKey: 1.6,
+            kCIInputBrightnessKey: 0.0
+        ]).applyingFilter("CIUnsharpMask", parameters: [
+            kCIInputRadiusKey: 5.0,
+            kCIInputIntensityKey: 2.5
         ])
 
+        // Lower threshold for yellow (0.56) since yellow paint is naturally darker than white
+        let yellowMask = yellowEnhanced.applyingFilter("CIColorThreshold", parameters: [
+            "inputThreshold": 0.56
+        ])
+
+        // Combine with maximum compositing (white pops over yellow where both present)
         let combined = whiteMask.applyingFilter("CIMaximumCompositing", parameters: [
             kCIInputBackgroundImageKey: yellowMask
         ])
 
-        // Remove CIMorphologyMinimum (erodes thin lines), keep only CIMorphologyMaximum (dilates)
+        // Slight dilation to close small gaps in dashed lines
         let cleaned = combined.applyingFilter("CIMorphologyMaximum", parameters: [kCIInputRadiusKey: 1.5])
 
         return cleaned
