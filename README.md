@@ -61,6 +61,9 @@
 - **Camera precedence:** Explicit camera signs (P.127/DP.134/135) have 5-minute precedence over OSM fallback via `lastCameraResidentialSignTime`.
 - **HUD TT38 pill:** Shows `"Đôi • 60/90"` / `"Divided • 60/90"` or `"2 chiều • 50/80"` / `"2-Way • 50/80"` when residential state known and limit displayed; tap toggles `isDividedRoad` manual override.
 
+### WeatherService
+- **Open-Meteo parser exposed for testing:** `parseRoadCondition(from: Data) -> RoadCondition` evaluates wetness from `precipitation`, `rain`, and `weather_code` (wet if `precipitation > 0.1` or `rain > 0.1` or `weather_code ≥ 51`).
+
 ### Camera & thermal policy
 - Captures `1280×720` at up to `15 FPS` on the rear wide-angle camera.
 - Uses late-frame dropping (`alwaysDiscardsLateVideoFrames = true`) and an autorelease pool to control backpressure and memory.
@@ -112,7 +115,7 @@
 - **TSR Settings:** "Speed Sign Recognition" toggle (default on) + "Overspeed tolerance" slider `0–10 km/h`.
 - **Stop-and-Go Settings:** "Lead Vehicle Departure Alert" toggle (default on).
 - **Diagnostics Settings:** "Auto-Capture Debug Snapshots" toggle (default on, persisted) — auto-captures silent screenshots on `oncoming_lane_suspect`, `oncoming_closing_speed_spike`, and critical alerts (shared 5 s cooldown).
-- **DiagnosticsLogStore:** Persistent daily JSONL logging to `Documents/DriveAssistantLogs/DriveAssistant-yyyy-MM-dd.jsonl` (async append on serial background queue). In-memory ring buffer (5000 events) + `eventPublisher` PassthroughSubject for real-time observers. Export reads today's daily log if in-memory empty. `clear()` deletes all `.jsonl` files.
+- **DiagnosticsLogStore:** Persistent daily JSONL logging to `Documents/DriveAssistantLogs/DriveAssistant-yyyy-MM-dd.jsonl` (async append on serial background queue). In-memory ring buffer (5000 events) + `eventPublisher` PassthroughSubject for real-time observers. Export reads today's daily log if in-memory empty. `clear()` deletes all `.jsonl` files **after closing the active `FileHandle`** to prevent fd leaks on deleted inodes.
 - **Anomaly event types:** `target_switched_iou`, `oncoming_lane_suspect`, `oncoming_closing_speed_spike`, `ldws_departure_alert`, `ldws_mode_changed`, `ldws_debug`, `overspeed_alert`, `stop_and_go_alert`, `mount_shifted`, `alert_state_changed` (with `state=warning/critical/clear` + `reason=ttc|distance_below_3.5m`), `tsr_yolo_detect`, `tsr_state`.
 
 ---
@@ -182,6 +185,22 @@ CoreML model included in the repository and configured as target resource:
 - **Workflow:** `.github/workflows/build-ipa.yml` builds unsigned Release IPA on `macos-latest` on every push to `main` and via `workflow_dispatch`.
 - **Artifact:** `DriveAssistant-Release.ipa` uploaded with 7-day retention.
 - **Build flags:** `CODE_SIGNING_ALLOWED=NO`, `CODE_SIGNING_REQUIRED=NO`, `CODE_SIGN_IDENTITY=""`.
+- **Code Coverage Report:** Step summary shows per-file coverage for `DriveAssistant.app` target only (clean table via `xcrun xccov view --files-for-target DriveAssistant.app`).
+
+### Testing & Code Coverage
+- **82 unit tests** across 5 suites: `BusinessLogicCoverageTests`, `LaneAndMotionTests`, `TT38AndTSRPrecedenceTests`, `TrafficSignDetectorProcessObservationsTests`, `VisionFixtureTests`.
+- **Coverage: 61.13%** (4354/7122 lines) for `DriveAssistant.app` target.
+- **Key coverage tests (`BusinessLogicCoverageTests`):**
+  - `TC01`: Manual speed sign tap clear → reverts to TT38 statutory
+  - `TC02`: 3-tier auto display theme fallback (camera → astronomical → clock)
+  - `TC03`: Overspeed tolerance & cooldown boundaries
+  - `TC04`: Stop-and-Go lead vehicle departure sequence
+  - `TC05`: Vehicle distance formula & hood offset floor
+  - `TC06`: WeatherService Open-Meteo JSON parsing (rain/drizzle/dry/malformed)
+  - `TC07`: SettingsView renders all conditional sections (VI/EN, mount profile, TSR/LDWS toggles)
+  - `TC08`: LocationManager indoor stationary, outdoor moving, inaccurate fix isolation
+  - `TC09`: DiagnosticsLogStore record/export/clear with FileHandle leak fix + daily-log isolation
+- **Test isolation:** `LaneAndMotionTests.setUp()` resets `MotionManager` `@AppStorage` profile to prevent cross-test pollution.
 
 ---
 
