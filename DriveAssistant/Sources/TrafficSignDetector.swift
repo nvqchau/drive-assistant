@@ -246,7 +246,9 @@ final class TrafficSignDetector: ObservableObject {
                 "(rawLabel=\($0.0), conf=\(String(format: "%.2f", $0.1)), x=\(String(format: "%.2f", $0.2.minX)), w=\(String(format: "%.3f", $0.2.width)))"
             }.joined(separator: ";")
             let details = "raw=\(rawDetails.isEmpty ? "none" : rawDetails); speedDetections=\(speedLimitDetections.map { "(\($0.0),\(String(format: "%.2f", $0.1)),\(String(format: "%.3f", $0.2.minX)))\($0.2.width),\($0.3)" }.joined(separator: ";")) clearDetections=\(clearLimitDetections.count) advisoryDetections=\(advisoryDetections.map { "(\($0.0),\(String(format: "%.2f", $0.1)))" }.joined(separator: ";")) residential50=\(residential50Detected) endResidential=\(endResidentialAreaDetected) dualCarriageway=\(dualCarriagewayDetected)"
-            diagnostics?.record(type: "tsr_yolo_detect", details: details)
+            Task { [weak self] in
+                await self?.diagnostics?.record(type: "tsr_yolo_detect", details: details)
+            }
         }
 
         // Handle speed limit detection (including residential50 which sets 50 km/h)
@@ -305,7 +307,9 @@ final class TrafficSignDetector: ObservableObject {
                         }
                     }
                 }
-                diagnostics?.record(type: "tsr_state", details: "action=P127_confirmed limit=\(finalSpeedValue) yoloLimit=\(yoloSpeedValue) ocrVerified=\(ocrVerified) conf=\(String(format: "%.2f", bestConfidence)) consecutive=\(currentConsecutive) residential50=\(residential50Detected)")
+                Task { [weak self] in
+                    await self?.diagnostics?.record(type: "tsr_state", details: "action=P127_confirmed limit=\(finalSpeedValue) yoloLimit=\(yoloSpeedValue) ocrVerified=\(ocrVerified) conf=\(String(format: "%.2f", bestConfidence)) consecutive=\(currentConsecutive) residential50=\(residential50Detected)")
+                }
             }
         } else {
             // Tolerate transient missed frames before resetting confirmation
@@ -362,7 +366,9 @@ final class TrafficSignDetector: ObservableObject {
                         }
                     }
                 }
-                diagnostics?.record(type: "tsr_state", details: "action=advisory_confirmed key=\(advisoryKey) conf=\(String(format: "%.2f", advisoryConfidence)) immediate=\(shouldConfirmImmediately)")
+                Task { [weak self] in
+                    await self?.diagnostics?.record(type: "tsr_state", details: "action=advisory_confirmed key=\(advisoryKey) conf=\(String(format: "%.2f", advisoryConfidence)) immediate=\(shouldConfirmImmediately)")
+                }
             }
         } else {
             stateLock.lock()
@@ -390,7 +396,9 @@ final class TrafficSignDetector: ObservableObject {
                         self?.didClearSpeedLimitEvent = Date()
                         self?.isInResidentialArea = false
                     }
-                    diagnostics?.record(type: "tsr_state", details: "action=end_residential_area_confirmed cleared_limit")
+                    Task { [weak self] in
+                        await self?.diagnostics?.record(type: "tsr_state", details: "action=end_residential_area_confirmed cleared_limit")
+                    }
                 } else {
                     stateLock.unlock()
                 }
@@ -423,7 +431,9 @@ final class TrafficSignDetector: ObservableObject {
                         self?.didClearSpeedLimitEvent = Date()
                         self?.detectedEndOfAllRestrictions = true
                     }
-                    diagnostics?.record(type: "tsr_state", details: "action=clear_limit_confirmed cleared_limit")
+                    Task { [weak self] in
+                        await self?.diagnostics?.record(type: "tsr_state", details: "action=clear_limit_confirmed cleared_limit")
+                    }
                 } else {
                     stateLock.unlock()
                 }
@@ -440,7 +450,9 @@ final class TrafficSignDetector: ObservableObject {
             DispatchQueue.main.async { [weak self] in
                 self?.isDividedRoadFromSign = true
             }
-            diagnostics?.record(type: "tsr_state", details: "action=dual_carriageway confirmed")
+            Task { [weak self] in
+                await self?.diagnostics?.record(type: "tsr_state", details: "action=dual_carriageway confirmed")
+            }
         }
     }
 
@@ -480,7 +492,9 @@ final class TrafficSignDetector: ObservableObject {
             try handler.perform([ocrRequest])
             recognizedText = ocrRequest.results?.first?.topCandidates(1).first?.string
         } catch {
-            diagnostics?.record(type: "tsr_ocr_error", details: "error=\(error.localizedDescription)")
+            Task { [weak self] in
+                await self?.diagnostics?.record(type: "tsr_ocr_error", details: "error=\(error.localizedDescription)")
+            }
             return nil
         }
 
@@ -494,7 +508,9 @@ final class TrafficSignDetector: ObservableObject {
                 return speed
             }
         }
-        diagnostics?.record(type: "tsr_ocr_invalid", details: "rawText=\(text), tokens=\(tokens)")
+        Task { [weak self] in
+            await self?.diagnostics?.record(type: "tsr_ocr_invalid", details: "rawText=\(text), tokens=\(tokens)")
+        }
         return nil
     }
 

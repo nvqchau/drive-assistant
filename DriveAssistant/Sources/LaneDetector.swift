@@ -183,8 +183,10 @@ final class LaneDetector: ObservableObject {
         let now = CACurrentMediaTime()
         if now - lastLaneDebugLogTime >= 2.0 {
             lastLaneDebugLogTime = now
-            diagnostics?.record(type: "ldws_debug",
-                details: "contours=\(contours.count) leftPts=\(leftLines.count) rightPts=\(rightLines.count) leftConf=\(String(format: "%.2f", finalLeftConf)) rightConf=\(String(format: "%.2f", finalRightConf)) dynamic=\(finalLeftConf > 0.5 && finalRightConf > 0.5)")
+            Task { [weak self] in
+                await self?.diagnostics?.record(type: "ldws_debug",
+                    details: "contours=\(contours.count) leftPts=\(leftLines.count) rightPts=\(rightLines.count) leftConf=\(String(format: "%.2f", finalLeftConf)) rightConf=\(String(format: "%.2f", finalRightConf)) dynamic=\(finalLeftConf > 0.5 && finalRightConf > 0.5)")
+            }
         }
 
         // Update internal state under lock, then publish on main thread
@@ -219,8 +221,10 @@ final class LaneDetector: ObservableObject {
                 let now = CACurrentMediaTime()
                 if now - self.lastModeChangeTime >= 5.0 {
                     self.lastModeChangeTime = now
-                    self.diagnostics?.record(type: "ldws_mode_changed",
-                        details: "dynamic=\(dynamicMode), leftConf=\(String(format: "%.2f", finalLeftConf)), rightConf=\(String(format: "%.2f", finalRightConf)), speedKMPH=\(String(format: "%.1f", speedKMPH))")
+                    Task { [weak self] in
+                        await self?.diagnostics?.record(type: "ldws_mode_changed",
+                            details: "dynamic=\(dynamicMode), leftConf=\(String(format: "%.2f", finalLeftConf)), rightConf=\(String(format: "%.2f", finalRightConf)), speedKMPH=\(String(format: "%.1f", speedKMPH))")
+                    }
                 }
                 self.lastDynamicMode = dynamicMode
             }
@@ -620,8 +624,10 @@ final class LaneDetector: ObservableObject {
 
         // Log departure alert on rising edge
         if departureAlertActive && !lastDepartureAlertActive {
-            diagnostics?.record(type: "ldws_departure_alert",
-                details: "departureState=\(String(describing: departureState)), speedKMPH=\(String(format: "%.1f", speedKMPH)), leftConf=\(String(format: "%.2f", leftLaneConfidence)), rightConf=\(String(format: "%.2f", rightLaneConfidence))")
+            Task { [weak self] in
+                await self?.diagnostics?.record(type: "ldws_departure_alert",
+                    details: "departureState=\(String(describing: departureState)), speedKMPH=\(String(format: "%.1f", speedKMPH)), leftConf=\(String(format: "%.2f", leftLaneConfidence)), rightConf=\(String(format: "%.2f", rightLaneConfidence))")
+            }
         }
         lastDepartureAlertActive = departureAlertActive
     }

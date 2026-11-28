@@ -85,8 +85,10 @@ final class RoadMetadataService: ObservableObject {
                 let thoroughfare = pm.thoroughfare ?? "nil"
                 let adminArea = pm.administrativeArea ?? "nil"
                 if !hasLoggedFirstGeocoder || fromGeocoder != oldResidential {
-                    diagnostics?.record(type: "road_metadata_updated",
-                        details: "country=\(country) adminArea=\(adminArea) locality=\(locality) subLocality=\(subLocality) thoroughfare=\(thoroughfare) inResidential=\(fromGeocoder?.description ?? "nil") isDivided=\(isDividedRoad) source=geocoder")
+                    Task { [weak self] in
+                        await self?.diagnostics?.record(type: "road_metadata_updated",
+                            details: "country=\(country) adminArea=\(adminArea) locality=\(locality) subLocality=\(subLocality) thoroughfare=\(thoroughfare) inResidential=\(fromGeocoder?.description ?? "nil") isDivided=\(isDividedRoad) source=geocoder")
+                    }
                     lastLoggedResidential = fromGeocoder
                     hasLoggedFirstGeocoder = true
                 }
@@ -134,7 +136,7 @@ final class RoadMetadataService: ObservableObject {
             let thoroughfare = "nil"
             let adminArea = "nil"
             if !hasLoggedFirstOverpass || result.isDivided != oldDivided || result.isInResidentialArea != oldResidential {
-                diagnostics?.record(type: "road_metadata_updated",
+                await diagnostics?.record(type: "road_metadata_updated",
                     details: "country=\(country) adminArea=\(adminArea) locality=\(locality) subLocality=\(subLocality) thoroughfare=\(thoroughfare) inResidential=\(result.isInResidentialArea) isDivided=\(result.isDivided) source=overpass")
                 lastLoggedDivided = result.isDivided
                 lastLoggedResidential = result.isInResidentialArea
