@@ -296,29 +296,6 @@ extension TrafficSignDetector {
     }
 }
 
-extension DriveAssistantModel {
-    // Expose private method for testing
-    func applyTT38StatutoryLimit() {
-        // If an explicit P.127 speed sign was confirmed by camera, respect it and don't override
-        guard isCurrentLimitStatutory || detectedSpeedLimit == nil else { return }
-        guard let inResidential = isInResidentialArea else { return }  // unknown state
-        guard enableDefaultOutsideResidentialLimit || inResidential else { return }  // outside residential but feature disabled
-
-        let newLimit: Int
-        if inResidential {
-            newLimit = isDividedRoad ? 60 : 50
-        } else {
-            newLimit = isDividedRoad ? 90 : 80
-        }
-
-        // Only update if limit actually changed (or was nil)
-        if detectedSpeedLimit != newLimit {
-            detectedSpeedLimit = newLimit
-            isCurrentLimitStatutory = true
-        }
-    }
-}
-
 // MARK: - TrafficSignDetector processObservations Behavioral Tests
 
 extension TT38AndTSRPrecedenceTests {

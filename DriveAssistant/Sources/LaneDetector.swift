@@ -19,6 +19,24 @@ final class LaneDetector: ObservableObject {
     @Published private(set) var departureAlertActive = false
     @Published private(set) var isSpeedGated = false  // true when GPS speed < ldwsMinSpeedKmh
 
+    struct LaneState {
+        let leftLanePoints: [CGPoint]
+        let rightLanePoints: [CGPoint]
+        let leftLaneConfidence: Float
+        let rightLaneConfidence: Float
+    }
+
+    func getLaneState() -> LaneState {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return LaneState(
+            leftLanePoints: _leftLanePoints,
+            rightLanePoints: _rightLanePoints,
+            leftLaneConfidence: _leftLaneConfidence,
+            rightLaneConfidence: _rightLaneConfidence
+        )
+    }
+
     // MARK: - Departure State Machine
     enum DepartureState: Equatable {
         case none
@@ -46,11 +64,19 @@ final class LaneDetector: ObservableObject {
     // Thread-safety lock for config accessed from main thread (setROIOffset, setLDWSEnabled, setMinSpeedForDepartureAlert)
     // and background queue (detectLanes, checkLaneDeparture)
     private let configLock = NSLock()
+    private let stateLock = NSLock() // Protects internal lane state
 
     // EMA smoothing for lane boundaries (α = 0.25 for steady rails over dashed lines)
     private var emaLeftLane: [CGPoint]?
     private var emaRightLane: [CGPoint]?
     private let emaAlpha: CGFloat = 0.25
+
+    // Internal state protected by stateLock
+    private var _leftLanePoints: [CGPoint] = []
+    private var _rightLanePoints: [CGPoint] = []
+    private var _leftLaneConfidence: Float = 0
+    private var _rightLaneConfidence: Float = 0
+    private var _departureState: DepartureState = .none
 
     // Grace window: hold last confident fit for 0.5s (~15 frames at 30fps) before fading
     private var framesSinceConfidentLeft = 0
@@ -161,14 +187,24 @@ final class LaneDetector: ObservableObject {
                 details: "contours=\(contours.count) leftPts=\(leftLines.count) rightPts=\(rightLines.count) leftConf=\(String(format: "%.2f", finalLeftConf)) rightConf=\(String(format: "%.2f", finalRightConf)) dynamic=\(finalLeftConf > 0.5 && finalRightConf > 0.5)")
         }
 
-        // Update published properties on main thread
+        // Update internal state under lock, then publish on main thread
+        stateLock.lock()
+        _leftLanePoints = finalLeft
+        _rightLanePoints = finalRight
+        _leftLaneConfidence = finalLeftConf
+        _rightLaneConfidence = finalRightConf
+        _isLaneDetectionActive = finalLeftConf > 0.5 || finalRightConf > 0.5
+        stateLock.unlock()
+
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            self.leftLanePoints = finalLeft
-            self.rightLanePoints = finalRight
-            self.leftLaneConfidence = finalLeftConf
-            self.rightLaneConfidence = finalRightConf
-            self.isLaneDetectionActive = finalLeftConf > 0.5 || finalRightConf > 0.5
+            self.stateLock.lock()
+            self.leftLanePoints = self._leftLanePoints
+            self.rightLanePoints = self._rightLanePoints
+            self.leftLaneConfidence = self._leftLaneConfidence
+            self.rightLaneConfidence = self._rightLaneConfidence
+            self.isLaneDetectionActive = self._isLaneDetectionActive
+            self.stateLock.unlock()
 
             // Update speed gating status for HUD
             self.configLock.lock()
@@ -184,7 +220,7 @@ final class LaneDetector: ObservableObject {
                 if now - self.lastModeChangeTime >= 5.0 {
                     self.lastModeChangeTime = now
                     self.diagnostics?.record(type: "ldws_mode_changed",
-                        details: "dynamic=\(dynamicMode), leftConf=\(String(format: "%.2f", leftConf)), rightConf=\(String(format: "%.2f", rightConf)), speedKMPH=\(String(format: "%.1f", speedKMPH))")
+                        details: "dynamic=\(dynamicMode), leftConf=\(String(format: "%.2f", finalLeftConf)), rightConf=\(String(format: "%.2f", finalRightConf)), speedKMPH=\(String(format: "%.1f", speedKMPH))")
                 }
                 self.lastDynamicMode = dynamicMode
             }

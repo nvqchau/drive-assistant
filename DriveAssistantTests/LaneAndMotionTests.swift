@@ -68,21 +68,28 @@ final class LaneAndMotionTests: XCTestCase {
 
     // MARK: - Locks Ego-Lane Leads (Target Switching)
 
-    func testTargetSwitching_IoUThreshold_015() {
+    // MARK: - Locks Ego-Lane Leads (Target Switching)
+
+    func testTargetSwitching_IoUThresholds() {
         let detector = TrafficSignDetector()
 
         // Previous lead box
         let prevBox = CGRect(x: 0.4, y: 0.5, width: 0.15, height: 0.15)
 
-        // Candidate with IoU > 0.15 (should switch)
-        let candidateHighIoU = CGRect(x: 0.42, y: 0.52, width: 0.14, height: 0.14)
-        let iouHigh = detector.calculateIoU(prevBox, candidateHighIoU)
-        XCTAssertGreaterThan(iouHigh, 0.15, "IoU should exceed 0.15 threshold for target switch")
+        // Continuation test (threshold 0.10)
+        let candidateContinuation = CGRect(x: 0.41, y: 0.51, width: 0.14, height: 0.14)
+        let iouContinuation = detector.calculateIoU(prevBox, candidateContinuation)
+        XCTAssertGreaterThanOrEqual(iouContinuation, 0.10, "IoU should exceed 0.10 threshold for continuation")
 
-        // Candidate with IoU < 0.15 (should NOT switch)
-        let candidateLowIoU = CGRect(x: 0.6, y: 0.7, width: 0.1, height: 0.1)
-        let iouLow = detector.calculateIoU(prevBox, candidateLowIoU)
-        XCTAssertLessThan(iouLow, 0.15, "IoU should be below 0.15 threshold, no target switch")
+        // Pending match test (threshold 0.05)
+        let candidatePending = CGRect(x: 0.42, y: 0.52, width: 0.13, height: 0.13)
+        let iouPending = detector.calculateIoU(prevBox, candidatePending)
+        XCTAssertGreaterThanOrEqual(iouPending, 0.05, "IoU should exceed 0.05 threshold for pending match")
+
+        // Negative test (below both)
+        let candidateNoMatch = CGRect(x: 0.8, y: 0.8, width: 0.1, height: 0.1)
+        let iouNoMatch = detector.calculateIoU(prevBox, candidateNoMatch)
+        XCTAssertLessThan(iouNoMatch, 0.05, "IoU should be below 0.05 threshold, no match")
     }
 
     func testTargetSwitching_SeparateTrackerFromHorizonCalibration() {

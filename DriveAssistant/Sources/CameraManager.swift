@@ -78,6 +78,7 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
     private var performanceWindowStart = CACurrentMediaTime()
     private var thermalObserver: NSObjectProtocol?
     private let thermalLock = NSLock()
+    private let trackingLock = NSLock() // Protects trackedBox and trackedBoxTimestamp
     private let frameLock = NSLock()
     private var latestFramePixelBuffer: CVPixelBuffer?
     private var currentThermalState = ProcessInfo.processInfo.thermalState
@@ -534,8 +535,10 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
                 self?.leadVehicleBox = nil
             }
         } else if wasCritical {
+            trackingLock.lock()
             trackedBox = nil
             trackedBoxTimestamp = CACurrentMediaTime()
+            trackingLock.unlock()
             diagnostics?.record(type: "thermal_recovery_tracking_reset", details: "state=\(String(describing: state))")
         }
     }
@@ -613,10 +616,11 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
         // Forward ALL observations to TrafficSignDetector for TSR processing (single-pass unified inference)
         if enableSpeedSignRecognition {
             // Thermal throttling for TSR (4 Hz nominal, 2 Hz on .fair/.serious)
-            let tsrInterval = (thermalState == .nominal) ? baseTSRInterval : thermalTSRInterval
+            let currentThermal = thermalStateForInference()
+            let tsrInterval = (currentThermal == .nominal) ? baseTSRInterval : thermalTSRInterval
             if now - lastTSRProcessTime >= tsrInterval {
                 lastTSRProcessTime = now
-                trafficSignDetector.setThermalState(thermalState)
+                trafficSignDetector.setThermalState(currentThermal)
                 trafficSignDetector.setVisionOrientation(visionOrientation)
                 trafficSignDetector.processObservations(allObservations, pixelBuffer: pixelBuffer, orientation: visionOrientation)
             }
@@ -767,7 +771,11 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
             pendingBoxFrames = 0
             return nil
         }
-        if let trackedBox {
+        trackingLock.lock()
+        let currentTrackedBox = self.trackedBox
+        trackingLock.unlock()
+        
+        if let trackedBox = currentTrackedBox {
             let matching = observations.filter { isPlausibleContinuation(from: trackedBox, to: $0.0) }
             if let closestMatch = closestVehicle(in: matching) {
                 pendingBox = nil
@@ -784,7 +792,11 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
                 pendingBoxFrames = 1
             }
             guard pendingBoxFrames >= 3 else { return nil }
+            
+            trackingLock.lock()
             self.trackedBox = nil
+            trackingLock.unlock()
+            
             pendingBox = nil
             pendingBoxFrames = 0
             diagnostics?.record(type: "target_switched", details: "newBox=\(candidate.0.debugDescription), confidence=\(candidate.1), label=\(candidate.2)")

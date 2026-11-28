@@ -202,8 +202,8 @@ final class DriveAssistantModel: ObservableObject {
         case ..<10: base = 5.0
         case 10..<58: base = max(5, speed * 0.5)
         case 58...60: base = 35
-        case 60.01...80.0: base = 55
-        case 80.01...100.0: base = 70
+        case 60..<80: base = 55
+        case 80..<100: base = 70
         default: base = 100
         }
         return (distanceRuleMode == .vnLaw && effectiveRoadCondition == .wet) ? base * 1.3 : base
@@ -829,7 +829,7 @@ final class DriveAssistantModel: ObservableObject {
     ///     * isInResidentialArea == true:  50 km/h (2-way) or 60 km/h (divided)
     ///     * isInResidentialArea == false: 80 km/h (2-way) or 90 km/h (divided)  [if enableDefaultOutsideResidentialLimit]
     ///     * isInResidentialArea == nil:   50 km/h (default urban fallback)
-    private func applyTT38StatutoryLimit() {
+    internal func applyTT38StatutoryLimit() {
         // If an explicit P.127 speed sign was confirmed by camera, respect it and don't override
         guard isCurrentLimitStatutory || detectedSpeedLimit == nil else { return }
         // Default to residential (50 km/h) if unknown — ensures a valid limit is ALWAYS active

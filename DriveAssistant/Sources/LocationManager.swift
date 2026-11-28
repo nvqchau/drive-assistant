@@ -35,14 +35,18 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
 
     func stop() {
         manager.stopUpdatingLocation()
-        stallTimer?.invalidate()
-        stallTimer = nil
+        DispatchQueue.main.async { [weak self] in
+            self?.stallTimer?.invalidate()
+            self?.stallTimer = nil
+        }
     }
 
     private func startStallTimer() {
-        stallTimer?.invalidate()
-        stallTimer = Timer.scheduledTimer(withTimeInterval: stallThreshold, repeats: true) { [weak self] _ in
-            self?.handleStall()
+        DispatchQueue.main.async { [weak self] in
+            self?.stallTimer?.invalidate()
+            self?.stallTimer = Timer.scheduledTimer(withTimeInterval: self?.stallThreshold ?? 10.0, repeats: true) { [weak self] _ in
+                self?.handleStall()
+            }
         }
     }
 

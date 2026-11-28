@@ -13,18 +13,16 @@ struct DiagnosticEvent: Codable {
     let details: String?
 }
 
-final class DiagnosticsLogStore {
+final actor DiagnosticsLogStore {
     private var events: [DiagnosticEvent] = []
-    private let lock = NSLock()
     private let encoder: JSONEncoder
     private let maxEvents = 5000
     private let logger = Logger(subsystem: "vn.ai.driveassistant", category: "Diagnostics")
 
-    // Publisher for real-time event observation
-    let eventPublisher = PassthroughSubject<DiagnosticEvent, Never>()
+    // Publisher for real-time event observation (nonisolated for Combine access)
+    nonisolated let eventPublisher = PassthroughSubject<DiagnosticEvent, Never>()
 
-    // Daily file logging
-    private let dailyLogQueue = DispatchQueue(label: "vn.ai.driveassistant.daily-log", qos: .utility)
+    // Daily file logging state
     private var currentDailyLogDate: Date?
     private var currentDailyLogHandle: FileHandle?
 
@@ -36,24 +34,17 @@ final class DiagnosticsLogStore {
 
     func record(type: String, speedKMPH: Double? = nil, distanceMeters: Double? = nil, isDangerous: Bool? = nil, orientation: String? = nil, details: String? = nil) {
         let event = DiagnosticEvent(timestamp: Date(), type: type, speedKMPH: speedKMPH, distanceMeters: distanceMeters, isDangerous: isDangerous, orientation: orientation, details: details)
-        lock.lock()
+        
         events.append(event)
         if events.count > maxEvents {
             events.removeFirst(events.count - maxEvents)
         }
-        lock.unlock()
 
-        // Persist to daily JSONL file asynchronously
-        appendToDailyLog(event)
+        // Persist to daily JSONL file
+        writeEventToDailyLog(event)
 
         // Emit event for real-time observers
         eventPublisher.send(event)
-    }
-
-    private func appendToDailyLog(_ event: DiagnosticEvent) {
-        dailyLogQueue.async { [weak self] in
-            self?.writeEventToDailyLog(event)
-        }
     }
 
     private func writeEventToDailyLog(_ event: DiagnosticEvent) {
@@ -73,11 +64,11 @@ final class DiagnosticsLogStore {
             var jsonString = String(data: data, encoding: .utf8) ?? ""
             jsonString += "\n"
             if let lineData = jsonString.data(using: .utf8) {
-                handle.seekToEndOfFile()
-                handle.write(lineData)
+                try handle.seekToEnd()
+                try handle.write(contentsOf: lineData)
             }
         } catch {
-            logger.error("Failed to encode daily log event: \(error.localizedDescription, privacy: .public)")
+            logger.error("Failed to write daily log event: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -91,19 +82,12 @@ final class DiagnosticsLogStore {
 
         do {
             try FileManager.default.createDirectory(at: logsDir, withIntermediateDirectories: true, attributes: nil)
-        } catch {
-            logger.error("Failed to create logs directory: \(error.localizedDescription, privacy: .public)")
-            return
-        }
+            let fileURL = logsDir.appendingPathComponent(fileName)
 
-        let fileURL = logsDir.appendingPathComponent(fileName)
+            if !FileManager.default.fileExists(atPath: fileURL.path) {
+                FileManager.default.createFile(atPath: fileURL.path, contents: nil, attributes: nil)
+            }
 
-        // Create file if it doesn't exist
-        if !FileManager.default.fileExists(atPath: fileURL.path) {
-            FileManager.default.createFile(atPath: fileURL.path, contents: nil, attributes: nil)
-        }
-
-        do {
             currentDailyLogHandle = try FileHandle(forWritingTo: fileURL)
             currentDailyLogDate = date
         } catch {
@@ -112,23 +96,15 @@ final class DiagnosticsLogStore {
     }
 
     private func closeCurrentDailyLog() {
-        currentDailyLogHandle?.closeFile()
+        try? currentDailyLogHandle?.close()
         currentDailyLogHandle = nil
         currentDailyLogDate = nil
     }
 
     func clear() {
-        lock.lock()
         events.removeAll()
-        lock.unlock()
-
-        // Close active FileHandle BEFORE deleting files to avoid leaking open fd on deleted inode
         closeCurrentDailyLog()
-
-        // Delete all .jsonl files in the logs directory
-        dailyLogQueue.async { [weak self] in
-            self?.deleteAllDailyLogs()
-        }
+        deleteAllDailyLogs()
     }
 
     private func deleteAllDailyLogs() {
@@ -148,11 +124,8 @@ final class DiagnosticsLogStore {
     }
 
     func exportURL() -> URL {
-        let exportedEvents: [DiagnosticEvent]
-        lock.lock()
-        exportedEvents = events
-        lock.unlock()
-
+        let exportedEvents = events
+        
         // If no in-memory events, try to read today's daily log file
         let eventsToExport: [DiagnosticEvent]
         if exportedEvents.isEmpty {
@@ -169,7 +142,6 @@ final class DiagnosticsLogStore {
             "events": AnyEncodable(eventsToExport)
         ]
 
-        // Use pretty-printed encoder for export
         let exportEncoder = JSONEncoder()
         exportEncoder.dateEncodingStrategy = .iso8601
         exportEncoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -186,11 +158,7 @@ final class DiagnosticsLogStore {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd-HHmmss"
         let url = documentsURL.appendingPathComponent("DriveAssistant-Export-\(formatter.string(from: Date())).json")
-        do {
-            try data.write(to: url, options: .atomic)
-        } catch {
-            logger.error("Failed to write diagnostics export: \(error.localizedDescription, privacy: .public)")
-        }
+        try? data.write(to: url, options: .atomic)
         return url
     }
 
@@ -210,7 +178,7 @@ final class DiagnosticsLogStore {
         do {
             let data = try Data(contentsOf: fileURL)
             let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
+            decoder.dateEncodingStrategy = .iso8601
             let lines = String(data: data, encoding: .utf8)?.split(separator: "\n") ?? []
             var events: [DiagnosticEvent] = []
             for line in lines {
@@ -226,7 +194,7 @@ final class DiagnosticsLogStore {
         }
     }
 
-    deinit {
+    func close() {
         closeCurrentDailyLog()
     }
 }

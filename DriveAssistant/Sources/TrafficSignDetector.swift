@@ -110,12 +110,14 @@ final class TrafficSignDetector: ObservableObject {
 
     // MARK: - State (protected by stateLock for thread-safety between main thread and background queue)
     private let stateLock = NSLock()
+    private var _isProcessing = false
     private var lastProcessTime: TimeInterval = 0
     private var consecutiveMatchCount = 0
     private var lastMatchedLimit: Int?
     private var missedMatchFrames = 0  // tolerance for transient missed frame
-    private var thermalState: ProcessInfo.ThermalState = .nominal
-    private var visionOrientation: CGImagePropertyOrientation = .up
+    private var _thermalState: ProcessInfo.ThermalState = .nominal
+    private var _visionOrientation: CGImagePropertyOrientation = .up
+    private var _detectedSpeedLimit: Int?
 
     // Confirmation state
     private var endSignConsecutiveCount = 0  // for DP.134/DP.135 clear limit confirmation
@@ -149,19 +151,30 @@ final class TrafficSignDetector: ObservableObject {
 
     /// Set vision orientation (matches CameraManager's visionOrientation)
     func setVisionOrientation(_ orientation: CGImagePropertyOrientation) {
-        visionOrientation = orientation
+        stateLock.lock()
+        _visionOrientation = orientation
+        stateLock.unlock()
     }
 
     /// Called from CameraManager with shared unified model observations.
     /// Runs on background queue, throttled by thermal state (4 Hz nominal, 2 Hz on .fair/.serious).
     func processObservations(_ observations: [VNRecognizedObjectObservation], pixelBuffer: CVPixelBuffer, orientation: CGImagePropertyOrientation) {
-        guard !isProcessing else { return }
+        stateLock.lock()
+        let processing = _isProcessing
+        let thermal = _thermalState
+        stateLock.unlock()
+
+        guard !processing else { return }
         let now = CACurrentMediaTime()
         guard now - lastProcessTime >= processInterval else { return }
-        guard thermalState != .critical else { return }
+        guard thermal != .critical else { return }
 
         lastProcessTime = now
-        isProcessing = true
+        
+        stateLock.lock()
+        _isProcessing = true
+        stateLock.unlock()
+        DispatchQueue.main.async { [weak self] in self?.isProcessing = true }
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             self?.processFrame(observations, pixelBuffer: pixelBuffer, orientation: orientation)
@@ -169,7 +182,12 @@ final class TrafficSignDetector: ObservableObject {
     }
 
     private func processFrame(_ observations: [VNRecognizedObjectObservation], pixelBuffer: CVPixelBuffer, orientation: CGImagePropertyOrientation) {
-        defer { isProcessing = false }
+        defer {
+            stateLock.lock()
+            _isProcessing = false
+            stateLock.unlock()
+            DispatchQueue.main.async { [weak self] in self?.isProcessing = false }
+        }
 
         // Filter detections at normal threshold for state updates
         var speedLimitDetections: [(Int, Float, CGRect, String)] = []  // (speedValue, confidence, bbox, label)
@@ -269,6 +287,10 @@ final class TrafficSignDetector: ObservableObject {
             stateLock.unlock()
 
             if shouldConfirm {
+                stateLock.lock()
+                _detectedSpeedLimit = finalSpeedValue
+                stateLock.unlock()
+
                 DispatchQueue.main.async { [weak self] in
                     self?.detectedSpeedLimit = finalSpeedValue
                     self?.detectedEndOfAllRestrictions = false
@@ -300,7 +322,10 @@ final class TrafficSignDetector: ObservableObject {
         }
 
         // Handle clear limit detection (DP.134 "141" / DP.135 "190") — clear speed limit, revert to statutory, keep residential status
-        if !clearLimitDetections.isEmpty && detectedSpeedLimit != nil {
+        stateLock.lock()
+        let currentLimit = _detectedSpeedLimit
+        stateLock.unlock()
+        if !clearLimitDetections.isEmpty && currentLimit != nil {
             handleClearLimitDetection()
         } else {
             stateLock.lock()
@@ -358,6 +383,7 @@ final class TrafficSignDetector: ObservableObject {
                 stateLock.lock()
                 if now - lastEndResidentialTriggerTime >= 6.0 {
                     lastEndResidentialTriggerTime = now
+                    _detectedSpeedLimit = nil
                     stateLock.unlock()
                     DispatchQueue.main.async { [weak self] in
                         self?.detectedSpeedLimit = nil
@@ -390,6 +416,7 @@ final class TrafficSignDetector: ObservableObject {
                 stateLock.lock()
                 if now - lastClearLimitTriggerTime >= 6.0 {
                     lastClearLimitTriggerTime = now
+                    _detectedSpeedLimit = nil
                     stateLock.unlock()
                     DispatchQueue.main.async { [weak self] in
                         self?.detectedSpeedLimit = nil
@@ -485,28 +512,34 @@ final class TrafficSignDetector: ObservableObject {
 
     /// Update thermal state (called from CameraManager)
     func setThermalState(_ state: ProcessInfo.ThermalState) {
-        thermalState = state
+        stateLock.lock()
+        _thermalState = state
+        stateLock.unlock()
     }
 
     /// Manual clear — tap action on HUD badge
     /// Only clears temporary P.127 speed limit tracking. Preserves residential area state and advisory.
     func clearDetectedLimit() {
         stateLock.lock()
-        detectedSpeedLimit = nil
+        _detectedSpeedLimit = nil
         lastMatchedLimit = nil
         consecutiveMatchCount = 0
         endSignConsecutiveCount = 0
         advisoryConsecutiveCount = 0
         lastAdvisoryText = nil
-        didClearSpeedLimitEvent = nil
-        detectedEndOfAllRestrictions = false
-        // Preserve isInResidentialArea and activeAdvisorySignText when residential_area
-        // Only R.421 (endResidentialArea) or GPS/OSM leaving urban area may clear isInResidentialArea
-        if activeAdvisorySignText != "residential_area" {
-            activeAdvisorySignText = nil
-        }
-        isDividedRoadFromSign = false
         endResidentialConsecutiveCount = 0
         stateLock.unlock()
+
+        DispatchQueue.main.async { [weak self] in
+            self?.detectedSpeedLimit = nil
+            self?.didClearSpeedLimitEvent = nil
+            self?.detectedEndOfAllRestrictions = false
+            // Preserve isInResidentialArea and activeAdvisorySignText when residential_area
+            // Only R.421 (endResidentialArea) or GPS/OSM leaving urban area may clear isInResidentialArea
+            if self?.activeAdvisorySignText != "residential_area" {
+                self?.activeAdvisorySignText = nil
+            }
+            self?.isDividedRoadFromSign = false
+        }
     }
 }
