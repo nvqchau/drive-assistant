@@ -307,8 +307,15 @@ final class TrafficSignDetector: ObservableObject {
                         }
                     }
                 }
+                // Capture values for diagnostics to avoid Swift 6 concurrency capture errors
+                let diagFinalSpeed = finalSpeedValue
+                let diagYoloSpeed = yoloSpeedValue
+                let diagOCRVerified = ocrVerified
+                let diagConfidence = bestConfidence
+                let diagConsecutive = currentConsecutive
+                let diagResidential50 = residential50Detected
                 Task { [weak self] in
-                    await self?.diagnostics?.record(type: "tsr_state", details: "action=P127_confirmed limit=\(finalSpeedValue) yoloLimit=\(yoloSpeedValue) ocrVerified=\(ocrVerified) conf=\(String(format: "%.2f", bestConfidence)) consecutive=\(currentConsecutive) residential50=\(residential50Detected)")
+                    await self?.diagnostics?.record(type: "tsr_state", details: "action=P127_confirmed limit=\(diagFinalSpeed) yoloLimit=\(diagYoloSpeed) ocrVerified=\(diagOCRVerified) conf=\(String(format: "%.2f", diagConfidence)) consecutive=\(diagConsecutive) residential50=\(diagResidential50)")
                 }
             }
         } else {

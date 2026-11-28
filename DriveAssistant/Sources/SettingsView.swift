@@ -151,8 +151,10 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
                     Button {
-                        exportURL = model.exportDiagnostics()
-                        isShareSheetPresented = true
+                        Task {
+                            exportURL = await model.exportDiagnostics()
+                            isShareSheetPresented = true
+                        }
                     } label: {
                         Label(model.usesVietnamese ? "Xuất nhật ký kiểm tra" : "Export diagnostics", systemImage: "square.and.arrow.up")
                     }
@@ -176,7 +178,7 @@ struct SettingsView: View {
         }
         .alert(model.usesVietnamese ? "Xóa nhật ký?" : "Clear logs?", isPresented: $isClearConfirmationPresented) {
             Button(model.usesVietnamese ? "Xóa" : "Clear", role: .destructive) {
-                model.clearDiagnostics()
+                Task { await model.clearDiagnostics() }
             }
             Button(model.usesVietnamese ? "Hủy" : "Cancel", role: .cancel) {}
         } message: {

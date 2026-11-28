@@ -616,14 +616,14 @@ final class DriveAssistantModel: ObservableObject {
         }
     }
 
-    func exportDiagnostics() -> URL {
-        Task { await diagnostics.record(type: "manual_export", speedKMPH: speedKMPH, distanceMeters: distance, isDangerous: isDangerous, orientation: String(describing: UIDevice.current.orientation)) }
+    func exportDiagnostics() async -> URL {
+        await diagnostics.record(type: "manual_export", speedKMPH: speedKMPH, distanceMeters: distance, isDangerous: isDangerous, orientation: String(describing: UIDevice.current.orientation))
         return await diagnostics.exportURL()
     }
 
-    func clearDiagnostics() {
+    func clearDiagnostics() async {
         await diagnostics.clear()
-        Task { await diagnostics.record(type: "logs_cleared", orientation: String(describing: UIDevice.current.orientation)) }
+        await diagnostics.record(type: "logs_cleared", orientation: String(describing: UIDevice.current.orientation))
     }
 
     func cycleRoadCondition() {
@@ -656,6 +656,7 @@ final class DriveAssistantModel: ObservableObject {
         if speedKMPH >= 15 && closingSpeedMPS > (speedKMPH / 3.6) + 8.0 {
             Task { await diagnostics.record(type: "oncoming_closing_speed_spike",
                 details: "speedKMPH=\(String(format: "%.1f", speedKMPH)), closingSpeedMPS=\(String(format: "%.1f", closingSpeedMPS)), distanceM=\(String(format: "%.1f", distance)), leadBox=\(camera.leadVehicleBox?.debugDescription ?? "nil")")
+            }
         }
     }
 
@@ -969,7 +970,7 @@ final class DriveAssistantModel: ObservableObject {
         let clampedInferred = max(0.25, min(0.65, inferredHorizonY))
         motion.updateEffectiveHorizonFromVision(inferredHorizonY: clampedInferred)
     }
-    
+
     private func intersectionOverUnion(_ lhs: CGRect, _ rhs: CGRect) -> CGFloat {
         let intersection = lhs.intersection(rhs)
         guard !intersection.isNull, intersection.width > 0, intersection.height > 0 else { return 0 }
