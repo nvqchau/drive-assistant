@@ -30,10 +30,10 @@ final class LaneDetector: ObservableObject {
         stateLock.lock()
         defer { stateLock.unlock() }
         return LaneState(
-            leftLanePoints: _leftLanePoints,
-            rightLanePoints: _rightLanePoints,
-            leftLaneConfidence: _leftLaneConfidence,
-            rightLaneConfidence: _rightLaneConfidence
+            leftLanePoints: internalLeftLanePoints,
+            rightLanePoints: internalRightLanePoints,
+            leftLaneConfidence: internalLeftLaneConfidence,
+            rightLaneConfidence: internalRightLaneConfidence
         )
     }
 
@@ -72,11 +72,11 @@ final class LaneDetector: ObservableObject {
     private let emaAlpha: CGFloat = 0.25
 
     // Internal state protected by stateLock
-    private var _leftLanePoints: [CGPoint] = []
-    private var _rightLanePoints: [CGPoint] = []
-    private var _leftLaneConfidence: Float = 0
-    private var _rightLaneConfidence: Float = 0
-    private var _departureState: DepartureState = .none
+    private var internalLeftLanePoints: [CGPoint] = []
+    private var internalRightLanePoints: [CGPoint] = []
+    private var internalLeftLaneConfidence: Float = 0
+    private var internalRightLaneConfidence: Float = 0
+    private var internalDepartureState: DepartureState = .none
 
     // Grace window: hold last confident fit for 0.5s (~15 frames at 30fps) before fading
     private var framesSinceConfidentLeft = 0
@@ -189,21 +189,21 @@ final class LaneDetector: ObservableObject {
 
         // Update internal state under lock, then publish on main thread
         stateLock.lock()
-        _leftLanePoints = finalLeft
-        _rightLanePoints = finalRight
-        _leftLaneConfidence = finalLeftConf
-        _rightLaneConfidence = finalRightConf
-        _isLaneDetectionActive = finalLeftConf > 0.5 || finalRightConf > 0.5
+        internalLeftLanePoints = finalLeft
+        internalRightLanePoints = finalRight
+        internalLeftLaneConfidence = finalLeftConf
+        internalRightLaneConfidence = finalRightConf
+        let isActive = finalLeftConf > 0.5 || finalRightConf > 0.5
         stateLock.unlock()
 
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             self.stateLock.lock()
-            self.leftLanePoints = self._leftLanePoints
-            self.rightLanePoints = self._rightLanePoints
-            self.leftLaneConfidence = self._leftLaneConfidence
-            self.rightLaneConfidence = self._rightLaneConfidence
-            self.isLaneDetectionActive = self._isLaneDetectionActive
+            self.leftLanePoints = self.internalLeftLanePoints
+            self.rightLanePoints = self.internalRightLanePoints
+            self.leftLaneConfidence = self.internalLeftLaneConfidence
+            self.rightLaneConfidence = self.internalRightLaneConfidence
+            self.isLaneDetectionActive = isActive
             self.stateLock.unlock()
 
             // Update speed gating status for HUD

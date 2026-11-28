@@ -110,14 +110,14 @@ final class TrafficSignDetector: ObservableObject {
 
     // MARK: - State (protected by stateLock for thread-safety between main thread and background queue)
     private let stateLock = NSLock()
-    private var _isProcessing = false
+    private var internalIsProcessing = false
     private var lastProcessTime: TimeInterval = 0
     private var consecutiveMatchCount = 0
     private var lastMatchedLimit: Int?
     private var missedMatchFrames = 0  // tolerance for transient missed frame
-    private var _thermalState: ProcessInfo.ThermalState = .nominal
-    private var _visionOrientation: CGImagePropertyOrientation = .up
-    private var _detectedSpeedLimit: Int?
+    private var internalThermalState: ProcessInfo.ThermalState = .nominal
+    private var internalVisionOrientation: CGImagePropertyOrientation = .up
+    private var internalDetectedSpeedLimit: Int?
 
     // Confirmation state
     private var endSignConsecutiveCount = 0  // for DP.134/DP.135 clear limit confirmation
@@ -152,7 +152,7 @@ final class TrafficSignDetector: ObservableObject {
     /// Set vision orientation (matches CameraManager's visionOrientation)
     func setVisionOrientation(_ orientation: CGImagePropertyOrientation) {
         stateLock.lock()
-        _visionOrientation = orientation
+        internalVisionOrientation = orientation
         stateLock.unlock()
     }
 
@@ -160,8 +160,8 @@ final class TrafficSignDetector: ObservableObject {
     /// Runs on background queue, throttled by thermal state (4 Hz nominal, 2 Hz on .fair/.serious).
     func processObservations(_ observations: [VNRecognizedObjectObservation], pixelBuffer: CVPixelBuffer, orientation: CGImagePropertyOrientation) {
         stateLock.lock()
-        let processing = _isProcessing
-        let thermal = _thermalState
+        let processing = internalIsProcessing
+        let thermal = internalThermalState
         stateLock.unlock()
 
         guard !processing else { return }
@@ -172,7 +172,7 @@ final class TrafficSignDetector: ObservableObject {
         lastProcessTime = now
         
         stateLock.lock()
-        _isProcessing = true
+        internalIsProcessing = true
         stateLock.unlock()
         DispatchQueue.main.async { [weak self] in self?.isProcessing = true }
 
@@ -184,7 +184,7 @@ final class TrafficSignDetector: ObservableObject {
     private func processFrame(_ observations: [VNRecognizedObjectObservation], pixelBuffer: CVPixelBuffer, orientation: CGImagePropertyOrientation) {
         defer {
             stateLock.lock()
-            _isProcessing = false
+            internalIsProcessing = false
             stateLock.unlock()
             DispatchQueue.main.async { [weak self] in self?.isProcessing = false }
         }
@@ -288,7 +288,7 @@ final class TrafficSignDetector: ObservableObject {
 
             if shouldConfirm {
                 stateLock.lock()
-                _detectedSpeedLimit = finalSpeedValue
+                internalDetectedSpeedLimit = finalSpeedValue
                 stateLock.unlock()
 
                 DispatchQueue.main.async { [weak self] in
@@ -323,7 +323,7 @@ final class TrafficSignDetector: ObservableObject {
 
         // Handle clear limit detection (DP.134 "141" / DP.135 "190") — clear speed limit, revert to statutory, keep residential status
         stateLock.lock()
-        let currentLimit = _detectedSpeedLimit
+        let currentLimit = internalDetectedSpeedLimit
         stateLock.unlock()
         if !clearLimitDetections.isEmpty && currentLimit != nil {
             handleClearLimitDetection()
@@ -383,7 +383,7 @@ final class TrafficSignDetector: ObservableObject {
                 stateLock.lock()
                 if now - lastEndResidentialTriggerTime >= 6.0 {
                     lastEndResidentialTriggerTime = now
-                    _detectedSpeedLimit = nil
+                    internalDetectedSpeedLimit = nil
                     stateLock.unlock()
                     DispatchQueue.main.async { [weak self] in
                         self?.detectedSpeedLimit = nil
@@ -416,7 +416,7 @@ final class TrafficSignDetector: ObservableObject {
                 stateLock.lock()
                 if now - lastClearLimitTriggerTime >= 6.0 {
                     lastClearLimitTriggerTime = now
-                    _detectedSpeedLimit = nil
+                    internalDetectedSpeedLimit = nil
                     stateLock.unlock()
                     DispatchQueue.main.async { [weak self] in
                         self?.detectedSpeedLimit = nil
@@ -513,7 +513,7 @@ final class TrafficSignDetector: ObservableObject {
     /// Update thermal state (called from CameraManager)
     func setThermalState(_ state: ProcessInfo.ThermalState) {
         stateLock.lock()
-        _thermalState = state
+        internalThermalState = state
         stateLock.unlock()
     }
 
@@ -521,7 +521,7 @@ final class TrafficSignDetector: ObservableObject {
     /// Only clears temporary P.127 speed limit tracking. Preserves residential area state and advisory.
     func clearDetectedLimit() {
         stateLock.lock()
-        _detectedSpeedLimit = nil
+        internalDetectedSpeedLimit = nil
         lastMatchedLimit = nil
         consecutiveMatchCount = 0
         endSignConsecutiveCount = 0
