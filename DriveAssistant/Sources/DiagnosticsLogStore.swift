@@ -178,7 +178,7 @@ final actor DiagnosticsLogStore {
         do {
             let data = try Data(contentsOf: fileURL)
             let decoder = JSONDecoder()
-            decoder.dateEncodingStrategy = .iso8601
+            decoder.dateDecodingStrategy = .iso8601
             let lines = String(data: data, encoding: .utf8)?.split(separator: "\n") ?? []
             var events: [DiagnosticEvent] = []
             for line in lines {
