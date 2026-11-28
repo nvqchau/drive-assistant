@@ -377,7 +377,7 @@ final class DriveAssistantModel: ObservableObject {
                         self.distanceHistory.removeAll(keepingCapacity: true)
                         self.closingSpeedMPS = 0
                         self.timeToCollision = nil
-                        self.diagnostics.record(type: "target_switched_iou", details: "iou=\(String(format: "%.2f", iou)) cleared_history")
+                        Task { await self.diagnostics.record(type: "target_switched_iou", details: "iou=\(String(format: "%.2f", iou)) cleared_history") }
                     }
                 }
                 self.previousLeadBoxForSwitch = box
@@ -460,7 +460,7 @@ final class DriveAssistantModel: ObservableObject {
                 self.lastAdvisoryAlertKey = key
                 self.lastAdvisoryAlertTime = now
                 self.alerts.playTrafficSignAdvisoryAlert(key: key, speak: self.voiceAlertsEnabled)
-                self.diagnostics.record(type: "tsr_advisory_alert", details: "key=\(key) speedKMPH=\(String(format: "%.1f", self.speedKMPH))")
+                Task { await self.diagnostics.record(type: "tsr_advisory_alert", details: "key=\(key) speedKMPH=\(String(format: "%.1f", self.speedKMPH))") }
             }
             .store(in: &cancellables)
 
@@ -593,7 +593,7 @@ final class DriveAssistantModel: ObservableObject {
     }
 
     func start() {
-        diagnostics.record(type: "session_started", orientation: String(describing: UIDevice.current.orientation))
+        Task { await diagnostics.record(type: "session_started", orientation: String(describing: UIDevice.current.orientation)) }
         camera.start()
         location.start()
         if showHorizonGuide {
@@ -605,7 +605,7 @@ final class DriveAssistantModel: ObservableObject {
     }
 
     func stop() {
-        diagnostics.record(type: "session_stopped", speedKMPH: speedKMPH, distanceMeters: distance, isDangerous: isDangerous, orientation: String(describing: UIDevice.current.orientation))
+        Task { await diagnostics.record(type: "session_stopped", speedKMPH: speedKMPH, distanceMeters: distance, isDangerous: isDangerous, orientation: String(describing: UIDevice.current.orientation)) }
         camera.stop()
         location.stop()
         motion.stop()
@@ -617,13 +617,13 @@ final class DriveAssistantModel: ObservableObject {
     }
 
     func exportDiagnostics() -> URL {
-        diagnostics.record(type: "manual_export", speedKMPH: speedKMPH, distanceMeters: distance, isDangerous: isDangerous, orientation: String(describing: UIDevice.current.orientation))
-        return diagnostics.exportURL()
+        Task { await diagnostics.record(type: "manual_export", speedKMPH: speedKMPH, distanceMeters: distance, isDangerous: isDangerous, orientation: String(describing: UIDevice.current.orientation)) }
+        return await diagnostics.exportURL()
     }
 
     func clearDiagnostics() {
-        diagnostics.clear()
-        diagnostics.record(type: "logs_cleared", orientation: String(describing: UIDevice.current.orientation))
+        await diagnostics.clear()
+        Task { await diagnostics.record(type: "logs_cleared", orientation: String(describing: UIDevice.current.orientation)) }
     }
 
     func cycleRoadCondition() {
@@ -654,7 +654,7 @@ final class DriveAssistantModel: ObservableObject {
         // Oncoming closing speed spike diagnostic: closing speed exceeds ego speed by >8 m/s
         // while speed >= 15 km/h (indicates likely oncoming traffic false positive)
         if speedKMPH >= 15 && closingSpeedMPS > (speedKMPH / 3.6) + 8.0 {
-            diagnostics.record(type: "oncoming_closing_speed_spike",
+            Task { await diagnostics.record(type: "oncoming_closing_speed_spike",
                 details: "speedKMPH=\(String(format: "%.1f", speedKMPH)), closingSpeedMPS=\(String(format: "%.1f", closingSpeedMPS)), distanceM=\(String(format: "%.1f", distance)), leadBox=\(camera.leadVehicleBox?.debugDescription ?? "nil")")
         }
     }
@@ -715,7 +715,7 @@ final class DriveAssistantModel: ObservableObject {
         }
         alertState = state
         isDangerous = state == .critical
-        diagnostics.record(type: "alert_state_changed", speedKMPH: speedKMPH, distanceMeters: distance, isDangerous: isDangerous, orientation: String(describing: UIDevice.current.orientation), details: "state=\(String(describing: state)), closingSpeedMPS=\(closingSpeedMPS), ttc=\(timeToCollision.map { String($0) } ?? "nil")")
+        Task { await diagnostics.record(type: "alert_state_changed", speedKMPH: speedKMPH, distanceMeters: distance, isDangerous: isDangerous, orientation: String(describing: UIDevice.current.orientation), details: "state=\(String(describing: state)), closingSpeedMPS=\(closingSpeedMPS), ttc=\(timeToCollision.map { String($0) } ?? "nil")") }
     }
 
     /// Stop-and-Go (Lead Vehicle Departure) alert
@@ -817,7 +817,7 @@ final class DriveAssistantModel: ObservableObject {
             isOverspeeding = newOverspeeding
             if isOverspeeding {
                 alerts.playOverspeedAlert(limit: limit, speak: voiceAlertsEnabled)
-                diagnostics.record(type: "overspeed_alert", details: "speedKMPH=\(String(format: "%.1f", speedKMPH)), limit=\(limit), toleranceKmh=\(String(format: "%.1f", overspeedToleranceKmh))")
+                Task { await diagnostics.record(type: "overspeed_alert", details: "speedKMPH=\(String(format: "%.1f", speedKMPH)), limit=\(limit), toleranceKmh=\(String(format: "%.1f", overspeedToleranceKmh))") }
             }
         }
     }
@@ -847,7 +847,7 @@ final class DriveAssistantModel: ObservableObject {
         if detectedSpeedLimit != newLimit {
             detectedSpeedLimit = newLimit
             isCurrentLimitStatutory = true
-            diagnostics.record(type: "tsr_tt38_statutory", details: "limit=\(newLimit) inResidential=\(inResidential) divided=\(isDividedRoad) source=\(isDividedRoad ? (camera.trafficSignDetector.isDividedRoadFromSign ? "sign" : "osm") : "osm")")
+            Task { await diagnostics.record(type: "tsr_tt38_statutory", details: "limit=\(newLimit) inResidential=\(inResidential) divided=\(isDividedRoad) source=\(isDividedRoad ? (camera.trafficSignDetector.isDividedRoadFromSign ? "sign" : "osm") : "osm")") }
             updateOverspeedState()
         }
     }

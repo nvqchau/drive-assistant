@@ -35,4 +35,5 @@ Carthage/Build/
 
 # Other
 logs/
+*.log
 project_snapshot.txt

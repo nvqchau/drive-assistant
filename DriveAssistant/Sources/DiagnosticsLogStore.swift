@@ -123,22 +123,26 @@ final actor DiagnosticsLogStore {
         }
     }
 
-    func exportURL() -> URL {
+    func exportURL() async -> URL {
         let exportedEvents = events
-        
+
         // If no in-memory events, try to read today's daily log file
         let eventsToExport: [DiagnosticEvent]
         if exportedEvents.isEmpty {
-            eventsToExport = readTodaysDailyLog()
+            eventsToExport = await readTodaysDailyLog()
         } else {
             eventsToExport = exportedEvents
+        }
+
+        let deviceInfo = await MainActor.run {
+            (UIDevice.current.systemVersion, UIDevice.current.model)
         }
 
         let payload: [String: AnyEncodable] = [
             "app": AnyEncodable("DriveAssistant"),
             "bundleID": AnyEncodable(Bundle.main.bundleIdentifier ?? "unknown"),
-            "systemVersion": AnyEncodable(UIDevice.current.systemVersion),
-            "deviceModel": AnyEncodable(UIDevice.current.model),
+            "systemVersion": AnyEncodable(deviceInfo.0),
+            "deviceModel": AnyEncodable(deviceInfo.1),
             "events": AnyEncodable(eventsToExport)
         ]
 
@@ -162,7 +166,7 @@ final actor DiagnosticsLogStore {
         return url
     }
 
-    private func readTodaysDailyLog() -> [DiagnosticEvent] {
+    private func readTodaysDailyLog() async -> [DiagnosticEvent] {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
         let formatter = DateFormatter()

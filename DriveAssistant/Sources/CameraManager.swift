@@ -351,7 +351,7 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
 
         if !hasLoggedFrameFormat {
             hasLoggedFrameFormat = true
-            diagnostics?.record(type: "camera_frame_format", details: "width=\(CVPixelBufferGetWidth(pixelBuffer)), height=\(CVPixelBufferGetHeight(pixelBuffer)), videoOrientation=\(videoOrientation)")
+            Task { await diagnostics?.record(type: "camera_frame_format", details: "width=\(CVPixelBufferGetWidth(pixelBuffer)), height=\(CVPixelBufferGetHeight(pixelBuffer)), videoOrientation=\(videoOrientation)") }
         }
         lastInference = now
         inferenceCount += 1
@@ -445,10 +445,10 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
             self.hasValidCameraBrightness = true
             if !self.isLowLightScene && brightnessEV < self.lowLightThreshold {
                 self.isLowLightScene = true
-                self.diagnostics?.record(type: "camera_brightness_night", details: "brightnessEV=\(brightnessEV)")
+                Task { await self.diagnostics?.record(type: "camera_brightness_night", details: "brightnessEV=\(brightnessEV)") }
             } else if self.isLowLightScene && brightnessEV > self.daylightThreshold {
                 self.isLowLightScene = false
-                self.diagnostics?.record(type: "camera_brightness_day", details: "brightnessEV=\(brightnessEV)")
+                Task { await self.diagnostics?.record(type: "camera_brightness_day", details: "brightnessEV=\(brightnessEV)") }
             }
         }
     }
@@ -457,7 +457,7 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
         recordWarmupDuration(duration)
         guard duration >= 0.25 else { return }
         logger.warning("Slow Vision inference: \(duration, privacy: .public)s")
-        diagnostics?.record(type: "slow_inference", details: "durationSeconds=\(duration), thermalState=\(String(describing: thermalStateForInference()))")
+        Task { await diagnostics?.record(type: "slow_inference", details: "durationSeconds=\(duration), thermalState=\(String(describing: thermalStateForInference()))") }
     }
 
     private func recordWarmupDuration(_ duration: TimeInterval) {
@@ -468,7 +468,7 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
         let averageMilliseconds = warmupTotalDuration / Double(warmupFrameCount) * 1000
         baselineInferenceFPS = averageMilliseconds < 40 ? 10 : 6
         warmupComplete = true
-        diagnostics?.record(type: "vision_warmup_completed", details: "frames=5, averageLatencyMS=\(averageMilliseconds), baselineFPS=\(baselineInferenceFPS), computeUnits=cpuAndNeuralEngine")
+        Task { await diagnostics?.record(type: "vision_warmup_completed", details: "frames=5, averageLatencyMS=\(averageMilliseconds), baselineFPS=\(baselineInferenceFPS), computeUnits=cpuAndNeuralEngine") }
         logger.info("Vision warm-up complete: average latency \(averageMilliseconds, privacy: .public) ms, baseline \(self.baselineInferenceFPS, privacy: .public) FPS")
     }
 
@@ -493,7 +493,7 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
         guard elapsed >= 5 else { return }
         let captureFPS = Double(frameCount) / elapsed
         let inferenceFPS = Double(inferenceCount) / elapsed
-        diagnostics?.record(type: "camera_performance", details: "captureFPS=\(captureFPS), inferenceFPS=\(inferenceFPS), thermalState=\(String(describing: thermalStateForInference()))")
+        Task { await diagnostics?.record(type: "camera_performance", details: "captureFPS=\(captureFPS), inferenceFPS=\(inferenceFPS), thermalState=\(String(describing: thermalStateForInference()))") }
         frameCount = 0
         inferenceCount = 0
         performanceWindowStart = now
@@ -527,7 +527,7 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
         thermalLock.unlock()
         thermalState = state
         guard changed else { return }
-        diagnostics?.record(type: "thermal_state_changed", details: "state=\(String(describing: state))")
+        Task { await diagnostics?.record(type: "thermal_state_changed", details: "state=\(String(describing: state))") }
         logger.warning("Thermal state changed: \(String(describing: state), privacy: .public)")
         if state == .critical {
             DispatchQueue.main.async { [weak self] in
@@ -539,7 +539,7 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
             trackedBox = nil
             trackedBoxTimestamp = CACurrentMediaTime()
             trackingLock.unlock()
-            diagnostics?.record(type: "thermal_recovery_tracking_reset", details: "state=\(String(describing: state))")
+            Task { await diagnostics?.record(type: "thermal_recovery_tracking_reset", details: "state=\(String(describing: state))") }
         }
     }
 
@@ -570,7 +570,7 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
         cachedVisionOrientation = visionOrientation
         orientationLock.unlock()
         if changed {
-            diagnostics?.record(type: "camera_orientation_changed", orientation: String(describing: deviceOrientation), details: "video=\(videoOrientation), vision=\(visionOrientation)")
+            Task { await diagnostics?.record(type: "camera_orientation_changed", orientation: String(describing: deviceOrientation), details: "video=\(videoOrientation), vision=\(visionOrientation)") }
         }
     }
 
@@ -799,11 +799,11 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
             
             pendingBox = nil
             pendingBoxFrames = 0
-            diagnostics?.record(type: "target_switched", details: "newBox=\(candidate.0.debugDescription), confidence=\(candidate.1), label=\(candidate.2)")
+            Task { await diagnostics?.record(type: "target_switched", details: "newBox=\(candidate.0.debugDescription), confidence=\(candidate.1), label=\(candidate.2)") }
             // Oncoming lane suspect diagnostic
             let laneOffset = currentLaneCenterOffsetX
             if candidate.0.midX < (0.5 + laneOffset) - 0.035 {
-                diagnostics?.record(type: "oncoming_lane_suspect", details: "midX=\(String(format: "%.3f", candidate.0.midX)), box=\(candidate.0.debugDescription), laneOffset=\(String(format: "%.3f", laneOffset)), confidence=\(candidate.1), label=\(candidate.2)")
+                Task { await diagnostics?.record(type: "oncoming_lane_suspect", details: "midX=\(String(format: "%.3f", candidate.0.midX)), box=\(candidate.0.debugDescription), laneOffset=\(String(format: "%.3f", laneOffset)), confidence=\(candidate.1), label=\(candidate.2)") }
             }
             return candidate
         }
@@ -814,7 +814,7 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
         if let candidate {
             let laneOffset = currentLaneCenterOffsetX
             if candidate.0.midX < (0.5 + laneOffset) - 0.035 {
-                diagnostics?.record(type: "oncoming_lane_suspect", details: "midX=\(String(format: "%.3f", candidate.0.midX)), box=\(candidate.0.debugDescription), laneOffset=\(String(format: "%.3f", laneOffset)), confidence=\(candidate.1), label=\(candidate.2)")
+                Task { await diagnostics?.record(type: "oncoming_lane_suspect", details: "midX=\(String(format: "%.3f", candidate.0.midX)), box=\(candidate.0.debugDescription), laneOffset=\(String(format: "%.3f", laneOffset)), confidence=\(candidate.1), label=\(candidate.2)") }
             }
         }
         return candidate
@@ -846,7 +846,7 @@ final class CameraManager: NSObject, ObservableObject, AVCaptureVideoDataOutputS
         let selectedDetails = selected.map {
             String(format: "%@ conf=%.2f box=(%.3f,%.3f,%.3f,%.3f)", $0.2, $0.1, $0.0.minX, $0.0.minY, $0.0.width, $0.0.height)
         } ?? "none"
-        diagnostics?.record(type: "detection_frame", details: "candidateCount=\(observations.count), candidates=[\(candidates)], selected=\(selectedDetails), tracked=\(trackedBox?.debugDescription ?? "none"), pendingFrames=\(pendingBoxFrames)")
+        Task { await diagnostics?.record(type: "detection_frame", details: "candidateCount=\(observations.count), candidates=[\(candidates)], selected=\(selectedDetails), tracked=\(trackedBox?.debugDescription ?? "none"), pendingFrames=\(pendingBoxFrames)") }
     }
 
     private func closestVehicle(in observations: [(CGRect, Float, String)]) -> (CGRect, Float, String)? {
